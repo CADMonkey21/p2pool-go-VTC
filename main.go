@@ -8,6 +8,8 @@ import (
 	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
 	"github.com/gertjaap/p2pool-go/p2p"
+	"github.com/gertjaap/p2pool-go/rpc"
+	"github.com/gertjaap/p2pool-go/stratum" // <-- Import new Stratum package
 	"github.com/gertjaap/p2pool-go/work"
 )
 
@@ -20,23 +22,30 @@ func main() {
 	config.LoadConfig()
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
 
+	// Create RPC client
+	rpcClient := rpc.NewClient(config.Active)
+
+	// Create and start the Work Manager
+	workManager := work.NewWorkManager(rpcClient)
+	go workManager.WatchBlockTemplate()
+
+	// --- NEW ---
+	// Create and start the Stratum Server
+	stratumServer := stratum.NewStratumServer(workManager)
+	go stratumServer.ListenForMiners()
+	// --- END NEW ---
+
+	// Create and start the P2P Manager
 	sc := work.NewShareChain()
 	err := sc.Load()
 	if err != nil {
 		panic(err)
 	}
-
-	//return
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
 
-	go func() {
-		for s := range sc.NeedShareChannel {
-			pm.AskForShare(s)
-		}
-	}()
-
+	// Keep the main process alive
 	for {
 		logging.Debugf("Number of active peers: %d", pm.GetPeerCount())
-		time.Sleep(time.Second * 5)
+		time.Sleep(30 * time.Second) // We can slow this down now
 	}
 }

@@ -4,5 +4,10 @@ p2pool.log
 debug.go
 sharechain.dat
 p2pool-go.log
-config.yaml
 verthash.dat
+# Ignore local configurations
+config.yaml
+
+# Ignore log files
+*.log
+*.save

@@ -1,0 +1,39 @@
+# p2pool-go-VTC Example Configuration
+#
+# How to use:
+# 1. Copy this file to 'config.yaml' (`cp config.example.yaml config.yaml`)
+# 2. Edit your personal 'config.yaml' with your settings below.
+# 3. DO NOT commit your personal 'config.yaml' to git.
+
+# The network to run on. For Vertcoin mainnet, this must be "vertcoin".
+network: "vertcoin"
+
+# Set to true if running on a testnet (requires a testnet daemon).
+testnet: false
+
+# --- RPC Connection Settings ---
+# These must match the settings in your vertcoin.conf file.
+# vertcoind must be running with server=1 for RPC to work.
+rpcHost: "127.0.0.1"
+rpcPort: 5888
+rpcUser: "YOUR_RPC_USER"
+rpcPass: "YOUR_RPC_PASSWORD"
+
+
+# --- Pool Settings ---
+# Your personal Vertcoin address for receiving pool fee payouts.
+poolAddress: "YOUR_VTC_PAYOUT_ADDRESS"
+
+# The percentage fee the pool will charge miners (e.g., 1.0 for a 1% fee).
+fee: 1.0
+
+
+# --- Port Settings ---
+# The ports your p2pool node will listen on for connections.
+# Make sure these ports are open in your firewall.
+
+# p2pPort is for connecting with other p2pool nodes.
+p2pPort: 19172
+
+# stratumPort is for your miners to connect to.
+stratumPort: 9172

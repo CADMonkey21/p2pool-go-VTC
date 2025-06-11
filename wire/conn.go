@@ -79,7 +79,8 @@ func (c *P2PoolConnection) IncomingLoop() {
 	for {
 		prefix, err := c.ReadBytes(len(c.network.MessagePrefix))
 		if err != nil {
-			logging.Errorf("Error reading from connection: %s", err.Error())
+			// Do not log here, as this is the normal way a connection closes.
+			// The Disconnected channel will signal the error.
 			break
 		}
 
@@ -90,7 +91,6 @@ func (c *P2PoolConnection) IncomingLoop() {
 
 		commandBytes, err := c.ReadBytes(12)
 		if err != nil {
-			logging.Errorf("Error reading from connection: %s", err.Error())
 			break
 		}
 		command := string(bytes.Trim(commandBytes, "\x00"))
@@ -98,19 +98,16 @@ func (c *P2PoolConnection) IncomingLoop() {
 		var length int32
 		err = binary.Read(c.conn, binary.LittleEndian, &length)
 		if err != nil {
-			logging.Errorf("Error reading from connection: %s", err.Error())
 			break
 		}
 
 		checksum, err := c.ReadBytes(4)
 		if err != nil {
-			logging.Errorf("Error reading from connection: %s", err.Error())
 			break
 		}
 
 		payload, err := c.ReadBytes(int(length))
 		if err != nil {
-			logging.Errorf("Error reading from connection: %s", err.Error())
 			break
 		}
 		calcChecksum := sha256.Sum256(payload)
@@ -122,7 +119,6 @@ func (c *P2PoolConnection) IncomingLoop() {
 
 		logging.Debugf("Received message of type [%s] length [%d]", command, length)
 
-		// TODO: Actually parse it :)
 		msg, err := c.ParseMessage(command, payload)
 		if err != nil {
 			logging.Errorf("Could not parse message: %s", err.Error())
@@ -192,4 +188,9 @@ func (c *P2PoolConnection) OutgoingLoop() {
 
 func (c *P2PoolConnection) Close() error {
 	return c.conn.Close()
+}
+
+// GetLocalAddr is the new helper function needed by the Peer object.
+func (c *P2PoolConnection) GetLocalAddr() net.Addr {
+	return c.conn.LocalAddr()
 }

@@ -1,199 +1,148 @@
 package p2p
 
 import (
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/gertjaap/p2pool-go/util"
-	"github.com/gertjaap/p2pool-go/work"
-
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/gertjaap/p2pool-go/logging"
-	p2poolnet "github.com/gertjaap/p2pool-go/net"
+	"github.com/gertjaap/p2pool-go/logging" // <-- Corrected import path
+	p2pnet "github.com/gertjaap/p2pool-go/net"
+	"github.com/gertjaap/p2pool-go/work"
 	"github.com/gertjaap/p2pool-go/wire"
 )
 
 type PeerManager struct {
-	Network           p2poolnet.Network
-	peers             []*Peer
-	possiblePeers     []wire.Addr
-	shareChain        *work.ShareChain
-	askSharesChan     chan *chainhash.Hash
-	peersLock         sync.Mutex
-	possiblePeersLock sync.Mutex
+	peers         map[string]*Peer
+	possiblePeers map[string]bool
+	activeNetwork p2pnet.Network
+	shareChain    *work.ShareChain
+	peersMutex    sync.RWMutex
 }
 
-func NewPeerManager(n p2poolnet.Network, sc *work.ShareChain) *PeerManager {
-	p := &PeerManager{
-		Network:           n,
-		peers:             make([]*Peer, 0),
-		possiblePeers:     make([]wire.Addr, 0),
-		peersLock:         sync.Mutex{},
-		possiblePeersLock: sync.Mutex{},
-		shareChain:        sc,
-		askSharesChan:     make(chan *chainhash.Hash, 100),
+func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
+	pm := &PeerManager{
+		peers:         make(map[string]*Peer),
+		possiblePeers: make(map[string]bool),
+		activeNetwork: net,
+		shareChain:    sc,
 	}
 
-	for _, h := range n.SeedHosts {
-		addrs, err := net.LookupIP(h)
-		if err == nil {
-			a := wire.Addr{
-				Address: wire.P2PoolAddress{
-					Address: addrs[0],
-					Port:    int16(n.P2PPort),
-				},
-			}
-			p.possiblePeers = append(p.possiblePeers, a)
-		}
+	for _, h := range net.SeedHosts {
+		pm.possiblePeers[h] = true
 	}
-	go p.MonitorPeerCount()
-	go p.ShareAskLoop()
-	return p
+
+	go pm.peerLoop()
+	return pm
 }
 
-func (p *PeerManager) MonitorPeerCount() {
+func (pm *PeerManager) peerLoop() {
 	for {
-		if len(p.peers) > 0 {
-			time.Sleep(time.Second * 10)
-		}
-		for len(p.peers) < 1 {
-			tryPeer := p.GetPossiblePeer()
-			if tryPeer.Timestamp == -1 {
-				logging.Debugf("Not enough peers, and no possible peers to try. Asking existing peers for new peers")
-				// No peers left to try. Ask for more.
-				for _, peer := range p.peers {
-					peer.AskNewAddresses(10)
-				}
+		pm.peersMutex.RLock()
+		peerCount := len(pm.peers)
+		possiblePeerCount := len(pm.possiblePeers)
+		pm.peersMutex.RUnlock()
+
+		logging.Debugf("Number of active peers: %d", peerCount)
+
+		if peerCount < 8 && possiblePeerCount > 0 {
+			var peerToTry string
+			pm.peersMutex.Lock()
+			for p := range pm.possiblePeers {
+				peerToTry = p
 				break
 			}
-			peerAddress := tryPeer.Address.Address
-			logging.Debugf("Trying peer %s", peerAddress.String())
+			pm.peersMutex.Unlock()
 
-			err := p.AddPeerWithPort(peerAddress, int(tryPeer.Address.Port))
-			if err != nil {
-				logging.Warnf("Peer %s failed: %s", peerAddress.String(), err.Error())
-				p.RemovePossiblePeer(tryPeer)
+			if peerToTry != "" {
+				go pm.TryPeer(peerToTry)
 			}
 		}
+		time.Sleep(5 * time.Second)
 	}
 }
 
-func (p *PeerManager) ShareAskLoop() {
-	for {
-		if len(p.peers) > 0 {
-			h := <-p.askSharesChan
-			for _, pr := range p.peers {
-				stops := make([]*chainhash.Hash, 0)
-				tip := p.shareChain.GetTipHash()
-				if tip != nil {
-					stops = append(stops, tip)
-				}
-				pr.Connection.Outgoing <- &wire.MsgShareReq{
-					ID:      util.GetRandomId(),
-					Parents: 1000,
-					Stops:   stops,
-					Hashes:  []*chainhash.Hash{h},
-				}
-			}
-		}
-		time.Sleep(time.Second * 1)
+func (pm *PeerManager) TryPeer(p string) {
+	pm.peersMutex.Lock()
+	delete(pm.possiblePeers, p)
+	if _, ok := pm.peers[p]; ok {
+		pm.peersMutex.Unlock()
+		return
 	}
-}
+	pm.peersMutex.Unlock()
 
-func (p *PeerManager) AskForShare(h *chainhash.Hash) {
-	p.askSharesChan <- h
-}
+	logging.Debugf("Trying peer %s", p)
 
-func (p *PeerManager) GetPossiblePeer() wire.Addr {
-	for _, pos := range p.possiblePeers {
-		alreadyAPeer := false
-		for _, pr := range p.peers {
-			if pr.RemoteIP.String() == pos.Address.Address.String() {
-				alreadyAPeer = true
-				break
-			}
-		}
-		if !alreadyAPeer {
-			return pos
-		}
+	remotePort := pm.activeNetwork.StandardP2PPort
+	var remoteAddr string
+	if strings.Contains(p, ":") {
+		remoteAddr = fmt.Sprintf("[%s]:%d", p, remotePort)
+	} else {
+		remoteAddr = fmt.Sprintf("%s:%d", p, remotePort)
 	}
-	return wire.Addr{Timestamp: -1}
-}
 
-func (p *PeerManager) RemovePossiblePeer(addr wire.Addr) {
-	p.possiblePeersLock.Lock()
-	newPossiblePeers := make([]wire.Addr, 0)
-	for _, p := range p.possiblePeers {
-		if p.Address.Address.String() != addr.Address.Address.String() {
-			newPossiblePeers = append(newPossiblePeers, p)
-		}
-	}
-	p.possiblePeers = newPossiblePeers
-	p.possiblePeersLock.Unlock()
-}
-
-func (p *PeerManager) AddPeer(ip net.IP) error {
-	return p.AddPeerWithPort(ip, 0)
-}
-
-func (p *PeerManager) AddPeerWithPort(ip net.IP, port int) error {
-	newPeers := make(chan []wire.Addr, 10)
-	closed := make(chan bool, 1)
-	peer, err := NewPeer(ip, port, p.Network, newPeers, closed, p.shareChain.SharesChannel)
+	conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
 	if err != nil {
-		return err
-	}
-	p.peersLock.Lock()
-	p.peers = append(p.peers, peer)
-	p.peersLock.Unlock()
-
-	stops := make([]*chainhash.Hash, 0)
-	tip := p.shareChain.GetTipHash()
-	skipAsk := false
-	if tip != nil {
-		stops = append(stops, tip)
-		if tip.IsEqual(peer.versionInfo.BestShareHash) {
-			skipAsk = true
-		}
+		logging.Warnf("Failed to connect to %s: %v", remoteAddr, err)
+		return
 	}
 
-	if !skipAsk {
-		peer.Connection.Outgoing <- &wire.MsgShareReq{
-			ID:      util.GetRandomId(),
-			Parents: 1000,
-			Stops:   stops,
-			Hashes:  []*chainhash.Hash{peer.versionInfo.BestShareHash},
-		}
+	peer, err := NewPeer(conn, pm.activeNetwork)
+	if err != nil {
+		logging.Warnf("Handshake with %s failed: %v", remoteAddr, err)
+		return
 	}
 
-	go p.NewPeersHandler(newPeers)
-	go p.ClosedHandler(peer, closed)
-	return nil
+	pm.peersMutex.Lock()
+	pm.peers[p] = peer
+	pm.peersMutex.Unlock()
+
+	go pm.handlePeerMessages(peer)
 }
 
-func (p *PeerManager) NewPeersHandler(c chan []wire.Addr) {
-	for a := range c {
-		p.possiblePeersLock.Lock()
-		p.possiblePeers = append(p.possiblePeers, a...)
-		p.possiblePeersLock.Unlock()
-	}
-
-}
-
-func (p *PeerManager) ClosedHandler(peer *Peer, c chan bool) {
-	<-c
-	p.peersLock.Lock()
-	newPeers := make([]*Peer, 0)
-	for _, p := range p.peers {
-		if p != peer {
-			newPeers = append(newPeers, p)
+func (pm *PeerManager) handlePeerMessages(p *Peer) {
+	for msg := range p.Connection.Incoming {
+		switch t := msg.(type) {
+		case *wire.MsgAddrs:
+			logging.Infof("Received addrs message with %d new peers from %s", len(t.Addresses), p.RemoteIP)
+			pm.AddPossiblePeers(t.Addresses)
+		default:
+			logging.Debugf("Received unhandled message of type %T", t)
 		}
 	}
-	p.peers = newPeers
-	p.peersLock.Unlock()
 }
 
-func (p *PeerManager) GetPeerCount() int {
-	return len(p.peers)
+func (pm *PeerManager) AddPossiblePeers(addrs []wire.Addr) {
+	pm.peersMutex.Lock()
+	defer pm.peersMutex.Unlock()
+
+	for _, addr := range addrs {
+		// The Addr type contains a P2PoolAddress, which in turn contains the net.IP
+		ip := addr.Address.Address
+
+		if ip.IsLoopback() {
+			continue
+		}
+
+		peerAddress := ip.String()
+
+		if _, exists := pm.peers[peerAddress]; !exists {
+			if _, exists := pm.possiblePeers[peerAddress]; !exists {
+				logging.Debugf("Adding possible peer: %s", peerAddress)
+				pm.possiblePeers[peerAddress] = true
+			}
+		}
+	}
+}
+
+func (pm *PeerManager) GetPeerCount() int {
+	pm.peersMutex.RLock()
+	defer pm.peersMutex.RUnlock()
+	return len(pm.peers)
+}
+
+func (pm *PeerManager) AskForShare(s *chainhash.Hash) {
+	logging.Debugf("TODO: Ask network for share %s", s.String())
 }

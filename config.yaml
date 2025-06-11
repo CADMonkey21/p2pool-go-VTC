@@ -1,4 +1,0 @@
-network: vertcoin   # See list of supported networks in the README
-testnet: false
-rpcUser: somevalue
-rpcPass: supersecurepassword
