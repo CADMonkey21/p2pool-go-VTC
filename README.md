@@ -10,13 +10,13 @@ Currently the following things are planned/completed:
 
 - [X] Allow connecting to p2pool nodes (wire protocol implementation)
 - [X] Peermanager for managing connections to other peers
-- [X] Retrieving the sharechain from other peers
-- [X] Building the sharechain
-- [X] Validating the sharechain
+- [ ] Retrieving the sharechain from other peers
+- [ ] Building the sharechain
+- [ ] Validating the sharechain
 - [X] Connecting to a fullnode over RPC
 - [X] Retrieve block template from fullnode
 - [ ] Compose block from share data
-- [ ] Stratum server
+- [X] Stratum server
 - [ ] Submit shares to p2pool network
 - [ ] Web frontend
 
