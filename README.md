@@ -26,5 +26,4 @@ If you have any ideas, feel free to submit them as either issues or (better yet)
 
 If you want to support the development of this project, feel free to donate!
 
-Vertcoin: `VoNdwM7b6XSmH5L2geRfAzo1gP7n5A13AQ`
-Bitcoin: `3E2Qfm8BPabZFLoSDtV7f33EYdLysxY3tB`
+Vertcoin: `vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l`
