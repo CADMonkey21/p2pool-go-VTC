@@ -1,30 +1,75 @@
-# P2Pool Implementation in Go
+# p2pool-go-VTC
 
-**WARNING: This is very early pre-beta work. Don't use it yet.**
+This is a Go-based implementation of the p2pool protocol, with initial support for Vertcoin (VTC). The goal is to create a modern, high-performance, and cross-platform p2pool node that is easy to set up and maintain.
 
-This is a re-implementation of P2Pool in Go. Initially this supports Vertcoin, but it's aimed to be multicoin.
+### Current State: Alpha
+
+The node is currently in an **alpha stage**. The core P2P, RPC, and Stratum functionalities are working. You can compile and run the node, connect it to `vertcoind`, and have a miner connect to it. The pool will serve jobs to the miner, and the miner will be able to submit shares back.
+
+**The primary missing feature is the cryptographic validation of submitted shares and broadcasting them to the P2P network.**
+
+## Prerequisites
+
+1.  A running and fully synced `vertcoind` instance with RPC enabled in `vertcoin.conf`.
+2.  The `verthash.dat` file. The pool will generate this on first run, but it's much faster to copy it from your `~/.vertcoin/` directory.
+3.  An installation of the [Go language](https://go.dev/doc/install) (version 1.18 or newer).
+
+## Installation & Running
+
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/CADMonkey21/p2pool-go-VTC.git](https://github.com/CADMonkey21/p2pool-go-VTC.git)
+    cd p2pool-go-VTC
+    ```
+
+2.  **Install dependencies:**
+    ```bash
+    go mod tidy
+    ```
+
+3.  **Configure the pool:**
+    Copy the example configuration file and edit it with your personal settings (RPC credentials, payout address, etc.).
+    ```bash
+    cp config.example.yaml config.yaml
+    nano config.yaml
+    ```
+
+4.  **Run the pool:**
+    ```bash
+    go run .
+    ```
 
 ## Status
 
-Currently the following things are planned/completed:
+Here is a more detailed breakdown of the project's current status:
 
-- [X] Allow connecting to p2pool nodes (wire protocol implementation)
-- [X] Peermanager for managing connections to other peers
-- [X] Retrieving the sharechain from other peers
-- [X] Building the sharechain
-- [X] Validating the sharechain
-- [X] Connecting to a fullnode over RPC
-- [X] Retrieve block template from fullnode
-- [ ] Compose block from share data
-- [ ] Stratum server
-- [ ] Submit shares to p2pool network
-- [ ] Web frontend
+- **P2P Layer**
+    - [x] Wire protocol implementation for P2P messages
+    - [x] Peer manager for connecting to seed nodes and maintaining connections
+    - [x] Correctly handle P2P protocol version `3501`
+    - [x] Process `addrs` messages to discover new peers
+    - [ ] Retrieving and processing the sharechain from peers
+- **RPC Client**
+    - [x] Connecting to a fullnode over RPC
+    - [x] Retrieve block template from fullnode (`getblocktemplate`)
+- **Stratum Server**
+    - [x] Listen for and accept miner connections
+    - [x] Handle `mining.subscribe` and `mining.authorize` handshake
+    - [x] Send jobs (`mining.notify`) to authorized miners
+    - [x] Receive share submissions (`mining.submit`) from miners
+- **Share & Block Logic**
+    - [ ] Validate submitted shares (cryptographic verification)
+    - [ ] Submit valid shares to the P2P network
+    * [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
+- **Frontend**
+    - [ ] Web frontend for statistics
 
-If you have any ideas, feel free to submit them as either issues or (better yet) pull requests.
+## Contributing
+
+Contributions are welcome! Please feel free to open an issue to discuss a bug or new feature, or submit a pull request with your improvements.
 
 ## Donate
 
 If you want to support the development of this project, feel free to donate!
 
-Vertcoin: `VoNdwM7b6XSmH5L2geRfAzo1gP7n5A13AQ`
-Bitcoin: `3E2Qfm8BPabZFLoSDtV7f33EYdLysxY3tB`
+**Vertcoin:** `vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l`
