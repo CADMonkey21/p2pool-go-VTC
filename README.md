@@ -4,17 +4,9 @@ This is a Go-based implementation of the p2pool protocol, with initial support f
 
 ### Current State: Alpha (Functional)
 
-The node is currently in a **functional alpha stage**. The core P2P, RPC, and Stratum functionalities are working together. The application can be compiled and run to create a functional mining pool.
+The node is currently in a **functional alpha stage**. The core P2P, RPC, and Stratum functionalities are working together. You can compile and run the node, connect it to `vertcoind`, and have a miner connect to it. The pool will serve jobs to the miner, accept submissions, and automatically adjust the difficulty based on the miner's hashrate.
 
-**What's Working:**
-* Connects to `vertcoind` and continuously fetches block templates.
-* Runs a full Stratum server that accepts connections from miners.
-* Handles the `mining.subscribe` and `mining.authorize` handshake.
-* Serves mining jobs to miners based on live network data.
-* Receives share submissions from miners.
-* **Performs full cryptographic validation of submitted shares against the job difficulty.**
-
-The primary missing feature is the broadcasting of these valid shares to the P2P network, which is the final step to make this a profitable, collaborative pool.
+**The primary missing feature is the broadcasting of validated shares to the P2P network, which is required for payouts.**
 
 ## Prerequisites
 
@@ -37,7 +29,7 @@ The primary missing feature is the broadcasting of these valid shares to the P2P
     ```
 
 3.  **Configure the pool:**
-    Copy the example configuration file and edit it with your personal settings (RPC credentials, payout address, etc.).
+    Copy the example configuration file and edit it with your personal settings (RPC credentials, vardiff options, etc.).
     ```bash
     cp config.example.yaml config.yaml
     nano config.yaml
@@ -66,8 +58,9 @@ Here is a more detailed breakdown of the project's current status:
     - [x] Listen for and accept miner connections
     - [x] Handle `mining.subscribe` and `mining.authorize` handshake
     - [x] Send jobs (`mining.notify`) to authorized miners
+    - [x] **Implement Variable Difficulty (Vardiff) engine**
     - [x] Receive share submissions (`mining.submit`) from miners
-    - [x] **Validate submitted shares (Full cryptographic verification)**
+    - [x] Validate submitted shares (Full cryptographic verification)
 - **Next Steps**
     - [ ] Add accepted shares to the local sharechain
     - [ ] Submit valid shares to the P2P network

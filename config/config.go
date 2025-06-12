@@ -8,44 +8,45 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config struct holds all configuration variables loaded from config.yaml
-// The `yaml:"..."` tags are essential and must match the keys in your config file.
-type Config struct {
-	Network     string  `yaml:"network"`
-	Testnet     bool    `yaml:"testnet"`
-	RPCUser     string  `yaml:"rpcUser"`
-	RPCPass     string  `yaml:"rpcPass"`
-	RPCHost     string  `yaml:"rpcHost"`
-	RPCPort     int     `yaml:"rpcPort"`
-	PoolAddress string  `yaml:"poolAddress"`
-	P2PPort     int     `yaml:"p2pPort"`
-	StratumPort int     `yaml:"stratumPort"`
-	Fee         float64 `yaml:"fee"`
+// VardiffConfig holds the settings for the variable difficulty engine.
+type VardiffConfig struct {
+	TargetTime   float64 `yaml:"targetTime"`
+	RetargetTime float64 `yaml:"retargetTime"`
+	Variance     float64 `yaml:"variance"`
+	MinDiff      float64 `yaml:"minDiff"`
 }
 
-// Active is the globally accessible configuration instance.
+type Config struct {
+	Network     string `yaml:"network"`
+	RPCUser     string `yaml:"rpcUser"`
+	RPCPass     string `yaml:"rpcPass"`
+	Testnet     bool   `yaml:"testnet"`
+	RPCHost     string `yaml:"rpcHost"`
+	RPCPort     int    `yaml:"rpcPort"`
+	PoolAddress string `yaml:"poolAddress"`
+	P2PPort     int    `yaml:"p2pPort"`
+	StratumPort int    `yaml:"stratumPort"`
+	Fee         float64 `yaml:"fee"`
+	// Embed the VardiffConfig struct
+	Vardiff     VardiffConfig `yaml:"vardiff"`
+}
+
 var Active Config
 
-// LoadConfig reads the config.yaml file, decodes it into the Active Config struct,
-// and then overrides any values with command-line flags if they are provided.
 func LoadConfig() {
-	// Load config file first
 	file, err := os.Open("config.yaml")
 	if err != nil {
-		logging.Warnf("No config.yaml file found. Using defaults and command-line flags.")
+		logging.Warnf("No config.yaml file found.")
 	} else {
 		defer file.Close()
 		decoder := yaml.NewDecoder(file)
 		err = decoder.Decode(&Active)
 		if err != nil {
-			// This is a fatal error because the config is unreadable.
-			logging.Fatalf("Failed to decode config.yaml: %v", err)
+			logging.Errorf("Failed to decode config.yaml: %v", err)
 		}
 	}
-
-	// Override config file if started with flags
-	// Note: We are not adding flags for all the new options yet,
-	// but the framework is here. The config file is the primary method.
+	
+	// Command-line flags can still override some settings
 	net := flag.String("n", "", "Network")
 	testnet := flag.Bool("testnet", false, "Testnet")
 	user := flag.String("u", "", "RPC Username")
@@ -63,12 +64,5 @@ func LoadConfig() {
 	}
 	if *pass != "" {
 		Active.RPCPass = *pass
-	}
-
-	// It's good practice to log the network being used.
-	if Active.Network == "" {
-		logging.Fatalf("Error: Network is not specified in config.yaml or command-line flags.")
-	} else {
-		logging.Infof("Network configured for: %s", Active.Network)
 	}
 }

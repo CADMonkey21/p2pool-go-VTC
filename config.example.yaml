@@ -37,3 +37,15 @@ p2pPort: 19172
 
 # stratumPort is for your miners to connect to.
 stratumPort: 9172
+
+
+# --- Variable Difficulty Settings ---
+vardiff:
+  # Target time in seconds for a miner to find a share.
+  targetTime: 15.0
+  # How often to check and adjust a miner's difficulty (in seconds).
+  retargetTime: 120.0
+  # Allowed variance from target time before retargeting (e.g., 0.25 means +/- 25%).
+  variance: 0.25
+  # The absolute minimum difficulty to assign to any miner.
+  minDiff: 0.1

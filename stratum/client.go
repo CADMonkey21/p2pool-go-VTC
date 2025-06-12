@@ -12,19 +12,21 @@ import (
 
 // Client represents a single connected miner.
 type Client struct {
-	Conn           net.Conn
-	Encoder        *json.Encoder
-	Reader         *bufio.Reader
-	ID             uint64
-	SubscriptionID string
-	ExtraNonce1    string
-	Nonce2Size     int
-	Mutex          sync.Mutex
-	WorkerName     string
-	Authorized     bool
-	LastActivity   time.Time
-	// Change from map[string]bool to map[string]*Job to store full job details
-	ActiveJobs     map[string]*Job
+	Conn             net.Conn
+	Encoder          *json.Encoder
+	Reader           *bufio.Reader
+	ID               uint64
+	SubscriptionID   string
+	ExtraNonce1      string
+	Nonce2Size       int
+	Mutex            sync.Mutex
+	WorkerName       string
+	Authorized       bool
+	LastActivity     time.Time
+	ActiveJobs       map[string]*Job
+	// --- NEW Vardiff Fields ---
+	CurrentDifficulty float64
+	ShareTimestamps   []int64 // A list of timestamps of the last N shares
 }
 
 // NewClient creates a new Stratum client object.
@@ -33,15 +35,17 @@ func NewClient(conn net.Conn) *Client {
 	rand.Read(extraNonce1Bytes)
 
 	return &Client{
-		Conn:           conn,
-		Encoder:        json.NewEncoder(conn),
-		Reader:         bufio.NewReader(conn),
-		ID:             rand.Uint64(),
-		ExtraNonce1:    hex.EncodeToString(extraNonce1Bytes),
-		Nonce2Size:     4,
-		Authorized:     false,
-		LastActivity:   time.Now(),
-		// Initialize the new map type
-		ActiveJobs:     make(map[string]*Job),
+		Conn:              conn,
+		Encoder:           json.NewEncoder(conn),
+		Reader:            bufio.NewReader(conn),
+		ID:                rand.Uint64(),
+		ExtraNonce1:       hex.EncodeToString(extraNonce1Bytes),
+		Nonce2Size:        4,
+		Authorized:        false,
+		LastActivity:      time.Now(),
+		ActiveJobs:        make(map[string]*Job),
+		// --- NEW Vardiff Initialization ---
+		CurrentDifficulty: -1, // Set to -1 to indicate it hasn't been set yet
+		ShareTimestamps:   make([]int64, 0),
 	}
 }
