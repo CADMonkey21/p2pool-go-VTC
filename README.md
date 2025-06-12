@@ -2,11 +2,19 @@
 
 This is a Go-based implementation of the p2pool protocol, with initial support for Vertcoin (VTC). The goal is to create a modern, high-performance, and cross-platform p2pool node that is easy to set up and maintain.
 
-### Current State: Alpha
+### Current State: Alpha (Functional)
 
-The node is currently in an **alpha stage**. The core P2P, RPC, and Stratum functionalities are working. You can compile and run the node, connect it to `vertcoind`, and have a miner connect to it. The pool will serve jobs to the miner, and the miner will be able to submit shares back.
+The node is currently in a **functional alpha stage**. The core P2P, RPC, and Stratum functionalities are working together. The application can be compiled and run to create a functional mining pool.
 
-**The primary missing feature is the cryptographic validation of submitted shares and broadcasting them to the P2P network.**
+**What's Working:**
+* Connects to `vertcoind` and continuously fetches block templates.
+* Runs a full Stratum server that accepts connections from miners.
+* Handles the `mining.subscribe` and `mining.authorize` handshake.
+* Serves mining jobs to miners based on live network data.
+* Receives share submissions from miners.
+* **Performs full cryptographic validation of submitted shares against the job difficulty.**
+
+The primary missing feature is the broadcasting of these valid shares to the P2P network, which is the final step to make this a profitable, collaborative pool.
 
 ## Prerequisites
 
@@ -23,6 +31,7 @@ The node is currently in an **alpha stage**. The core P2P, RPC, and Stratum func
     ```
 
 2.  **Install dependencies:**
+    This command will find and download all the necessary libraries.
     ```bash
     go mod tidy
     ```
@@ -38,6 +47,7 @@ The node is currently in an **alpha stage**. The core P2P, RPC, and Stratum func
     ```bash
     go run .
     ```
+    You can now point your Verthash-compatible miner to your pool's IP address on the Stratum port you configured (default is `9172`).
 
 ## Status
 
@@ -52,16 +62,16 @@ Here is a more detailed breakdown of the project's current status:
 - **RPC Client**
     - [x] Connecting to a fullnode over RPC
     - [x] Retrieve block template from fullnode (`getblocktemplate`)
-- **Stratum Server**
+- **Stratum Server & Share Logic**
     - [x] Listen for and accept miner connections
     - [x] Handle `mining.subscribe` and `mining.authorize` handshake
     - [x] Send jobs (`mining.notify`) to authorized miners
     - [x] Receive share submissions (`mining.submit`) from miners
-- **Share & Block Logic**
-    - [ ] Validate submitted shares (cryptographic verification)
+    - [x] **Validate submitted shares (Full cryptographic verification)**
+- **Next Steps**
+    - [ ] Add accepted shares to the local sharechain
     - [ ] Submit valid shares to the P2P network
-    * [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
-- **Frontend**
+    - [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
     - [ ] Web frontend for statistics
 
 ## Contributing
