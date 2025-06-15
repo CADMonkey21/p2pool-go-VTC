@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	// "github.com/btcsuite/btcd/blockchain" // Removed unused import
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	btcwire "github.com/btcsuite/btcd/wire"
 	"github.com/gertjaap/p2pool-go/logging"
