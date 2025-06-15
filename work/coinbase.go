@@ -2,29 +2,12 @@ package work
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
-	// "github.com/gertjaap/p2pool-go/logging" // This line is now removed
 )
-
-// --- HASHING FUNCTIONS ---
-func DblSha256(b []byte) []byte {
-	a := sha256.Sum256(b)
-	c := sha256.Sum256(a[:])
-	return c[:]
-}
-
-func ReverseBytes(b []byte) []byte {
-	r := make([]byte, len(b))
-	for i := 0; i < len(b); i++ {
-		r[i] = b[len(b)-1-i]
-	}
-	return r
-}
 
 // CreateCoinbaseTx constructs the special coinbase transaction for a block.
 func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, extraNonce2 string) ([]byte, error) {
@@ -87,3 +70,4 @@ func (b *ScriptBuilder) AddOp(op byte) *ScriptBuilder {
 func (b *ScriptBuilder) Script() []byte {
 	return b.script
 }
+

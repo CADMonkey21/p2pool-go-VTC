@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// Client represents a single connected miner.
 type Client struct {
 	Conn             net.Conn
 	Encoder          *json.Encoder
@@ -24,12 +23,10 @@ type Client struct {
 	Authorized       bool
 	LastActivity     time.Time
 	ActiveJobs       map[string]*Job
-	// --- NEW Vardiff Fields ---
 	CurrentDifficulty float64
-	ShareTimestamps   []int64 // A list of timestamps of the last N shares
+	ShareTimestamps   []int64
 }
 
-// NewClient creates a new Stratum client object.
 func NewClient(conn net.Conn) *Client {
 	extraNonce1Bytes := make([]byte, 4)
 	rand.Read(extraNonce1Bytes)
@@ -44,8 +41,7 @@ func NewClient(conn net.Conn) *Client {
 		Authorized:        false,
 		LastActivity:      time.Now(),
 		ActiveJobs:        make(map[string]*Job),
-		// --- NEW Vardiff Initialization ---
-		CurrentDifficulty: -1, // Set to -1 to indicate it hasn't been set yet
+		CurrentDifficulty: -1,
 		ShareTimestamps:   make([]int64, 0),
 	}
 }

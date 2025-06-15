@@ -2,18 +2,15 @@
 
 This is a Go-based implementation of the p2pool protocol, with initial support for Vertcoin (VTC). The goal is to create a modern, high-performance, and cross-platform p2pool node that is easy to set up and maintain.
 
-### Current State: Alpha (Functional)
+### Current State: Alpha (Core Complete)
 
-The node is currently in a **functional alpha stage**. The core P2P, RPC, and Stratum functionalities are working together. The program can be compiled and run to create a functional mining pool that can **successfully connect to other p2pool peers**.
+The node is currently in a **functional alpha stage**. All core engine components are complete and working as demonstrated on the live network. The application can be compiled and run to create a functional mining pool that:
+* Connects to `vertcoind` and receives work.
+* Establishes stable P2P connections with other live nodes.
+* Serves jobs to miners and dynamically adjusts their difficulty (Vardiff).
+* **Performs full cryptographic validation of submitted shares and accepts valid work.**
 
-**What's Working:**
-* Connects to `vertcoind` and continuously fetches block templates.
-* **Establishes stable P2P connections** with other nodes on the network.
-* Runs a full Stratum server that accepts miners, handles the handshake, and sends jobs.
-* Implements a working Variable Difficulty (Vardiff) engine.
-* Accepts share submissions from miners (full cryptographic validation is the next major step).
-
-**Next Steps:** The immediate focus is on implementing the logic to process and broadcast shares across the P2P network.
+The core engine is complete. The next phase of development will focus on implementing the application logic for the p2pool sharechain (broadcasting found shares, processing shares from peers, and submitting blocks).
 
 ## Prerequisites
 
@@ -30,7 +27,6 @@ The node is currently in a **functional alpha stage**. The core P2P, RPC, and St
     ```
 
 2.  **Install dependencies:**
-    This command will find and download all the necessary libraries.
     ```bash
     go mod tidy
     ```
@@ -60,15 +56,14 @@ Here is a more detailed breakdown of the project's current status:
     - [ ] Process incoming `shares` messages from peers
 - **RPC Client**
     - [x] Connecting to a fullnode over RPC
-    - [x] Retrieve block template from fullnode (`getblocktemplate`)
+    - [x] Retrieve block template from fullnode
 - **Stratum Server & Share Logic**
     - [x] Listen for and accept miner connections
     - [x] Handle `mining.subscribe` and `mining.authorize` handshake
-    - [x] Send jobs (`mining.notify`) to authorized miners
+    - [x] Send jobs (`mining.notify`) to authorized miners and broadcast new jobs
     - [x] Implement Variable Difficulty (Vardiff) engine
-    - [x] Receive share submissions (`mining.submit`) from miners
+    - [x] **Full cryptographic validation of submitted shares**
 - **Next Steps**
-    - [ ] Add full cryptographic validation for submitted shares
     - [ ] Add accepted shares to the local sharechain
     - [ ] Broadcast valid shares to the P2P network
     - [ ] Compose and submit a block to `vertcoind` when a block-finding share is found

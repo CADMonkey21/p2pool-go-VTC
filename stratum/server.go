@@ -1,9 +1,11 @@
 package stratum
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"math/rand"
 	"net"
 	"sync"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
+	p2pnet "github.com/gertjaap/p2pool-go/net"
 	"github.com/gertjaap/p2pool-go/p2p"
 	"github.com/gertjaap/p2pool-go/work"
 )
@@ -82,19 +85,19 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 		s.clientsMutex.Lock()
 		delete(s.clients, client.ID)
 		s.clientsMutex.Unlock()
-		conn.Close()
+		client.Conn.Close()
 		logging.Infof("Stratum: Miner %s disconnected.", conn.RemoteAddr())
 	}()
 
 	go s.vardiffLoop(client)
 	decoder := json.NewDecoder(client.Reader)
 	for {
-		conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
+		client.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 		var req JSONRPCRequest
 		err := decoder.Decode(&req)
 		if err != nil {
 			if err != io.EOF {
-				logging.Warnf("Stratum: Error reading from miner %s: %v", conn.RemoteAddr(), err)
+				logging.Warnf("Stratum: Error reading from miner %s: %v", client.Conn.RemoteAddr(), err)
 			}
 			return
 		}
@@ -115,12 +118,47 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
-	
-	logging.Infof("Stratum: Received mining.submit from %s", c.WorkerName)
-	c.ShareTimestamps = append(c.ShareTimestamps, time.Now().Unix())
 
-	response := JSONRPCResponse{ID: req.ID, Result: true, Error: nil}
-	err := c.Encoder.Encode(response)
+	var params []string
+	err := json.Unmarshal(*req.Params, &params)
+	if err != nil || len(params) < 5 {
+		logging.Warnf("Stratum: Malformed submit params from %s", c.Conn.RemoteAddr())
+		return
+	}
+
+	workerName, jobID, extraNonce2, nTime, nonceHex := params[0], params[1], params[2], params[3], params[4]
+	logging.Infof("Stratum: Received mining.submit from %s for job %s", workerName, jobID)
+	
+	job, jobExists := c.ActiveJobs[jobID]
+	if !jobExists {
+		logging.Warnf("Stratum: Received submission for unknown jobID %s", jobID)
+		return
+	}
+
+	header, _, err := work.CreateHeader(job.BlockTemplate, c.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress)
+	if err != nil {
+		logging.Errorf("Stratum: Failed to create block header for validation: %v", err)
+		return
+	}
+
+	powHash := p2pnet.ActiveNetwork.POWHash(header)
+	logging.Debugf("PoW hash for submission: %s", hex.EncodeToString(work.ReverseBytes(powHash)))
+
+	shareTarget := work.DiffToTarget(c.CurrentDifficulty)
+	powHashInt := new(big.Int)
+	powHashInt.SetBytes(work.ReverseBytes(powHash))
+
+	shareAccepted := false
+	if powHashInt.Cmp(shareTarget) <= 0 {
+		logging.Infof("Stratum: SHARE ACCEPTED! Valid work from %s", c.WorkerName)
+		c.ShareTimestamps = append(c.ShareTimestamps, time.Now().Unix())
+		shareAccepted = true
+	} else {
+		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
+	}
+	
+	response := JSONRPCResponse{ID: req.ID, Result: shareAccepted}
+	err = c.Encoder.Encode(response)
 	if err != nil {
 		logging.Warnf("Stratum: Failed to send submit response to %s: %v", c.Conn.RemoteAddr(), err)
 	}
@@ -147,8 +185,8 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	var params []string
 	err := json.Unmarshal(*req.Params, &params)
 	if err != nil || len(params) < 1 {
-		logging.Warnf("Stratum: Failed to parse authorize params from %s", c.Conn.RemoteAddr())
 		c.Mutex.Unlock()
+		logging.Warnf("Stratum: Failed to parse authorize params from %s", c.Conn.RemoteAddr())
 		return
 	}
 	c.WorkerName = params[0]
@@ -160,13 +198,10 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	}
 	logging.Infof("Stratum: Miner %s successfully authorized for worker %s", c.Conn.RemoteAddr(), c.WorkerName)
 	
-	// Unlock before making network calls to prevent deadlocks
 	c.Mutex.Unlock() 
 	
-	// --- THIS IS THE FIX ---
-	// Send the initial difficulty and the first mining job.
 	s.sendDifficulty(c, config.Active.Vardiff.MinDiff)
-	s.sendMiningJob(c, s.workManager.GetLatestTemplate(), true)
+	go s.sendMiningJob(c, s.workManager.GetLatestTemplate(), true)
 }
 
 func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
@@ -180,7 +215,7 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	c.Mutex.Lock()
 	err := c.Encoder.Encode(diffResponse)
 	c.Mutex.Unlock()
-
+	
 	if err != nil {
 		logging.Warnf("Stratum: Failed to send difficulty to %s: %v", c.Conn.RemoteAddr(), err)
 	}
@@ -192,9 +227,8 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		logging.Warnf("Stratum: No block template available, cannot send job to miner %s", c.Conn.RemoteAddr())
 		return
 	}
-
 	jobID := fmt.Sprintf("job%d", rand.Intn(10000))
-	
+
 	c.Mutex.Lock()
 	newJob := &Job{
 		ID:            jobID,
@@ -268,3 +302,4 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 		c.Mutex.Unlock()
 	}
 }
+
