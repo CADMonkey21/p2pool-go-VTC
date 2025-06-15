@@ -3,6 +3,8 @@ package work
 import (
 	"crypto/sha256"
 	"math/big"
+
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 // DblSha256 is a helper for Bitcoin's standard hashing algorithm.
@@ -33,5 +35,36 @@ func DiffToTarget(diff float64) *big.Int {
 
 	target := new(big.Int).Div(num, den)
 	return target
+}
+
+// CalculateMerkleLink computes the merkle branches for a transaction at a given index.
+// The p2pool coinbase is always at index 0.
+func CalculateMerkleLink(hashes [][]byte) ([]*chainhash.Hash, error) {
+	branches := []*chainhash.Hash{}
+	index := 0
+	for len(hashes) > 1 {
+		if index%2 == 1 {
+			h, _ := chainhash.NewHash(hashes[index-1])
+			branches = append(branches, h)
+		} else if index < len(hashes)-1 {
+			h, _ := chainhash.NewHash(hashes[index+1])
+			branches = append(branches, h)
+		}
+
+		var nextLevel [][]byte
+		for i := 0; i < len(hashes); i += 2 {
+			if i+1 < len(hashes) {
+				combined := append(hashes[i], hashes[i+1]...)
+				newHash := DblSha256(combined)
+				nextLevel = append(nextLevel, newHash)
+			} else {
+				// This handles an odd number of hashes in a level
+				nextLevel = append(nextLevel, hashes[i])
+			}
+		}
+		hashes = nextLevel
+		index /= 2
+	}
+	return branches, nil
 }
 

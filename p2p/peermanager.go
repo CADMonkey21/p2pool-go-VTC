@@ -36,7 +36,6 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	return pm
 }
 
-// Broadcast sends a P2P message to all connected peers.
 func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
 	pm.peersMutex.RLock()
 	defer pm.peersMutex.RUnlock()

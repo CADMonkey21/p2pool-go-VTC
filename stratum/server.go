@@ -261,7 +261,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	if err != nil {
 		logging.Warnf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
 	}
-	logging.Infof("Stratum: Sent new job %s to worker %s", c.WorkerName, jobID)
+	logging.Infof("Stratum: Sent new job %s to worker %s", jobID, c.WorkerName)
 }
 
 func (s *StratumServer) vardiffLoop(c *Client) {

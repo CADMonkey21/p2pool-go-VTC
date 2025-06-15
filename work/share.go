@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"math/big"
-
+	
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
@@ -110,7 +110,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	powHash, _ := chainhash.NewHash(powHashBytes)
 	shareHash, _ := chainhash.NewHash(DblSha256(header))
 	merkleRoot, _ := chainhash.NewHash(merkleRootBytes)
-	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
 
 	share := &wire.Share{
 		Type: 17,
@@ -119,13 +118,13 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 			PreviousBlock: prevBlockHash,
 			Timestamp:     binary.LittleEndian.Uint32(nTimeBytes),
 			Bits:          binary.LittleEndian.Uint32(nBitsBytes),
-			Nonce:         nonceUint32,
+			Nonce:         binary.BigEndian.Uint32(nonceBytes),
 		},
 		ShareInfo: wire.ShareInfo{
 			ShareData: wire.ShareData{
 				PreviousShareHash: shareChain.GetTipHash(),
 				CoinBase:          hex.EncodeToString(coinbaseTxBytes),
-				Nonce:             nonceUint32,
+				Nonce:             binary.BigEndian.Uint32(nonceBytes),
 				PubKeyHash:        make([]byte, 20),
 				Subsidy:           uint64(job.CoinbaseValue),
 				Donation:          uint16(config.Active.Fee * 100),
