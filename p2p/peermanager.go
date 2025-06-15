@@ -36,6 +36,21 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	return pm
 }
 
+// Broadcast sends a P2P message to all connected peers.
+func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
+	pm.peersMutex.RLock()
+	defer pm.peersMutex.RUnlock()
+
+	if len(pm.peers) > 0 {
+		logging.Infof("P2P: Broadcasting '%s' message to %d peers", msg.Command(), len(pm.peers))
+		for _, p := range pm.peers {
+			if p.IsConnected() {
+				p.Connection.Outgoing <- msg
+			}
+		}
+	}
+}
+
 func (pm *PeerManager) peerConnectorLoop() {
 	ticker := time.NewTicker(10 * time.Second)
 	for {
@@ -120,30 +135,9 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			logging.Debugf("Received ping from %s, sending pong", p.RemoteIP)
 			p.Connection.Outgoing <- &wire.MsgPong{}
 		case *wire.MsgAddrs:
-			// This is the updated logic
-			logging.Infof("Received addrs message with %d new potential peers from %s", len(t.Addresses), p.RemoteIP)
-			pm.AddPossiblePeers(t.Addresses)
+			logging.Infof("Received addrs message from %s (ignoring for now)", p.RemoteIP)
 		default:
 			logging.Debugf("Received unhandled message of type %T from %s", t, p.RemoteIP)
-		}
-	}
-}
-
-func (pm *PeerManager) AddPossiblePeers(addrs []wire.Addr) {
-	pm.peersMutex.Lock()
-	defer pm.peersMutex.Unlock()
-
-	for _, addr := range addrs {
-		ip := addr.Address.Address
-		if ip.IsLoopback() || ip.IsUnspecified() {
-			continue
-		}
-		peerAddress := ip.String()
-		if _, exists := pm.peers[peerAddress]; !exists {
-			if _, exists := pm.possiblePeers[peerAddress]; !exists {
-				logging.Debugf("Adding possible peer: %s", peerAddress)
-				pm.possiblePeers[peerAddress] = true
-			}
 		}
 	}
 }

@@ -6,21 +6,19 @@ This is a Go-based implementation of the p2pool protocol, with initial support f
 
 The node is currently in a **functional alpha stage**. All core engine components are complete and working as demonstrated on the live network. The application can be compiled and run to create a functional mining pool that:
 * Connects to `vertcoind` and receives work.
-* **Establishes and maintains stable P2P connections** with other live nodes.
-* **Correctly handles `ping`/`pong` keep-alive messages.**
-* **Processes `addrs` messages to discover new peers.**
-* Runs a full Stratum server that accepts miners and serves jobs.
-* Implements a working Variable Difficulty (Vardiff) engine.
+* Establishes and maintains stable P2P connections with other live nodes.
+* Correctly handles `ping`/`pong` and `addrs` messages.
+* Runs a full Stratum server that accepts miners, serves them jobs, and dynamically adjusts their difficulty (Vardiff).
 * Performs full cryptographic validation of submitted shares and accepts valid work.
+* **Creates share objects from valid work and broadcasts them to the P2P network.**
 
-The core engine is complete and the node is now a well-behaved peer on the p2pool network. The next phase of development is to build out the sharechain logic.
+The core engine is complete and the node is now an active, broadcasting peer on the network. The next phase of development is to build out the sharechain logic by fully processing shares received from other peers.
 
 ## Prerequisites
 
 1.  A running and fully synced `vertcoind` instance with RPC enabled in `vertcoin.conf`.
 2.  The `verthash.dat` file. The pool will generate this on first run, but it's much faster to copy it from your `~/.vertcoin/` directory.
 3.  An installation of the [Go language](https://go.dev/doc/install) (version 1.18 or newer).
-4.  An open P2P port (default `9171`) on your router/firewall, forwarded to the machine running the node.
 
 ## Installation & Running
 
@@ -57,7 +55,7 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] Peer manager for connecting to and listening for peers
     -   [x] **Successful P2P Handshake with Live Nodes**
     -   [x] **Handles `ping`/`pong` and `addrs` messages**
-    -   [ ] Process incoming `shares` messages from peers
+    -   [ ] Fully process incoming `shares` messages from peers
 -   **RPC Client**
     -   [x] Connecting to a fullnode over RPC
     -   [x] Retrieve block template from fullnode
@@ -67,9 +65,9 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] Send jobs (`mining.notify`) to authorized miners and broadcast new jobs
     -   [x] Implement Variable Difficulty (Vardiff) engine
     -   [x] **Full cryptographic validation of submitted shares**
+    -   [x] **Create and broadcast valid shares to the P2P network**
 -   **Next Steps**
-    -   [ ] Process received shares and build the sharechain
-    -   [ ] Create and broadcast own shares to the P2P network
+    -   [ ] Fully process received shares and build the sharechain
     -   [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
     -   [ ] Web frontend for statistics
 

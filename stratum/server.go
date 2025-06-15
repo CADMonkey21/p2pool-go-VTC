@@ -16,6 +16,7 @@ import (
 	p2pnet "github.com/gertjaap/p2pool-go/net"
 	"github.com/gertjaap/p2pool-go/p2p"
 	"github.com/gertjaap/p2pool-go/work"
+	"github.com/gertjaap/p2pool-go/wire"
 )
 
 type StratumServer struct {
@@ -76,11 +77,9 @@ func (s *StratumServer) ListenForMiners() {
 func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 	client := NewClient(conn)
 	logging.Infof("Stratum: New miner connection from %s (ID: %d)", client.Conn.RemoteAddr(), client.ID)
-
 	s.clientsMutex.Lock()
 	s.clients[client.ID] = client
 	s.clientsMutex.Unlock()
-
 	defer func() {
 		s.clientsMutex.Lock()
 		delete(s.clients, client.ID)
@@ -153,6 +152,14 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		logging.Infof("Stratum: SHARE ACCEPTED! Valid work from %s", c.WorkerName)
 		c.ShareTimestamps = append(c.ShareTimestamps, time.Now().Unix())
 		shareAccepted = true
+		
+		newShare, err := work.CreateShare(job.BlockTemplate, c.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress, s.workManager.ShareChain)
+		if err != nil {
+			logging.Errorf("Stratum: Could not create share object: %v", err)
+		} else {
+			s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
+			s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
+		}
 	} else {
 		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
 	}
@@ -206,16 +213,11 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 
 func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
 	c.CurrentDifficulty = diff
-	c.Mutex.Unlock()
-	
-	params := []interface{}{diff}
+	params := []interface{}{c.CurrentDifficulty}
 	diffResponse := JSONRPCResponse{Method: "mining.set_difficulty", Params: params}
-
-	c.Mutex.Lock()
 	err := c.Encoder.Encode(diffResponse)
-	c.Mutex.Unlock()
-	
 	if err != nil {
 		logging.Warnf("Stratum: Failed to send difficulty to %s: %v", c.Conn.RemoteAddr(), err)
 	}
@@ -259,7 +261,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	if err != nil {
 		logging.Warnf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
 	}
-	logging.Infof("Stratum: Sent new job %s to worker %s", jobID, c.WorkerName)
+	logging.Infof("Stratum: Sent new job %s to worker %s", c.WorkerName, jobID)
 }
 
 func (s *StratumServer) vardiffLoop(c *Client) {
