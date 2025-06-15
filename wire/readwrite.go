@@ -7,10 +7,8 @@ import (
 	"net"
 	"time"
 
-	// "github.com/btcsuite/btcd/blockchain" // Removed unused import
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	btcwire "github.com/btcsuite/btcd/wire"
-	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
 	"github.com/gertjaap/p2pool-go/util"
 )
@@ -175,11 +173,12 @@ func ReadShareInfo(r io.Reader, segwit bool) (ShareInfo, error) {
 		}
 	}
 	si.NewTransactionHashes, err = ReadChainHashList(r)
+	// TODO: Read the rest of the ShareInfo fields
 	return si, err
 }
 
 func WriteShareInfo(w io.Writer, si ShareInfo, segwit bool) error {
-	// Placeholder
+	// TODO: Implement full serialization
 	return nil
 }
 
@@ -313,7 +312,6 @@ func ReadShares(r io.Reader) ([]Share, error) {
 		s.Hash, _ = chainhash.NewHash(util.Sha256d(headerBytes[:]))
 		shares = append(shares, s)
 	}
-	logging.Debugf("Successfully deserialized %d shares", len(shares))
 	return shares, nil
 }
 
