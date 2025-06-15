@@ -6,17 +6,21 @@ This is a Go-based implementation of the p2pool protocol, with initial support f
 
 The node is currently in a **functional alpha stage**. All core engine components are complete and working as demonstrated on the live network. The application can be compiled and run to create a functional mining pool that:
 * Connects to `vertcoind` and receives work.
-* Establishes stable P2P connections with other live nodes.
-* Serves jobs to miners and dynamically adjusts their difficulty (Vardiff).
-* **Performs full cryptographic validation of submitted shares and accepts valid work.**
+* **Establishes and maintains stable P2P connections** with other live nodes.
+* **Correctly handles `ping`/`pong` keep-alive messages.**
+* **Processes `addrs` messages to discover new peers.**
+* Runs a full Stratum server that accepts miners and serves jobs.
+* Implements a working Variable Difficulty (Vardiff) engine.
+* Performs full cryptographic validation of submitted shares and accepts valid work.
 
-The core engine is complete. The next phase of development will focus on implementing the application logic for the p2pool sharechain (broadcasting found shares, processing shares from peers, and submitting blocks).
+The core engine is complete and the node is now a well-behaved peer on the p2pool network. The next phase of development is to build out the sharechain logic.
 
 ## Prerequisites
 
 1.  A running and fully synced `vertcoind` instance with RPC enabled in `vertcoin.conf`.
 2.  The `verthash.dat` file. The pool will generate this on first run, but it's much faster to copy it from your `~/.vertcoin/` directory.
 3.  An installation of the [Go language](https://go.dev/doc/install) (version 1.18 or newer).
+4.  An open P2P port (default `9171`) on your router/firewall, forwarded to the machine running the node.
 
 ## Installation & Running
 
@@ -48,26 +52,26 @@ The core engine is complete. The next phase of development will focus on impleme
 
 Here is a more detailed breakdown of the project's current status:
 
-- **P2P Layer**
-    - [x] Wire protocol implementation for P2P messages
-    - [x] Peer manager for connecting to seed nodes
-    - [x] **Successful P2P Handshake with Live Nodes**
-    - [ ] Process incoming `addrs` messages from peers
-    - [ ] Process incoming `shares` messages from peers
-- **RPC Client**
-    - [x] Connecting to a fullnode over RPC
-    - [x] Retrieve block template from fullnode
-- **Stratum Server & Share Logic**
-    - [x] Listen for and accept miner connections
-    - [x] Handle `mining.subscribe` and `mining.authorize` handshake
-    - [x] Send jobs (`mining.notify`) to authorized miners and broadcast new jobs
-    - [x] Implement Variable Difficulty (Vardiff) engine
-    - [x] **Full cryptographic validation of submitted shares**
-- **Next Steps**
-    - [ ] Add accepted shares to the local sharechain
-    - [ ] Broadcast valid shares to the P2P network
-    - [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
-    - [ ] Web frontend for statistics
+-   **P2P Layer**
+    -   [x] Wire protocol implementation for P2P messages
+    -   [x] Peer manager for connecting to and listening for peers
+    -   [x] **Successful P2P Handshake with Live Nodes**
+    -   [x] **Handles `ping`/`pong` and `addrs` messages**
+    -   [ ] Process incoming `shares` messages from peers
+-   **RPC Client**
+    -   [x] Connecting to a fullnode over RPC
+    -   [x] Retrieve block template from fullnode
+-   **Stratum Server & Share Logic**
+    -   [x] Listen for and accept miner connections
+    -   [x] Handle `mining.subscribe` and `mining.authorize` handshake
+    -   [x] Send jobs (`mining.notify`) to authorized miners and broadcast new jobs
+    -   [x] Implement Variable Difficulty (Vardiff) engine
+    -   [x] **Full cryptographic validation of submitted shares**
+-   **Next Steps**
+    -   [ ] Process received shares and build the sharechain
+    -   [ ] Create and broadcast own shares to the P2P network
+    -   [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
+    -   [ ] Web frontend for statistics
 
 ## Contributing
 
