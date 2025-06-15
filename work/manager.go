@@ -9,49 +9,51 @@ import (
 	"github.com/gertjaap/p2pool-go/rpc"
 )
 
-// WorkManager holds block templates and manages fetching new ones.
 type WorkManager struct {
-	rpcClient *rpc.Client
-	// Capitalized TemplateMutex to make it public (accessible from other packages)
+	rpcClient      *rpc.Client
+	ShareChain     *ShareChain
 	Templates      map[string]*BlockTemplate
 	TemplateMutex  sync.RWMutex
+	NewBlockChan   chan *BlockTemplate
 }
 
-// NewWorkManager creates a new manager for handling work templates.
-func NewWorkManager(rpcClient *rpc.Client) *WorkManager {
+func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 	return &WorkManager{
-		rpcClient: rpcClient,
-		Templates: make(map[string]*BlockTemplate),
+		rpcClient:      rpcClient,
+		ShareChain:     sc,
+		Templates:      make(map[string]*BlockTemplate),
+		NewBlockChan:   make(chan *BlockTemplate, 10),
 	}
 }
 
-// GetTemplate returns a block template by its PreviousBlockHash
-func (wm *WorkManager) GetTemplate(prevHash string) (*BlockTemplate, bool) {
+// GetLatestTemplate returns the most recent block template available.
+func (wm *WorkManager) GetLatestTemplate() *BlockTemplate {
 	wm.TemplateMutex.RLock()
 	defer wm.TemplateMutex.RUnlock()
-	template, ok := wm.Templates[prevHash]
-	return template, ok
+
+	var latestTemplate *BlockTemplate
+	for _, t := range wm.Templates {
+		if latestTemplate == nil || t.Height > latestTemplate.Height {
+			latestTemplate = t
+		}
+	}
+	return latestTemplate
 }
 
-// WatchBlockTemplate runs in a loop to continuously fetch the latest block template.
 func (wm *WorkManager) WatchBlockTemplate() {
 	for {
-		params := []interface{}{
-			map[string][]string{"rules": {"segwit", "taproot"}},
-		}
-
-		resp, err := wm.rpcClient.Call("getblocktemplate", params)
+		rawTemplate, err := wm.rpcClient.GetBlockTemplate()
 		if err != nil {
-			logging.Errorf("Error fetching block template: %v", err)
-			time.Sleep(2 * time.Second)
+			logging.Errorf("Error getting block template: %v", err)
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
 		var tmpl BlockTemplate
-		err = json.Unmarshal(resp.Result, &tmpl)
+		err = json.Unmarshal(rawTemplate, &tmpl)
 		if err != nil {
 			logging.Errorf("Error decoding block template: %v", err)
-			time.Sleep(2 * time.Second)
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
@@ -59,6 +61,12 @@ func (wm *WorkManager) WatchBlockTemplate() {
 		if _, exists := wm.Templates[tmpl.PreviousBlockHash]; !exists {
 			logging.Infof("New block template received for height %d", tmpl.Height)
 			wm.Templates[tmpl.PreviousBlockHash] = &tmpl
+			
+			select {
+			case wm.NewBlockChan <- &tmpl:
+			default:
+				logging.Warnf("NewBlockChan is full, dropping new template notification.")
+			}
 		}
 		wm.TemplateMutex.Unlock()
 

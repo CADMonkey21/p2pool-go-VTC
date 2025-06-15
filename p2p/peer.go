@@ -7,23 +7,39 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash" // <-- This line is now corrected
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/gertjaap/p2pool-go/logging"
-	p2poolnet "github.com/gertjaap/p2pool-go/net"
+	p2pnet "github.com/gertjaap/p2pool-go/net"
+	"github.com/gertjaap/p2pool-go/util"
 	"github.com/gertjaap/p2pool-go/wire"
 )
+
+var publicIP net.IP
+var publicIPMutex sync.Once
+
+func getPublicIP() net.IP {
+	publicIPMutex.Do(func() {
+		ip, err := util.GetPublicIP()
+		if err != nil {
+			publicIP = nil
+		} else {
+			publicIP = ip
+		}
+	})
+	return publicIP
+}
 
 type Peer struct {
 	Connection  *wire.P2PoolConnection
 	RemoteIP    net.IP
 	RemotePort  int
-	Network     p2poolnet.Network
+	Network     p2pnet.Network
 	versionInfo *wire.MsgVersion
 	connected   bool
 	connMutex   sync.RWMutex
 }
 
-func NewPeer(conn net.Conn, n p2poolnet.Network) (*Peer, error) {
+func NewPeer(conn net.Conn, n p2pnet.Network) (*Peer, error) {
 	p := Peer{
 		Network:    n,
 		RemoteIP:   conn.RemoteAddr().(*net.TCPAddr).IP,
@@ -70,8 +86,8 @@ func (p *Peer) Close() {
 }
 
 func (p *Peer) BestShare() *chainhash.Hash {
-	if p.versionInfo == nil {
-		return nil
+	if p.versionInfo == nil || p.versionInfo.BestShareHash == nil {
+		return &chainhash.Hash{}
 	}
 	return p.versionInfo.BestShareHash
 }
@@ -89,43 +105,52 @@ func (p *Peer) PingLoop() {
 	}
 }
 
+// Handshake implements the final, correct, p2pool-compatible handshake.
 func (p *Peer) Handshake() error {
-	localAddr := p.Connection.GetLocalAddr().(*net.TCPAddr)
+	localAddr := p.Connection.Connection.LocalAddr().(*net.TCPAddr)
+	
+	addrFrom := localAddr.IP
+	if !p.RemoteIP.IsLoopback() && getPublicIP() != nil {
+		addrFrom = getPublicIP()
+	}
 
 	versionMsg := &wire.MsgVersion{
-		Version:  p.Network.ProtocolVersion,
-		Services: 1,
-		AddrTo: wire.P2PoolAddress{
-			Services: 1,
-			Address:  p.RemoteIP,
-			Port:     int16(p.Network.StandardP2PPort),
-		},
-		AddrFrom: wire.P2PoolAddress{
-			Services: 1,
-			Address:  localAddr.IP,
-			Port:     int16(p.Network.P2PPort),
-		},
-		Nonce:      int64(rand.Uint64()),
-		SubVersion: "p2pool-go/0.1.0",
-		Mode:       0,
+		Version:       p.Network.ProtocolVersion,
+		Services:      0,
+		AddrTo:        wire.P2PoolAddress{Services: 0, Address: p.RemoteIP, Port: int16(p.RemotePort)},
+		AddrFrom:      wire.P2PoolAddress{Services: 0, Address: addrFrom, Port: int16(p.Network.P2PPort)},
+		Nonce:         int64(rand.Uint64()),
+		SubVersion:    "p2pool-go/0.1.0",
+		Mode:          1,
 		BestShareHash: &chainhash.Hash{},
 	}
 
-	logging.Debugf("Sending version message: %+v", versionMsg)
+	// 1. Send our version message.
+	logging.Debugf("Sending version message to %s", p.RemoteIP)
 	p.Connection.Outgoing <- versionMsg
 
+	// 2. Wait for their version message.
+	logging.Debugf("Waiting for version message from peer %s", p.RemoteIP)
 	select {
 	case msg := <-p.Connection.Incoming:
 		var ok bool
 		p.versionInfo, ok = msg.(*wire.MsgVersion)
 		if !ok {
-			return fmt.Errorf("first message received from peer was not version message, but %T", msg)
+			return fmt.Errorf("first message from peer was not version, but %T", msg)
 		}
-		logging.Infof("Handshake successful with %s! Peer is on protocol version %d", p.RemoteIP, p.versionInfo.Version)
-	case <-time.After(30 * time.Second):
-		return fmt.Errorf("timeout waiting for version message from peer")
+		logging.Debugf("Received version message from %s (v: %d, sub: %s)", p.RemoteIP, p.versionInfo.Version, p.versionInfo.SubVersion)
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("timeout waiting for peer's version message")
 	case <-p.Connection.Disconnected:
 		return fmt.Errorf("peer disconnected during handshake")
 	}
+
+	// 3. Send our verack.
+	logging.Debugf("Sending verack to %s", p.RemoteIP)
+	p.Connection.Outgoing <- &wire.MsgVerAck{}
+
+	// 4. Handshake is now COMPLETE. Do not wait for their verack.
+	logging.Infof("Handshake successful with %s! Peer is on protocol version %d", p.RemoteIP, p.versionInfo.Version)
 	return nil
 }
+

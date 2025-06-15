@@ -3,6 +3,8 @@ package net
 import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/gertjaap/p2pool-go/logging"
+	// Import the verthash library here
+	"github.com/gertjaap/verthash-go"
 )
 
 var ActiveNetwork Network
@@ -17,9 +19,11 @@ type Network struct {
 	RPCPort          int
 	WorkerPort       int
 	ChainLength      int
-	Softforks        []string
 	SeedHosts        []string
+	// The POWHash function signature is correct
 	POWHash          func([]byte) []byte
+	// NEW: A field to hold our initialized Verthash instance
+	Verthash         *verthash.Verthash
 }
 
 func SetNetwork(net string, testnet bool) {
@@ -33,26 +37,18 @@ func SetNetwork(net string, testnet bool) {
 	}
 }
 
-// getVtcChainConfig now creates a complete and correct set of parameters for Vertcoin.
 func getVtcChainConfig(testnet bool) chaincfg.Params {
 	if testnet {
-		// TODO: Add testnet params later
 		return chaincfg.TestNet3Params
 	}
 
-	// Start with a copy of Bitcoin's mainnet parameters
 	params := chaincfg.MainNetParams
-
-	// Overwrite the fields specific to Vertcoin
 	params.Name = "vertcoin"
-	params.Net = 0xdab5bffa // Magic number from Vertcoin source
-	params.PubKeyHashAddrID = 0x47 // 71 (V...)
-	params.ScriptHashAddrID = 0x05 // 5 (3...)
-	params.Bech32HRPSegwit = "vtc" // vtc1...
-
-	// These are the new, critical parameters for Segwit address decoding
-	params.WitnessPubKeyHashAddrID = 0x06 // P2WPKH prefix
-	params.WitnessScriptHashAddrID = 0x0A // P2WSH prefix
+	params.PubKeyHashAddrID = 0x47
+	params.ScriptHashAddrID = 0x05
+	params.Bech32HRPSegwit = "vtc"
+	params.WitnessPubKeyHashAddrID = 0x06
+	params.WitnessScriptHashAddrID = 0x0A
 	
 	return params
 }

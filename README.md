@@ -4,9 +4,16 @@ This is a Go-based implementation of the p2pool protocol, with initial support f
 
 ### Current State: Alpha (Functional)
 
-The node is currently in a **functional alpha stage**. The core P2P, RPC, and Stratum functionalities are working together. You can compile and run the node, connect it to `vertcoind`, and have a miner connect to it. The pool will serve jobs to the miner, accept submissions, and automatically adjust the difficulty based on the miner's hashrate.
+The node is currently in a **functional alpha stage**. The core P2P, RPC, and Stratum functionalities are working together. The program can be compiled and run to create a functional mining pool that can **successfully connect to other p2pool peers**.
 
-**The primary missing feature is the broadcasting of validated shares to the P2P network, which is required for payouts.**
+**What's Working:**
+* Connects to `vertcoind` and continuously fetches block templates.
+* **Establishes stable P2P connections** with other nodes on the network.
+* Runs a full Stratum server that accepts miners, handles the handshake, and sends jobs.
+* Implements a working Variable Difficulty (Vardiff) engine.
+* Accepts share submissions from miners (full cryptographic validation is the next major step).
+
+**Next Steps:** The immediate focus is on implementing the logic to process and broadcast shares across the P2P network.
 
 ## Prerequisites
 
@@ -29,7 +36,7 @@ The node is currently in a **functional alpha stage**. The core P2P, RPC, and St
     ```
 
 3.  **Configure the pool:**
-    Copy the example configuration file and edit it with your personal settings (RPC credentials, vardiff options, etc.).
+    Copy the example configuration file and edit it with your personal settings.
     ```bash
     cp config.example.yaml config.yaml
     nano config.yaml
@@ -39,7 +46,7 @@ The node is currently in a **functional alpha stage**. The core P2P, RPC, and St
     ```bash
     go run .
     ```
-    You can now point your Verthash-compatible miner to your pool's IP address on the Stratum port you configured (default is `9172`).
+    Point your Verthash-compatible miner to your pool's IP address on the Stratum port you configured (default is `9172`).
 
 ## Status
 
@@ -47,10 +54,10 @@ Here is a more detailed breakdown of the project's current status:
 
 - **P2P Layer**
     - [x] Wire protocol implementation for P2P messages
-    - [x] Peer manager for connecting to seed nodes and maintaining connections
-    - [x] Correctly handle P2P protocol version `3501`
-    - [x] Process `addrs` messages to discover new peers
-    - [ ] Retrieving and processing the sharechain from peers
+    - [x] Peer manager for connecting to seed nodes
+    - [x] **Successful P2P Handshake with Live Nodes**
+    - [ ] Process incoming `addrs` messages from peers
+    - [ ] Process incoming `shares` messages from peers
 - **RPC Client**
     - [x] Connecting to a fullnode over RPC
     - [x] Retrieve block template from fullnode (`getblocktemplate`)
@@ -58,12 +65,12 @@ Here is a more detailed breakdown of the project's current status:
     - [x] Listen for and accept miner connections
     - [x] Handle `mining.subscribe` and `mining.authorize` handshake
     - [x] Send jobs (`mining.notify`) to authorized miners
-    - [x] **Implement Variable Difficulty (Vardiff) engine**
+    - [x] Implement Variable Difficulty (Vardiff) engine
     - [x] Receive share submissions (`mining.submit`) from miners
-    - [x] Validate submitted shares (Full cryptographic verification)
 - **Next Steps**
+    - [ ] Add full cryptographic validation for submitted shares
     - [ ] Add accepted shares to the local sharechain
-    - [ ] Submit valid shares to the P2P network
+    - [ ] Broadcast valid shares to the P2P network
     - [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
     - [ ] Web frontend for statistics
 
@@ -76,3 +83,4 @@ Contributions are welcome! Please feel free to open an issue to discuss a bug or
 If you want to support the development of this project, feel free to donate!
 
 **Vertcoin:** `vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l`
+

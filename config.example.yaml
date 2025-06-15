@@ -3,7 +3,6 @@
 # How to use:
 # 1. Copy this file to 'config.yaml' (`cp config.example.yaml config.yaml`)
 # 2. Edit your personal 'config.yaml' with your settings below.
-# 3. DO NOT commit your personal 'config.yaml' to git.
 
 # The network to run on. For Vertcoin mainnet, this must be "vertcoin".
 network: "vertcoin"
@@ -11,9 +10,20 @@ network: "vertcoin"
 # Set to true if running on a testnet (requires a testnet daemon).
 testnet: false
 
+# --- P2P Network Peers ---
+# List of initial peers to connect to on the p2pool network.
+peers:
+  - "p2p-usa.xyz"
+  - "p2p-spb.xyz"
+  - "mindcraftblocks.com"
+  - "boofpool.ddns.net"
+  - "vtc-fl.javerity.com"
+  # You can add your local node for testing if you wish
+  # - "127.0.0.1"
+
+
 # --- RPC Connection Settings ---
 # These must match the settings in your vertcoin.conf file.
-# vertcoind must be running with server=1 for RPC to work.
 rpcHost: "127.0.0.1"
 rpcPort: 5888
 rpcUser: "YOUR_RPC_USER"
@@ -23,29 +33,18 @@ rpcPass: "YOUR_RPC_PASSWORD"
 # --- Pool Settings ---
 # Your personal Vertcoin address for receiving pool fee payouts.
 poolAddress: "YOUR_VTC_PAYOUT_ADDRESS"
-
-# The percentage fee the pool will charge miners (e.g., 1.0 for a 1% fee).
 fee: 1.0
 
 
 # --- Port Settings ---
-# The ports your p2pool node will listen on for connections.
-# Make sure these ports are open in your firewall.
-
-# p2pPort is for connecting with other p2pool nodes.
-p2pPort: 19172
-
-# stratumPort is for your miners to connect to.
+# The port your miners will connect to.
 stratumPort: 9172
 
 
 # --- Variable Difficulty Settings ---
 vardiff:
-  # Target time in seconds for a miner to find a share.
   targetTime: 15.0
-  # How often to check and adjust a miner's difficulty (in seconds).
   retargetTime: 120.0
-  # Allowed variance from target time before retargeting (e.g., 0.25 means +/- 25%).
-  variance: 0.25
-  # The absolute minimum difficulty to assign to any miner.
+  variance: 0.30
   minDiff: 0.1
+

@@ -8,7 +8,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// VardiffConfig holds the settings for the variable difficulty engine.
 type VardiffConfig struct {
 	TargetTime   float64 `yaml:"targetTime"`
 	RetargetTime float64 `yaml:"retargetTime"`
@@ -17,23 +16,24 @@ type VardiffConfig struct {
 }
 
 type Config struct {
-	Network     string `yaml:"network"`
-	RPCUser     string `yaml:"rpcUser"`
-	RPCPass     string `yaml:"rpcPass"`
-	Testnet     bool   `yaml:"testnet"`
-	RPCHost     string `yaml:"rpcHost"`
-	RPCPort     int    `yaml:"rpcPort"`
-	PoolAddress string `yaml:"poolAddress"`
-	P2PPort     int    `yaml:"p2pPort"`
-	StratumPort int    `yaml:"stratumPort"`
-	Fee         float64 `yaml:"fee"`
-	// Embed the VardiffConfig struct
+	Network     string        `yaml:"network"`
+	Peers       []string      `yaml:"peers"`
+	RPCUser     string        `yaml:"rpcUser"`
+	RPCPass     string        `yaml:"rpcPass"`
+	Testnet     bool          `yaml:"testnet"`
+	RPCHost     string        `yaml:"rpcHost"`
+	RPCPort     int           `yaml:"rpcPort"`
+	PoolAddress string        `yaml:"poolAddress"`
+	P2PPort     int           `yaml:"p2pPort"` // <-- Re-added this line
+	StratumPort int           `yaml:"stratumPort"`
+	Fee         float64       `yaml:"fee"`
 	Vardiff     VardiffConfig `yaml:"vardiff"`
 }
 
 var Active Config
 
 func LoadConfig() {
+	// This function remains unchanged
 	file, err := os.Open("config.yaml")
 	if err != nil {
 		logging.Warnf("No config.yaml file found.")
@@ -46,7 +46,6 @@ func LoadConfig() {
 		}
 	}
 	
-	// Command-line flags can still override some settings
 	net := flag.String("n", "", "Network")
 	testnet := flag.Bool("testnet", false, "Testnet")
 	user := flag.String("u", "", "RPC Username")

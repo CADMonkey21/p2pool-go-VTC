@@ -1,36 +1,19 @@
 package rpc
 
 import (
-	"time"
-
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/gertjaap/p2pool-go/net"
+	"encoding/json"
 )
 
-func GetBlockTemplate() (*btcjson.GetBlockTemplateResult, error) {
-	req := btcjson.TemplateRequest{
-		Mode: "template",
+// GetBlockTemplate now returns the raw JSON result to avoid an import cycle.
+func (c *Client) GetBlockTemplate() (json.RawMessage, error) {
+	params := []interface{}{
+		map[string][]string{"rules": {"segwit", "taproot"}},
 	}
-	if net.ActiveNetwork.Softforks != nil {
-		req.Rules = net.ActiveNetwork.Softforks
-	}
-
-	blockTemplateResult, err := ConnRPC.GetBlockTemplate(&req)
+	
+	resp, err := c.Call("getblocktemplate", params)
 	if err != nil {
-		return blockTemplateResult, err
+		return nil, err
 	}
 
-	return blockTemplateResult, nil
-}
-
-func SubmitBlock(block *btcutil.Block, options *btcjson.SubmitBlockOptions) error {
-	err := ConnRPC.SubmitBlock(block, options)
-	if err != nil {
-		// Retry one time
-		time.Sleep(1 * time.Second)
-		err = ConnRPC.SubmitBlock(block, options)
-		return err
-	}
-	return nil
+	return resp.Result, nil
 }
