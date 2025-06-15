@@ -11,14 +11,14 @@ The node is currently in a **functional alpha stage**. All core engine component
 * Runs a full Stratum server that accepts miners, serves them jobs, and dynamically adjusts their difficulty (Vardiff).
 * **Performs full cryptographic validation of submitted shares and accepts valid work.**
 
-The core engine is complete. The next phase of development will focus on implementing the sharechain logic (processing shares from peers and broadcasting our own).
+The core engine is complete. The next phase of development will focus on implementing the sharechain logic by fully processing shares received from other peers and correctly serializing shares broadcast to the network.
 
 ## Prerequisites
 
 1.  A running and fully synced `vertcoind` instance with RPC enabled in `vertcoin.conf`.
 2.  The `verthash.dat` file. The pool will generate this on first run, but it's much faster to copy it from your `~/.vertcoin/` directory.
 3.  An installation of the [Go language](https://go.dev/doc/install) (version 1.18 or newer).
-4.  An open P2P port (default `9171`) on your router/firewall, forwarded to the machine running the node.
+4.  An open P2P port (default `9171` or `9346` depending on the p2pool network) on your router/firewall, forwarded to the machine running the node.
 
 ## Installation & Running
 
@@ -66,10 +66,10 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] Implement Variable Difficulty (Vardiff) engine
     -   [x] **Full cryptographic validation of submitted shares**
 -   **Next Steps**
-    -   [ ] Fully process received shares and build the sharechain
-    -   [ ] Create and broadcast own shares to the P2P network
-    -   [ ] Compose and submit a block to `vertcoind` when a block-finding share is found
-    -   [ ] Web frontend for statistics
+    -   [ ] Implement full serialization for outgoing `shares` messages.
+    -   [ ] Fully process received shares and build the sharechain.
+    -   [ ] Compose and submit a block to `vertcoind` when a block-finding share is found.
+    -   [ ] Web frontend for statistics.
 
 ## Contributing
 
