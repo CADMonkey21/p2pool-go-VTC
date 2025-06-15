@@ -2,28 +2,34 @@ package wire
 
 import (
 	"bytes"
-
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 var _ P2PoolMessage = &MsgBestBlock{}
 
 type MsgBestBlock struct {
-	BestBlock *wire.BlockHeader
+	TxHash *chainhash.Hash
 }
 
 func (m *MsgBestBlock) FromBytes(b []byte) error {
 	r := bytes.NewReader(b)
-	m.BestBlock = wire.NewBlockHeader(0, nullHash, nullHash, 0, 0)
-	return m.BestBlock.Deserialize(r)
+	var err error
+	m.TxHash, err = ReadChainHash(r)
+	// If there's an error (e.g., empty payload), TxHash will be nil, which is fine.
+	return err
 }
 
 func (m *MsgBestBlock) ToBytes() ([]byte, error) {
 	var buf bytes.Buffer
-	err := m.BestBlock.Serialize(&buf)
-	return buf.Bytes(), err
+	// Gracefully handle nil hash
+	if m.TxHash == nil {
+		m.TxHash = &nullHash
+	}
+	WriteChainHash(&buf, m.TxHash)
+	return buf.Bytes(), nil
 }
 
 func (m *MsgBestBlock) Command() string {
-	return "bestblock"
+	return "best_block"
 }
+

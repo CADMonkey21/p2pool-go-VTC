@@ -3,57 +3,50 @@ package wire
 import (
 	"bytes"
 	"encoding/binary"
-	"io"
+	"io" // Added missing import
 	"net"
 )
 
 type P2PoolAddress struct {
-	Services int64
+	Services uint64
 	Address  net.IP
 	Port     int16
 }
 
-func (p P2PoolAddress) ToBytes() ([]byte, error) {
-	var b []byte
-	buf := bytes.NewBuffer(b)
-
-	err := binary.Write(buf, binary.LittleEndian, p.Services)
-	if err != nil {
-		return nil, err
-	}
-	err = WriteIPAddr(buf, p.Address)
-	if err != nil {
-		return nil, err
-	}
-	err = binary.Write(buf, binary.LittleEndian, p.Port)
-	if err != nil {
-		return nil, err
-	}
-
+func (addr *P2PoolAddress) ToBytes() ([]byte, error) {
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, addr.Services)
+	WriteIPAddr(&buf, addr.Address) // This will be defined in readwrite.go
+	binary.Write(&buf, binary.BigEndian, addr.Port)
 	return buf.Bytes(), nil
 }
 
+func NewP2PoolAddress(c *net.TCPConn, services uint64) *P2PoolAddress {
+	addr := P2PoolAddress{
+		Services: services,
+		Address:  c.RemoteAddr().(*net.TCPAddr).IP,
+		Port:     int16(c.RemoteAddr().(*net.TCPAddr).Port),
+	}
+	return &addr
+}
+
 func ReadP2PoolAddress(r io.Reader) (P2PoolAddress, error) {
-	a := P2PoolAddress{}
-	err := binary.Read(r, binary.LittleEndian, &a.Services)
+	addr := P2PoolAddress{}
+	var err error
+
+	err = binary.Read(r, binary.LittleEndian, &addr.Services)
 	if err != nil {
-		return a, err
+		return addr, err
+	}
+	addr.Address, err = ReadIPAddr(r) // This will be defined in readwrite.go
+	if err != nil {
+		return addr, err
+	}
+	err = binary.Read(r, binary.BigEndian, &addr.Port)
+	if err != nil {
+		return addr, err
 	}
 
-	a.Address, err = ReadIPAddr(r)
-	if err != nil {
-		return a, err
-	}
-
-	err = binary.Read(r, binary.LittleEndian, &a.Port)
-	if err != nil {
-		return a, err
-	}
-
-	return a, nil
+	return addr, nil
 }
 
-func P2PoolAddressFromBytes(b []byte) (P2PoolAddress, error) {
-	r := bytes.NewReader(b)
-	return ReadP2PoolAddress(r)
-}

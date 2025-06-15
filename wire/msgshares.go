@@ -2,21 +2,12 @@ package wire
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/hex"
-	"fmt"
-	"io"
-	"log"
 	"math/big"
-	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
-
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	btcwire "github.com/btcsuite/btcd/wire"
 	"github.com/gertjaap/p2pool-go/logging"
-	p2pnet "github.com/gertjaap/p2pool-go/net"
-	"github.com/gertjaap/p2pool-go/util"
 )
 
 var _ P2PoolMessage = &MsgShares{}
@@ -104,236 +95,29 @@ type SegwitData struct {
 	WTXIDMerkleRoot *chainhash.Hash
 }
 
-func GetRefHash(n p2pnet.Network, si ShareInfo, refMerkleLink []*chainhash.Hash, segwit bool) (*chainhash.Hash, error) {
-	r := Ref{
-		Identifier: string(n.Identifier),
-		ShareInfo:  si,
-	}
-	var buf bytes.Buffer
-
-	err := WriteRef(&buf, r, segwit)
-	if err != nil {
-		return nil, err
-	}
-
-	tip, _ := chainhash.NewHash(util.Sha256d(buf.Bytes()))
-	return CalcMerkleLink(tip, refMerkleLink, 0)
-}
-
-func CalcMerkleLink(tip *chainhash.Hash, link []*chainhash.Hash, linkIndex int) (*chainhash.Hash, error) {
-	link = append([]*chainhash.Hash{tip}, link...)
-	if len(link) == 1 {
-		return link[0], nil
-	}
-	h := link[0]
-	for i := 1; i < len(link); i++ {
-		hashBytes := make([]byte, 64)
-		hIdx, nIdx := 0, 32
-		if (linkIndex>>i)&1 == 1 {
-			nIdx, hIdx = 0, 32
-		}
-		copy(hashBytes[hIdx:], h.CloneBytes())
-		copy(hashBytes[nIdx:], link[i].CloneBytes())
-		h, _ = chainhash.NewHash(util.Sha256d(hashBytes))
-	}
-	return h, nil
-}
-
-func CalcHashLink(hl HashLink, data []byte, ending []byte) (*chainhash.Hash, error) {
-
-	extralength := hl.Length % 64
-	extra := ending[len(ending)-int(extralength):]
-
-	s := util.NewSha256()
-	h := s.CalcMidState(data, []byte(hl.State), extra, hl.Length)
-	s.Reset()
-	s.Write(h[:])
-	return chainhash.NewHash(s.Sum(nil))
-}
-
-func ReadShares(r io.Reader) ([]Share, error) {
-	shares := make([]Share, 0)
-	count, err := ReadVarInt(r)
-	if err != nil {
-		return shares, err
-	}
-	logging.Debugf("Deserializing %d shares", count)
-	for i := uint64(0); i < count; i++ {
-		s := Share{}
-		s.Type, err = ReadVarInt(r)
-		if err != nil {
-			return shares, err
-		}
-
-		// REad length - not needed for us
-		_, err := ReadVarInt(r)
-		if err != nil {
-			return shares, err
-		}
-
-		s.MinHeader, err = ReadSmallBlockHeader(r)
-		if err != nil {
-			return shares, err
-		}
-
-		s.ShareInfo, err = ReadShareInfo(r, s.Type >= 17)
-		if err != nil {
-			return shares, err
-		}
-
-		s.RefMerkleLink, err = ReadChainHashList(r)
-		if err != nil {
-			return shares, err
-		}
-
-		err = binary.Read(r, binary.LittleEndian, &s.LastTxOutNonce)
-		if err != nil {
-			return shares, err
-		}
-
-		s.HashLink, err = ReadHashLink(r)
-		if err != nil {
-			return shares, err
-		}
-
-		s.MerkleLink, err = ReadChainHashList(r)
-		if err != nil {
-			return shares, err
-		}
-
-		s.RefHash, _ = GetRefHash(p2pnet.ActiveNetwork, s.ShareInfo, s.RefMerkleLink, s.Type >= 17)
-
-		var buf bytes.Buffer
-		buf.Write(s.RefHash.CloneBytes())
-		binary.Write(&buf, binary.LittleEndian, s.LastTxOutNonce)
-		binary.Write(&buf, binary.LittleEndian, int32(0))
-		s.GenTXHash, err = CalcHashLink(s.HashLink, buf.Bytes(), GenTxBeforeRefHash)
-		if err != nil {
-			return shares, err
-		}
-
-		merkleLink := s.MerkleLink
-		if s.Type >= 17 {
-			merkleLink = s.ShareInfo.SegwitData.TXIDMerkleLink
-		}
-		s.MerkleRoot, err = CalcMerkleLink(s.GenTXHash, merkleLink, 0)
-		if err != nil {
-			return shares, err
-		}
-
-		buf.Reset()
-
-		hdr := btcwire.NewBlockHeader(s.MinHeader.Version, s.MinHeader.PreviousBlock, s.MerkleRoot, s.MinHeader.Bits, s.MinHeader.Nonce)
-		hdr.Timestamp = time.Unix(int64(s.MinHeader.Timestamp), 0)
-		hdr.Serialize(&buf)
-		headerBytes := buf.Bytes()
-
-		s.POWHash, _ = chainhash.NewHash(p2pnet.ActiveNetwork.POWHash(headerBytes[:]))
-		s.Hash, _ = chainhash.NewHash(util.Sha256d(headerBytes[:]))
-
-		shares = append(shares, s)
-	}
-	return shares, nil
-}
-
-func (s Share) IsValid() bool {
-	target := blockchain.CompactToBig(uint32(s.ShareInfo.Bits))
-	bnHash := blockchain.HashToBig(s.POWHash)
-	if bnHash.Cmp(target) >= 0 {
+func (s *Share) IsValid() bool {
+	if s.POWHash == nil || s.ShareInfo.Bits == 0 {
 		return false
 	}
-	return true
-}
-
-func WriteShares(w io.Writer, shares []Share) error {
-	err := WriteVarInt(w, uint64(len(shares)))
-	if err != nil {
-		return err
-	}
-	for _, s := range shares {
-		err = WriteVarInt(w, uint64(s.Type))
-		if err != nil {
-			return err
-		}
-
-		var buf bytes.Buffer
-
-		err = WriteSmallBlockHeader(&buf, s.MinHeader)
-		if err != nil {
-			return err
-		}
-
-		err = WriteShareInfo(&buf, s.ShareInfo, s.Type >= 17)
-		if err != nil {
-			return err
-		}
-
-		err = WriteChainHashList(&buf, s.RefMerkleLink)
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(&buf, binary.LittleEndian, s.LastTxOutNonce)
-		if err != nil {
-			return err
-		}
-		err = WriteHashLink(&buf, s.HashLink)
-		if err != nil {
-			return err
-		}
-		err = WriteChainHashList(&buf, s.MerkleLink)
-		if err != nil {
-			return err
-		}
-
-		b := buf.Bytes()
-
-		err = WriteVarInt(w, uint64(len(b)))
-		if err != nil {
-			return err
-		}
-
-		i, err := w.Write(b)
-		if err != nil {
-			return err
-		}
-		if i != len(b) {
-			return fmt.Errorf("Could not write share data: %d vs %d", i, len(b))
-		}
-	}
-	return nil
+	target := blockchain.CompactToBig(uint32(s.ShareInfo.Bits))
+	bnHash := blockchain.HashToBig(s.POWHash)
+	return bnHash.Cmp(target) <= 0
 }
 
 func (m *MsgShares) FromBytes(b []byte) error {
-	var err error
-
 	r := bytes.NewReader(b)
+	var err error
 	m.Shares, err = ReadShares(r)
 	if err != nil {
-		return err
+		logging.Errorf("Failed to deserialize shares message: %v", err)
 	}
-	log.Printf("Deserialized %d shares", len(m.Shares))
-	return nil
+	return err
 }
 
 func (m *MsgShares) ToBytes() ([]byte, error) {
 	var buf bytes.Buffer
-
-	err := WriteVarInt(&buf, uint64(len(m.Shares)))
-	if err != nil {
-		return nil, err
-	}
-	for _, s := range m.Shares {
-		err = WriteVarInt(&buf, s.Type)
-		if err != nil {
-			return nil, err
-		}
-		err = WriteSmallBlockHeader(&buf, s.MinHeader)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return buf.Bytes(), nil
+	err := WriteShares(&buf, m.Shares)
+	return buf.Bytes(), err
 }
 
 func (m *MsgShares) Command() string {
@@ -346,5 +130,5 @@ func init() {
 	copy(GenTxBeforeRefHash, []byte{byte(len(DonationScript))})
 	copy(GenTxBeforeRefHash[1:], DonationScript)
 	copy(GenTxBeforeRefHash[len(DonationScript)+9:], []byte{42, 0x6A, 0x28})
-
 }
+
