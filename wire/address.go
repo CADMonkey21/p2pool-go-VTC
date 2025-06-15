@@ -3,7 +3,7 @@ package wire
 import (
 	"bytes"
 	"encoding/binary"
-	"io" // Added missing import
+	"io"
 	"net"
 )
 
@@ -16,7 +16,7 @@ type P2PoolAddress struct {
 func (addr *P2PoolAddress) ToBytes() ([]byte, error) {
 	var buf bytes.Buffer
 	binary.Write(&buf, binary.LittleEndian, addr.Services)
-	WriteIPAddr(&buf, addr.Address) // This will be defined in readwrite.go
+	WriteIPAddr(&buf, addr.Address)
 	binary.Write(&buf, binary.BigEndian, addr.Port)
 	return buf.Bytes(), nil
 }
@@ -38,7 +38,7 @@ func ReadP2PoolAddress(r io.Reader) (P2PoolAddress, error) {
 	if err != nil {
 		return addr, err
 	}
-	addr.Address, err = ReadIPAddr(r) // This will be defined in readwrite.go
+	addr.Address, err = ReadIPAddr(r)
 	if err != nil {
 		return addr, err
 	}

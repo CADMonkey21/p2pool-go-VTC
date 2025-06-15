@@ -15,13 +15,15 @@ func (m *MsgBestBlock) FromBytes(b []byte) error {
 	r := bytes.NewReader(b)
 	var err error
 	m.TxHash, err = ReadChainHash(r)
-	// If there's an error (e.g., empty payload), TxHash will be nil, which is fine.
-	return err
+	if err != nil {
+		// If there's an error (e.g., empty payload), set to nullHash
+		m.TxHash = &nullHash
+	}
+	return nil
 }
 
 func (m *MsgBestBlock) ToBytes() ([]byte, error) {
 	var buf bytes.Buffer
-	// Gracefully handle nil hash
 	if m.TxHash == nil {
 		m.TxHash = &nullHash
 	}

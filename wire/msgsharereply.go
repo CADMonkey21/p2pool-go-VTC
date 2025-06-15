@@ -29,9 +29,13 @@ func (m *MsgShareReply) FromBytes(b []byte) error {
 	r := bytes.NewReader(b)
 	var err error
 	m.ID, err = ReadChainHash(r)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	result, err := ReadVarInt(r)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	m.Result = MsgShareReplyResult(result)
 	m.Shares, err = ReadShares(r)
 	return err
@@ -41,9 +45,13 @@ func (m *MsgShareReply) ToBytes() ([]byte, error) {
 	var buf bytes.Buffer
 	var err error
 	err = WriteChainHash(&buf, m.ID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	err = WriteVarInt(&buf, uint64(m.Result))
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	err = WriteShares(&buf, m.Shares)
 	return buf.Bytes(), err
 }

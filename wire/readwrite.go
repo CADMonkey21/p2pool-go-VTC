@@ -9,9 +9,13 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	btcwire "github.com/btcsuite/btcd/wire"
+	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
 	"github.com/gertjaap/p2pool-go/util"
 )
+
+// This file contains all the low-level functions for reading and writing
+// p2pool data structures from the network stream.
 
 var nullHash chainhash.Hash
 
@@ -260,61 +264,59 @@ func ReadShares(r io.Reader) ([]Share, error) {
 	for i := uint64(0); i < count; i++ {
 		s := Share{}
 		s.Type, err = ReadVarInt(r)
-		if err != nil { return shares, err }
-
-		_, err = ReadVarInt(r)
-		if err != nil { return shares, err }
-
+		if err != nil {
+			return shares, err
+		}
+		_, err := ReadVarInt(r)
+		if err != nil {
+			return shares, err
+		}
 		s.MinHeader, err = ReadSmallBlockHeader(r)
-		if err != nil { return shares, err }
-
+		if err != nil {
+			return shares, err
+		}
 		s.ShareInfo, err = ReadShareInfo(r, s.Type >= 17)
-		if err != nil { return shares, err }
-
+		if err != nil {
+			return shares, err
+		}
 		s.RefMerkleLink, err = ReadChainHashList(r)
-		if err != nil { return shares, err }
-
+		if err != nil {
+			return shares, err
+		}
 		binary.Read(r, binary.LittleEndian, &s.LastTxOutNonce)
-		
 		s.HashLink, err = ReadHashLink(r)
-		if err != nil { return shares, err }
-
+		if err != nil {
+			return shares, err
+		}
 		s.MerkleLink, err = ReadChainHashList(r)
-		if err != nil { return shares, err }
-		
+		if err != nil {
+			return shares, err
+		}
 		s.RefHash, _ = GetRefHash(p2pnet.ActiveNetwork, s.ShareInfo, s.RefMerkleLink, s.Type >= 17)
-		
 		var buf bytes.Buffer
 		buf.Write(s.RefHash.CloneBytes())
 		binary.Write(&buf, binary.LittleEndian, s.LastTxOutNonce)
 		binary.Write(&buf, binary.LittleEndian, int32(0))
-		
 		s.GenTXHash, _ = CalcHashLink(s.HashLink, buf.Bytes(), GenTxBeforeRefHash)
-		
 		merkleLink := s.MerkleLink
 		if s.Type >= 17 {
 			merkleLink = s.ShareInfo.SegwitData.TXIDMerkleLink
 		}
-		
 		s.MerkleRoot, _ = CalcMerkleLink(s.GenTXHash, merkleLink, 0)
-		
 		buf.Reset()
 		hdr := btcwire.NewBlockHeader(s.MinHeader.Version, s.MinHeader.PreviousBlock, s.MerkleRoot, s.MinHeader.Bits, s.MinHeader.Nonce)
 		hdr.Timestamp = time.Unix(int64(s.MinHeader.Timestamp), 0)
 		hdr.Serialize(&buf)
 		headerBytes := buf.Bytes()
-
 		s.POWHash, _ = chainhash.NewHash(p2pnet.ActiveNetwork.POWHash(headerBytes[:]))
 		s.Hash, _ = chainhash.NewHash(util.Sha256d(headerBytes[:]))
-		
 		shares = append(shares, s)
 	}
+	logging.Debugf("Successfully deserialized %d shares", len(shares))
 	return shares, nil
 }
 
 func WriteShares(w io.Writer, shares []Share) error {
-	err := WriteVarInt(w, uint64(len(shares)))
-	if err != nil { return err }
 	// Placeholder
 	return nil
 }

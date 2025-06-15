@@ -56,7 +56,6 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 	for i := range s {
 		share := s[i] // Create a new variable for the loop to avoid pointer issues
 		
-		// Use the real IsValid() method from the wire package
 		if share.Hash != nil && share.IsValid() {
 			sc.allSharesLock.Lock()
 			_, ok := sc.AllShares[share.Hash.String()]
@@ -108,7 +107,7 @@ func (sc *ShareChain) Load() error {
 	f, err := os.Open("shares.dat")
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil // It's okay if the file doesn't exist
 		}
 		return err
 	}
