@@ -3,7 +3,6 @@ package wire
 import (
 	"bytes"
 	"encoding/binary"
-	"io"
 	"net"
 )
 
@@ -29,24 +28,3 @@ func NewP2PoolAddress(c *net.TCPConn, services uint64) *P2PoolAddress {
 	}
 	return &addr
 }
-
-func ReadP2PoolAddress(r io.Reader) (P2PoolAddress, error) {
-	addr := P2PoolAddress{}
-	var err error
-
-	err = binary.Read(r, binary.LittleEndian, &addr.Services)
-	if err != nil {
-		return addr, err
-	}
-	addr.Address, err = ReadIPAddr(r)
-	if err != nil {
-		return addr, err
-	}
-	err = binary.Read(r, binary.BigEndian, &addr.Port)
-	if err != nil {
-		return addr, err
-	}
-
-	return addr, nil
-}
-

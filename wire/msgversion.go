@@ -3,12 +3,11 @@ package wire
 import (
 	"bytes"
 	"encoding/binary"
-	// "io" // This line is now removed
-
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
-// MsgVersion implements the Message interface and represents a p2pool version message.
+var _ P2PoolMessage = &MsgVersion{}
+
 type MsgVersion struct {
 	Version       int32
 	Services      uint64
@@ -35,7 +34,11 @@ func (m *MsgVersion) ToBytes() ([]byte, error) {
 	binary.Write(&buf, binary.LittleEndian, m.Nonce)
 	WriteVarString(&buf, m.SubVersion)
 	binary.Write(&buf, binary.LittleEndian, m.Mode)
-	buf.Write(m.BestShareHash.CloneBytes())
+	if m.BestShareHash != nil {
+		buf.Write(m.BestShareHash.CloneBytes())
+	} else {
+		buf.Write(make([]byte, 32))
+	}
 	
 	return buf.Bytes(), nil
 }
@@ -60,3 +63,4 @@ func (m *MsgVersion) FromBytes(b []byte) error {
 func (m *MsgVersion) Command() string {
 	return "version"
 }
+

@@ -59,4 +59,3 @@ func (m *MsgShareReply) ToBytes() ([]byte, error) {
 func (m *MsgShareReply) Command() string {
 	return "sharereply"
 }
-

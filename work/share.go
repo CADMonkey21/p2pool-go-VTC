@@ -5,7 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"math/big"
-	
+	// "time" // Removed unused import
+
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
@@ -98,11 +99,12 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	if err != nil { return nil, err }
 	
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
+	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
+	bitsUint32 := binary.LittleEndian.Uint32(nBitsBytes)
 
 	coinbaseTxBytes, err := CreateCoinbaseTx(job, payoutAddress, extraNonce1, extraNonce2)
 	if err != nil { return nil, err }
-	coinbaseTxHash, _ := chainhash.NewHash(DblSha256(coinbaseTxBytes))
-
+	
 	header, merkleRootBytes, err := CreateHeader(job, extraNonce1, extraNonce2, nTimeHex, nonceHex, payoutAddress)
 	if err != nil { return nil, err }
 
@@ -110,33 +112,48 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	powHash, _ := chainhash.NewHash(powHashBytes)
 	shareHash, _ := chainhash.NewHash(DblSha256(header))
 	merkleRoot, _ := chainhash.NewHash(merkleRootBytes)
+	
+	txHashesForLink := [][]byte{DblSha256(coinbaseTxBytes)}
+	for _, tx := range job.Transactions {
+		txHashBytes, _ := hex.DecodeString(tx.Hash)
+		txHashesForLink = append(txHashesForLink, ReverseBytes(txHashBytes))
+	}
+	merkleLinkBranches := CalculateMerkleLink(txHashesForLink, 0)
+	
+	newTxHashesForShareInfo := []*chainhash.Hash{}
+	for _, tx := range job.Transactions {
+		h, _ := chainhash.NewHashFromStr(tx.TxID)
+		newTxHashesForShareInfo = append(newTxHashesForShareInfo, h)
+	}
 
 	share := &wire.Share{
-		Type: 17,
+		Type:      17, // Segwit share type
 		MinHeader: wire.SmallBlockHeader{
 			Version:       int32(job.Version),
 			PreviousBlock: prevBlockHash,
 			Timestamp:     binary.LittleEndian.Uint32(nTimeBytes),
-			Bits:          binary.LittleEndian.Uint32(nBitsBytes),
-			Nonce:         binary.BigEndian.Uint32(nonceBytes),
+			Bits:          bitsUint32,
+			Nonce:         nonceUint32,
 		},
 		ShareInfo: wire.ShareInfo{
 			ShareData: wire.ShareData{
 				PreviousShareHash: shareChain.GetTipHash(),
 				CoinBase:          hex.EncodeToString(coinbaseTxBytes),
-				Nonce:             binary.BigEndian.Uint32(nonceBytes),
+				Nonce:             nonceUint32,
 				PubKeyHash:        make([]byte, 20),
 				Subsidy:           uint64(job.CoinbaseValue),
 				Donation:          uint16(config.Active.Fee * 100),
 			},
-			Bits:      int32(binary.LittleEndian.Uint32(nBitsBytes)),
-			AbsHeight: int32(job.Height),
-			AbsWork:   new(big.Int),
+			NewTransactionHashes: newTxHashesForShareInfo,
+			Bits:                 int32(bitsUint32),
+			AbsHeight:            int32(job.Height),
+			AbsWork:              new(big.Int),
 		},
 		MerkleRoot: merkleRoot,
-		GenTXHash:  coinbaseTxHash,
 		Hash:       shareHash,
 		POWHash:    powHash,
+		// This now correctly assigns the slice of hashes
+		MerkleLink: merkleLinkBranches,
 	}
 
 	logging.Infof("Successfully created new share with hash %s", share.Hash.String()[:12])

@@ -16,7 +16,6 @@ func (m *MsgBestBlock) FromBytes(b []byte) error {
 	var err error
 	m.TxHash, err = ReadChainHash(r)
 	if err != nil {
-		// If there's an error (e.g., empty payload), set to nullHash
 		m.TxHash = &nullHash
 	}
 	return nil

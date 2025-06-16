@@ -2,12 +2,8 @@ package wire
 
 import (
 	"bytes"
-
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
-
-// This file defines the 'get_shares' message, which is used by a node
-// to request a list of share hashes from a peer.
 
 var _ P2PoolMessage = &MsgGetShares{}
 
@@ -27,23 +23,13 @@ func (m *MsgGetShares) FromBytes(b []byte) error {
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 
 func (m *MsgGetShares) ToBytes() ([]byte, error) {
 	var buf bytes.Buffer
-	var err error
-
-	err = WriteChainHashList(&buf, m.Hashes)
-	if err != nil {
-		return nil, err
-	}
-	err = WriteChainHash(&buf, m.Stops)
-	if err != nil {
-		return nil, err
-	}
-
+	WriteChainHashList(&buf, m.Hashes)
+	WriteChainHash(&buf, m.Stops)
 	return buf.Bytes(), nil
 }
 
