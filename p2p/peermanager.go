@@ -3,20 +3,21 @@ package p2p
 import (
 	"fmt"
 	"net"
-	"strings"
+	"strconv" // Added for strconv.Atoi
 	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
-	"github.com/gertjaap/p2pool-go/work"
+	"github.com/gertjaap/p2pool-go/work" // Added for work.ShareChain
+	// "github.com/gertjaap/p2pool-go/util" // Removed unused import
 	"github.com/gertjaap/p2pool-go/wire"
 )
 
 type PeerManager struct {
 	peers         map[string]*Peer
-	possiblePeers map[string]bool
+	possiblePeers map[string]bool // Stores "IP:Port" strings
 	activeNetwork p2pnet.Network
 	shareChain    *work.ShareChain
 	peersMutex    sync.RWMutex
@@ -30,10 +31,25 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 		shareChain:    sc,
 	}
 	for _, h := range net.SeedHosts {
-		pm.possiblePeers[h] = true
+		pm.AddPossiblePeer(h) // Use new helper to add initial seeds
 	}
 	go pm.peerConnectorLoop()
 	return pm
+}
+
+// AddPossiblePeer adds a new peer address to the list of possible peers.
+func (pm *PeerManager) AddPossiblePeer(addr string) {
+	pm.peersMutex.Lock()
+	defer pm.peersMutex.Unlock()
+	if addr == "" {
+		return
+	}
+	// Avoid adding duplicate or self addresses (if public IP is known)
+	if _, exists := pm.peers[addr]; !exists && !pm.possiblePeers[addr] {
+		// Basic check to avoid adding own public IP:Port if known, needs refinement.
+		// For now, relies on config peers not being own address
+		pm.possiblePeers[addr] = true
+	}
 }
 
 func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
@@ -56,21 +72,22 @@ func (pm *PeerManager) peerConnectorLoop() {
 		<-ticker.C
 		pm.peersMutex.RLock()
 		peerCount := len(pm.peers)
-		possiblePeerCount := len(pm.possiblePeers)
 		pm.peersMutex.RUnlock()
 
 		logging.Debugf("Number of active peers: %d", peerCount)
 
-		if peerCount < 8 && possiblePeerCount > 0 {
-			var peerToTry string
+		if peerCount < 8 { // Target 8 active peers
 			pm.peersMutex.Lock()
+			var peerToTry string
+			// Find a peer to try from possiblePeers
 			for p := range pm.possiblePeers {
-				if p == "" {
-					delete(pm.possiblePeers, p)
-					continue
+				// Ensure it's not already an active peer
+				if _, active := pm.peers[p]; !active {
+					peerToTry = p
+					delete(pm.possiblePeers, p) // Remove it once we try it
+					break
 				}
-				peerToTry = p
-				break
+				delete(pm.possiblePeers, p) // Remove if already active, or empty
 			}
 			pm.peersMutex.Unlock()
 
@@ -82,21 +99,29 @@ func (pm *PeerManager) peerConnectorLoop() {
 }
 
 func (pm *PeerManager) TryPeer(p string) {
-	pm.peersMutex.Lock()
-	delete(pm.possiblePeers, p)
-	if _, ok := pm.peers[p]; ok {
-		pm.peersMutex.Unlock()
-		return
-	}
-	pm.peersMutex.Unlock()
-
 	logging.Debugf("Trying OUTGOING connection to peer %s", p)
 
-	remotePort := pm.activeNetwork.StandardP2PPort
-	remoteAddr := fmt.Sprintf("%s:%d", p, remotePort)
-	if strings.Contains(p, ":") {
-		remoteAddr = fmt.Sprintf("[%s]:%d", p, remotePort)
+	host, portStr, err := net.SplitHostPort(p)
+	if err != nil {
+		// If no port, use standard P2P port
+		host = p
+		portStr = fmt.Sprintf("%d", pm.activeNetwork.StandardP2PPort)
 	}
+	port, err := strconv.Atoi(portStr) // Corrected: use strconv.Atoi
+	if err != nil {
+		logging.Warnf("Invalid port for peer %s: %v", p, err)
+		return
+	}
+
+	remoteAddr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	// Check if already an active peer or in possiblePeers (should have been removed by now, but defensive)
+	pm.peersMutex.RLock()
+	_, active := pm.peers[remoteAddr]
+	pm.peersMutex.RUnlock()
+	if active {
+		return // Already connected
+	}
+
 
 	conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
 	if err != nil {
@@ -120,7 +145,7 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	pm.peers[peerKey] = peer
 	pm.peersMutex.Unlock()
 	
-	pm.handlePeerMessages(peer)
+	pm.handlePeerMessages(peer) // Start message handling for this peer
 
 	pm.peersMutex.Lock()
 	delete(pm.peers, peerKey)
@@ -134,7 +159,31 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			logging.Debugf("Received ping from %s, sending pong", p.RemoteIP)
 			p.Connection.Outgoing <- &wire.MsgPong{}
 		case *wire.MsgAddrs:
-			logging.Infof("Received addrs message from %s (ignoring for now)", p.RemoteIP)
+			// Process incoming addrs message to discover new peers
+			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP, len(t.Addresses))
+			for _, addrRecord := range t.Addresses {
+				// addrRecord is of type wire.Addr. Its Address field is wire.P2PoolAddress
+				ip := addrRecord.Address.Address.String() // Corrected: Access net.IP via .Address.Address
+				port := addrRecord.Address.Port           // Corrected: Access Port via .Address.Port
+				// Convert to "IP:Port" string
+				peerAddr := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
+				pm.AddPossiblePeer(peerAddr) // Add to possible peers
+			}
+		case *wire.MsgAddrMe:
+			// Process incoming addrme message to learn about sender's public IP
+			logging.Infof("Received addrme message from %s, port %d. Considering for peer discovery.", p.RemoteIP, t.Port)
+			// The peer is telling us its own perceived public IP. We add it to possible peers.
+			peerAddr := net.JoinHostPort(p.RemoteIP.String(), fmt.Sprintf("%d", t.Port))
+			pm.AddPossiblePeer(peerAddr)
+		case *wire.MsgShares:
+			logging.Infof("Received shares message from %s with %d shares.", p.RemoteIP, len(t.Shares))
+			// Here, you would implement the logic to add these shares to your shareChain.
+			// This part is the core of the sharechain build from network, which we discussed is complex.
+			// Example placeholder (you need to implement proper sharechain resolution here):
+			if len(t.Shares) > 0 {
+				pm.shareChain.AddShares(t.Shares) // Add shares to disconnected list for resolution
+				// After adding shares, your shareChain.Resolve() method should try to connect them.
+			}
 		default:
 			logging.Debugf("Received unhandled message of type %T from %s", t, p.RemoteIP)
 		}
@@ -150,4 +199,3 @@ func (pm *PeerManager) GetPeerCount() int {
 func (pm *PeerManager) AskForShare(s *chainhash.Hash) {
 	logging.Debugf("TODO: Ask network for share %s", s.String())
 }
-

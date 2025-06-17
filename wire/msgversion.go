@@ -14,7 +14,7 @@ type MsgVersion struct {
 	AddrTo        P2PoolAddress
 	AddrFrom      P2PoolAddress
 	Nonce         int64
-	SubVersion    string
+	SubVersion    string // Changed to string to match original declaration
 	Mode          int32
 	BestShareHash *chainhash.Hash
 }
@@ -32,7 +32,7 @@ func (m *MsgVersion) ToBytes() ([]byte, error) {
 	buf.Write(addrFromBytes)
 
 	binary.Write(&buf, binary.LittleEndian, m.Nonce)
-	WriteVarString(&buf, m.SubVersion)
+	WriteVarString(&buf, []byte(m.SubVersion)) // Convert string to []byte for WriteVarString
 	binary.Write(&buf, binary.LittleEndian, m.Mode)
 	if m.BestShareHash != nil {
 		buf.Write(m.BestShareHash.CloneBytes())
@@ -53,7 +53,8 @@ func (m *MsgVersion) FromBytes(b []byte) error {
 	m.AddrFrom, _ = ReadP2PoolAddress(r)
 
 	binary.Read(r, binary.LittleEndian, &m.Nonce)
-	m.SubVersion, _ = ReadVarString(r)
+	subVersionBytes, _ := ReadVarString(r) // Read as []byte
+	m.SubVersion = string(subVersionBytes) // Convert []byte to string for assignment
 	binary.Read(r, binary.LittleEndian, &m.Mode)
 	m.BestShareHash, _ = ReadChainHash(r)
 	
@@ -63,4 +64,3 @@ func (m *MsgVersion) FromBytes(b []byte) error {
 func (m *MsgVersion) Command() string {
 	return "version"
 }
-

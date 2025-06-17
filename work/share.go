@@ -132,31 +132,36 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 			Version:       int32(job.Version),
 			PreviousBlock: prevBlockHash,
 			Timestamp:     binary.LittleEndian.Uint32(nTimeBytes),
-			Bits:          bitsUint32,
+			Bits:          bitsUint32, // Corrected: removed unnecessary int32() cast
 			Nonce:         nonceUint32,
 		},
 		ShareInfo: wire.ShareInfo{
 			ShareData: wire.ShareData{
 				PreviousShareHash: shareChain.GetTipHash(),
-				CoinBase:          hex.EncodeToString(coinbaseTxBytes),
+				CoinBase:          coinbaseTxBytes, // Corrected: directly use []byte, not hex.EncodeToString
 				Nonce:             nonceUint32,
 				PubKeyHash:        make([]byte, 20),
 				Subsidy:           uint64(job.CoinbaseValue),
 				Donation:          uint16(config.Active.Fee * 100),
 			},
 			NewTransactionHashes: newTxHashesForShareInfo,
-			Bits:                 int32(bitsUint32),
-			AbsHeight:            int32(job.Height),
-			AbsWork:              new(big.Int),
+			// Assuming TransactionHashRefs, FarShareHash, MaxBits, Bits, Timestamp, AbsHeight, AbsWork are populated elsewhere or can be default
+			// This will depend on the full share creation logic, but these fields are not directly set from job in this snippet for Python
+			TransactionHashRefs: []wire.TransactionHashRef{}, // Initialize empty or populate as needed
+			FarShareHash:        nil,                        // Initialize to nil or populate as needed
+			MaxBits:             bitsUint32,                 // Assuming max bits is current bits for now, adjust as per Python logic
+			Bits:                bitsUint32,
+			Timestamp:           int32(binary.LittleEndian.Uint32(nTimeBytes)),
+			AbsHeight:           int32(job.Height),
+			AbsWork:             new(big.Int), // This will need to be computed based on Python's abswork logic
 		},
 		MerkleRoot: merkleRoot,
 		Hash:       shareHash,
 		POWHash:    powHash,
-		// This now correctly assigns the slice of hashes
-		MerkleLink: merkleLinkBranches,
+		// This now correctly assigns the slice of hashes to the MerkleLink struct
+		MerkleLink: wire.MerkleLink{Branch: merkleLinkBranches, Index: 0}, // Corrected: assign to MerkleLink struct
 	}
 
 	logging.Infof("Successfully created new share with hash %s", share.Hash.String()[:12])
 	return share, nil
 }
-

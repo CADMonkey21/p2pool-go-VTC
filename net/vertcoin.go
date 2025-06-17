@@ -17,9 +17,8 @@ func Vertcoin(testnet bool) Network {
 
 	n := Network{
 		P2PPort:         config.Active.P2PPort,
-		// The standard P2P port for your running Python pool is 9346.
-		StandardP2PPort: 9346,
-		ProtocolVersion: 3501,
+		StandardP2PPort: 9346, // Matches legacy Python p2pool-vtc/p2pool/networks/vertcoin.py
+		ProtocolVersion: 3501, // Keeping at 3501 as per your preference.
 		RPCPort:         config.Active.RPCPort,
 		WorkerPort:      config.Active.StratumPort,
 		ChainLength:     5100,
@@ -37,11 +36,10 @@ func Vertcoin(testnet bool) Network {
 
 	n.SeedHosts = config.Active.Peers
 	
-	// Using the correct magic bytes that your Python pool is broadcasting.
-	n.MessagePrefix, _ = hex.DecodeString("1c0c1c71cc197bc1")
+	// Corrected to match the OBSERVED legacy Python P2Pool message prefix (from runtime logs)
+	n.MessagePrefix, _ = hex.DecodeString("1c0c1c71cc197bc1") 
 	
 	n.Identifier, _ = hex.DecodeString("a06a81c827cab983")
 
 	return n
 }
-

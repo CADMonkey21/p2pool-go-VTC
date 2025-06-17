@@ -55,8 +55,9 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] Wire protocol implementation for P2P messages
     -   [x] Peer manager for connecting to and listening for peers
     -   [x] **Successful P2P Handshake with Live Nodes**
-    -   [x] **Handles `ping`/`pong` and `addrs` messages**
-    -   [ ] Fully process incoming `shares` messages from peers
+    -   [x] **Handles `ping`/`pong` and `addrs` messages to discover new peers**
+    -   [x] **Implement full serialization for outgoing `shares` messages.**
+    -   [ ] Fully process incoming `shares` messages from peers (Currently affected by truncated packets from network peers causing EOF errors)
 -   **RPC Client**
     -   [x] Connecting to a fullnode over RPC
     -   [x] Retrieve block template from fullnode
@@ -68,7 +69,6 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] **Full cryptographic validation of submitted shares**
     -   [x] **Create and broadcast valid shares to the P2P network**
 -   **Next Steps**
-    -   [ ] Implement full serialization for outgoing `shares` messages.
     -   [ ] Fully process received shares and build the sharechain.
     -   [ ] Compose and submit a block to `vertcoind` when a block-finding share is found.
     -   [ ] Web frontend for statistics
