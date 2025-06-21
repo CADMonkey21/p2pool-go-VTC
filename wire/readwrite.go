@@ -3,6 +3,7 @@ package wire
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net" // Added net import for net.IP type
@@ -230,7 +231,7 @@ func ReadInt(r io.Reader, bits int, endian binary.ByteOrder) (*big.Int, error) {
 			rawBytes[i], rawBytes[j] = rawBytes[j], rawBytes[i]
 		}
 	}
-	
+
 	val := new(big.Int).SetBytes(rawBytes)
 	return val, nil
 }
@@ -245,7 +246,7 @@ func WriteInt(w io.Writer, val *big.Int, bits int, endian binary.ByteOrder) erro
 
 	// Convert big.Int to byte slice. big.Int.Bytes() returns big-endian.
 	rawBytes := val.Bytes()
-	
+
 	// Pad with leading zeros if necessary (e.g., for fixed-size types like hashes).
 	if len(rawBytes) < byteLen {
 		padding := make([]byte, byteLen-len(rawBytes))
@@ -340,15 +341,20 @@ func WriteStaleInfo(w io.Writer, si StaleInfo) error {
 
 
 // ReadTransactionHashRefs reads a list of TransactionHashRef pairs.
-// Python: pack.ListType(pack.VarIntType(), 2) -> pairs of share_count, tx_count
+// The count prefix is the number of total integers, which must be processed in pairs.
 func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
-	count, err := ReadVarInt(r) // This count is for pairs, so it's len(list)//2
+	count, err := ReadVarInt(r)
 	if err != nil {
 		return nil, err
 	}
+	// The number of items must be a multiple of 2.
+	if count%2 != 0 {
+		return nil, fmt.Errorf("transaction_hash_refs count is not a multiple of 2, got %d", count)
+	}
 
-	refs := make([]TransactionHashRef, count)
-	for i := uint64(0); i < count; i++ {
+	// The number of ref pairs is count / 2.
+	refs := make([]TransactionHashRef, count/2)
+	for i := uint64(0); i < count/2; i++ {
 		shareCount, err := ReadVarInt(r)
 		if err != nil {
 			return nil, err
@@ -366,8 +372,10 @@ func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
 }
 
 // WriteTransactionHashRefs writes a list of TransactionHashRef pairs.
+// The count prefix must be the total number of integers, which is 2 * len(refs).
 func WriteTransactionHashRefs(w io.Writer, refs []TransactionHashRef) error {
-	err := WriteVarInt(w, uint64(len(refs))) // Count is for pairs
+	// Write the total number of integers, NOT the number of pairs.
+	err := WriteVarInt(w, uint64(len(refs)*2))
 	if err != nil {
 		return err
 	}
