@@ -2,17 +2,11 @@
 
 This is a Go-based implementation of the p2pool protocol, with initial support for Vertcoin (VTC). The goal is to create a modern, high-performance, and cross-platform p2pool node that is easy to set up and maintain.
 
-### Current State: Alpha (Core Complete)
+### Current State: Alpha (Improving P2P Stability)
 
-The node is currently in a **functional alpha stage**. All core engine components are complete and working as demonstrated on the live network. The application can be compiled and run to create a functional mining pool that:
-* Connects to `vertcoind` and receives work.
-* Establishes and maintains stable P2P connections with other live nodes.
-* Correctly handles `ping`/`pong` keep-alive messages.
-* Runs a full Stratum server that accepts miners, serves them jobs, and dynamically adjusts their difficulty (Vardiff).
-* Performs full cryptographic validation of submitted shares and accepts valid work.
-* **Creates share objects from valid work and broadcasts them to the P2P network.**
+The node is currently in a **functional alpha stage**. The core components for connecting to the network, communicating with peers, and serving miners are in place. Recent efforts have focused on stabilizing the P2P layer by fixing several critical bugs in the wire protocol serialization, leading to more reliable peer handshakes and address discovery.
 
-The core engine is complete. The next phase of development is to implement full share serialization to maintain stable connections after broadcasting, and to process shares received from other peers.
+While the node can connect to the network and interact with miners, a persistent `EOF` error when deserializing `shares` messages from peers is still under investigation.
 
 ## Prerequisites
 
@@ -56,8 +50,8 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] Peer manager for connecting to and listening for peers
     -   [x] **Successful P2P Handshake with Live Nodes**
     -   [x] **Handles `ping`/`pong` and `addrs` messages to discover new peers**
-    -   [x] **Implement full serialization for outgoing `shares` messages.**
-    -   [ ] Fully process incoming `shares` messages from peers (Currently affected by truncated packets from network peers causing EOF errors)
+    -   [x] Implement serialization for outgoing `shares` messages.
+    -   [ ] Fully process incoming `shares` messages from peers (Work in progress; a persistent `EOF` error in the deserialization logic is under investigation).
 -   **RPC Client**
     -   [x] Connecting to a fullnode over RPC
     -   [x] Retrieve block template from fullnode
@@ -69,6 +63,7 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] **Full cryptographic validation of submitted shares**
     -   [x] **Create and broadcast valid shares to the P2P network**
 -   **Next Steps**
+    -   [ ] Resolve the `shares` message deserialization bug.
     -   [ ] Fully process received shares and build the sharechain.
     -   [ ] Compose and submit a block to `vertcoind` when a block-finding share is found.
     -   [ ] Web frontend for statistics
