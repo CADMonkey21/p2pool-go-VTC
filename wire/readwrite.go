@@ -3,7 +3,6 @@ package wire
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -292,15 +291,15 @@ func WriteStaleInfo(w io.Writer, si StaleInfo) error {
 }
 
 func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
-	count, err := ReadVarInt(r)
+	// The VarInt here is the count of PAIRS, not the total number of items.
+	pairCount, err := ReadVarInt(r)
 	if err != nil {
 		return nil, err
 	}
-	if count%2 != 0 {
-		return nil, fmt.Errorf("transaction_hash_refs count is not a multiple of 2, got %d", count)
-	}
-	refs := make([]TransactionHashRef, count/2)
-	for i := uint64(0); i < count/2; i++ {
+	
+	refs := make([]TransactionHashRef, pairCount)
+	for i := uint64(0); i < pairCount; i++ {
+		// For each pair, read the two VarInts.
 		shareCount, err := ReadVarInt(r)
 		if err != nil {
 			return nil, err
@@ -318,10 +317,12 @@ func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
 }
 
 func WriteTransactionHashRefs(w io.Writer, refs []TransactionHashRef) error {
-	err := WriteVarInt(w, uint64(len(refs)*2))
+	// Write the number of PAIRS as the length prefix.
+	err := WriteVarInt(w, uint64(len(refs)))
 	if err != nil {
 		return err
 	}
+	
 	for _, ref := range refs {
 		err := WriteVarInt(w, ref.ShareCount)
 		if err != nil {

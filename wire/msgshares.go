@@ -242,7 +242,7 @@ func (sc *ShareContents) FromBytes(r io.Reader, shareType uint64) error {
 	err = binary.Read(r, binary.LittleEndian, &sc.MinHeader.Nonce)
 	if err != nil { return fmt.Errorf("failed on MinHeader.Nonce: %v", err) }
 
-	// --- 2. Read ShareInfo fields in the CORRECT order ---
+	// --- 2. Read ShareInfo fields ---
 	
 	// 2a. Read ShareData sub-struct
 	sc.ShareInfo.ShareData.PreviousShareHash, err = ReadPossiblyNoneHash(r, &zeroHash)
@@ -264,18 +264,42 @@ func (sc *ShareContents) FromBytes(r io.Reader, shareType uint64) error {
 	sc.ShareInfo.ShareData.DesiredVersion, err = ReadVarInt(r)
 	if err != nil { return fmt.Errorf("failed on ShareData.DesiredVersion: %v", err) }
 
-	// 2b. THIS IS THE CRITICAL FIX: Read SegwitData *immediately after* ShareData
+	// 2b. Read SegwitData
 	if shareType >= 16 {
-		var currentSegwitData SegwitData
-		currentSegwitData.TXIDMerkleLink.Branch, err = ReadChainHashList(r)
-		if err != nil { return fmt.Errorf("failed on SegwitData.Branch: %v", err) }
-		currentSegwitData.TXIDMerkleLink.Index = 0 // Handle the zero-byte index
-		currentSegwitData.WTXIDMerkleRoot, err = ReadChainHash(r)
-		if err != nil { return fmt.Errorf("failed on SegwitData.WTXIDMerkleRoot: %v", err) }
-		sc.ShareInfo.SegwitData = &currentSegwitData
+		// This logic correctly mimics the legacy Python's "PossiblyNoneType"
+		var tempSegwitData SegwitData
+		
+		// Step 1: Always attempt to read the fields of a SegwitData block.
+		tempSegwitData.TXIDMerkleLink.Branch, err = ReadChainHashList(r)
+		if err != nil {
+			return fmt.Errorf("failed on SegwitData.Branch: %v", err)
+		}
+		tempSegwitData.TXIDMerkleLink.Index = 0 // The index is always present as a zero-byte value
+	
+		tempSegwitData.WTXIDMerkleRoot, err = ReadChainHash(r)
+		if err != nil {
+			return fmt.Errorf("failed on SegwitData.WTXIDMerkleRoot: %v", err)
+		}
+	
+		// Step 2: Now, check if the data we just read is the special "None" value.
+		// The "None" value is an empty branch list AND a wtxid_merkle_root of all 1s.
+		isNoneValue := false
+		if len(tempSegwitData.TXIDMerkleLink.Branch) == 0 {
+			noneHash, _ := chainhash.NewHashFromStr("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+			if tempSegwitData.WTXIDMerkleRoot.IsEqual(noneHash) {
+				isNoneValue = true
+			}
+		}
+	
+		// Step 3: Only assign the SegwitData if it was not the "None" value.
+		// If it *was* the "None" value, we have correctly consumed it from the stream
+		// and now we simply discard it, leaving the parser in the correct position.
+		if !isNoneValue {
+			sc.ShareInfo.SegwitData = &tempSegwitData
+		}
 	}
 
-	// 2c. Now read the rest of the ShareInfo fields
+	// 2c. Read the rest of the ShareInfo fields
 	sc.ShareInfo.NewTransactionHashes, err = ReadChainHashList(r)
 	if err != nil { return fmt.Errorf("failed on NewTransactionHashes: %v", err) }
 	sc.ShareInfo.TransactionHashRefs, err = ReadTransactionHashRefs(r)
@@ -314,7 +338,6 @@ func (sc *ShareContents) FromBytes(r io.Reader, shareType uint64) error {
 
 	return nil
 }
-
 
 func (m *MsgShares) FromBytes(b []byte) error {
 	r := bytes.NewReader(b)
