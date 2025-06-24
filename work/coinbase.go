@@ -7,10 +7,14 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript" // CORRECTED: Use txscript for opcodes
+	"github.com/btcsuite/btcd/wire"
 )
 
 // CreateCoinbaseTx constructs the special coinbase transaction for a block.
-func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, extraNonce2 string) ([]byte, error) {
+// It now includes the witness commitment hash for SegWit compliance.
+func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, extraNonce2 string, witnessCommitment []byte) ([]byte, error) {
 	extraNonce, err := hex.DecodeString(extraNonce1 + extraNonce2)
 	if err != nil {
 		return nil, fmt.Errorf("could not decode extranonce: %v", err)
@@ -32,22 +36,40 @@ func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, ex
 	witnessVersion := decoded[0]
 	witnessProgram := decoded[1:]
 
-	scriptPubKey := NewScriptBuilder().AddOp(witnessVersion).AddData(witnessProgram).Script()
+	payoutScriptPubKey := NewScriptBuilder().AddOp(witnessVersion).AddData(witnessProgram).Script()
 
-	var txBuf bytes.Buffer
-	txBuf.Write([]byte{1, 0, 0, 0})
-	txBuf.WriteByte(1)
-	txBuf.Write(make([]byte, 36))
-	txBuf.WriteByte(byte(len(coinbaseScript)))
-	txBuf.Write(coinbaseScript)
-	txBuf.Write([]byte{0xff, 0xff, 0xff, 0xff})
-	txBuf.WriteByte(1)
-	binary.Write(&txBuf, binary.LittleEndian, tmpl.CoinbaseValue)
-	txBuf.WriteByte(byte(len(scriptPubKey)))
-	txBuf.Write(scriptPubKey)
-	txBuf.Write([]byte{0, 0, 0, 0})
+	// Build the transaction
+	tx := wire.NewMsgTx(2) // Version 2 transaction
 
-	return txBuf.Bytes(), nil
+	// Transaction Input
+	txIn := wire.NewTxIn(&wire.OutPoint{Hash: chainhash.Hash{}, Index: 0xffffffff}, coinbaseScript, nil)
+	tx.AddTxIn(txIn)
+
+	// Transaction Outputs
+	txOutPayout := wire.NewTxOut(tmpl.CoinbaseValue, payoutScriptPubKey)
+	tx.AddTxOut(txOutPayout)
+
+	// Add the witness commitment output if there's a commitment to add
+	if witnessCommitment != nil && len(witnessCommitment) > 0 {
+		// Create the witness commitment output script as per BIP141
+		commitmentHeader := []byte{0xaa, 0x21, 0xa9, 0xed}
+		commitmentScriptPubKey := NewScriptBuilder().AddOp(txscript.OP_RETURN).AddData(append(commitmentHeader, witnessCommitment...)).Script() // CORRECTED
+		txOutCommitment := wire.NewTxOut(0, commitmentScriptPubKey)
+		tx.AddTxOut(txOutCommitment)
+	}
+
+	// Add witness data
+	// The witness nonce is the 32-byte hash of the extranonce
+	witnessNonceHash := chainhash.HashH(extraNonce)
+	tx.TxIn[0].Witness = wire.TxWitness{witnessNonceHash[:]}
+
+	var buf bytes.Buffer
+	err = tx.Serialize(&buf)
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }
 
 // Simple script builder
@@ -59,7 +81,22 @@ func NewScriptBuilder() *ScriptBuilder {
 	return &ScriptBuilder{}
 }
 func (b *ScriptBuilder) AddData(data []byte) *ScriptBuilder {
-	b.script = append(b.script, byte(len(data)))
+	lenData := len(data)
+	if lenData < txscript.OP_PUSHDATA1 { // CORRECTED
+		b.script = append(b.script, byte(lenData))
+	} else if lenData <= 0xff {
+		b.script = append(b.script, txscript.OP_PUSHDATA1, byte(lenData)) // CORRECTED
+	} else if lenData <= 0xffff {
+		b.script = append(b.script, txscript.OP_PUSHDATA2) // CORRECTED
+		buf := make([]byte, 2)
+		binary.LittleEndian.PutUint16(buf, uint16(lenData))
+		b.script = append(b.script, buf...)
+	} else {
+		b.script = append(b.script, txscript.OP_PUSHDATA4) // CORRECTED
+		buf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(buf, uint32(lenData))
+		b.script = append(b.script, buf...)
+	}
 	b.script = append(b.script, data...)
 	return b
 }
@@ -70,4 +107,3 @@ func (b *ScriptBuilder) AddOp(op byte) *ScriptBuilder {
 func (b *ScriptBuilder) Script() []byte {
 	return b.script
 }
-

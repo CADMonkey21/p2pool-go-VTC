@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math" // Added for math functions
+	"math"
 	"math/big"
-	"math/rand" // Kept for rand.Intn
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -16,7 +16,7 @@ import (
 	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
 	"github.com/gertjaap/p2pool-go/p2p"
-	"github.com/gertjaap/p2pool-go/work" // Kept for BlockTemplate and CreateShare
+	"github.com/gertjaap/p2pool-go/work"
 	"github.com/gertjaap/p2pool-go/wire"
 )
 
@@ -47,7 +47,7 @@ func (s *StratumServer) jobBroadcaster() {
 			for _, client := range s.clients {
 				go func(c *Client) {
 					if c.Authorized {
-						sendMiningJob(c, template, true) // Corrected: Call as standalone function
+						sendMiningJob(c, template, true)
 					}
 				}(client)
 			}
@@ -144,25 +144,24 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	powHash := p2pnet.ActiveNetwork.POWHash(header)
 	logging.Debugf("PoW hash for submission: %s", hex.EncodeToString(work.ReverseBytes(powHash)))
 
-	shareTargetBigInt := work.DiffToTarget(c.CurrentDifficulty) // Get *big.Int target from current diff
+	shareTargetBigInt := work.DiffToTarget(c.CurrentDifficulty)
 	powHashInt := new(big.Int)
 	powHashInt.SetBytes(work.ReverseBytes(powHash))
 
 	shareAccepted := false
-	if powHashInt.Cmp(shareTargetBigInt) <= 0 { // Compare PoW hash (BigInt) with share target (BigInt)
+	if powHashInt.Cmp(shareTargetBigInt) <= 0 {
 		logging.Infof("Stratum: SHARE ACCEPTED! Valid work from %s", c.WorkerName)
 		
-		// Add datum to RateMonitor for Vardiff calculation
 		c.LocalRateMonitor.AddDatum(ShareDatum{
-			Work: targetToAverageAttempts(shareTargetBigInt), // Corrected: Call local targetToAverageAttempts
-			IsDead: false, // For now, assume not dead/orphan from stratum submission
-			WorkerName: c.WorkerName,
-			ShareTarget: shareTargetBigInt, // Store *big.Int target
-			// PubKeyHash: Needs to be derived from PoolAddress or miner's provided address for LocalAddrRateMonitor
+			Work:        targetToAverageAttempts(shareTargetBigInt),
+			IsDead:      false,
+			WorkerName:  c.WorkerName,
+			ShareTarget: shareTargetBigInt,
 		})
 		shareAccepted = true
 		
-		newShare, err := work.CreateShare(job.BlockTemplate, c.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress, s.workManager.ShareChain)
+		// THE FIX IS HERE: Pass c.CurrentDifficulty to CreateShare
+		newShare, err := work.CreateShare(job.BlockTemplate, c.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress, s.workManager.ShareChain, c.CurrentDifficulty)
 		if err != nil {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
 		} else {
@@ -217,22 +216,14 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	c.Mutex.Unlock() 
 	
 	s.sendDifficulty(c, config.Active.Vardiff.MinDiff)
-	go sendMiningJob(c, s.workManager.GetLatestTemplate(), true) // Corrected: Call as standalone function
+	go sendMiningJob(c, s.workManager.GetLatestTemplate(), true)
 }
 
-// targetToAverageAttempts calculates the average attempts per second for a given target.
-// This is a direct copy from work/util.go to resolve compilation issues.
 func targetToAverageAttempts(target *big.Int) float64 {
-	// 2**256
 	two_256 := new(big.Int).Exp(big.NewInt(2), big.NewInt(256), nil)
-	// target + 1
 	targetPlusOne := new(big.Int).Add(target, big.NewInt(1))
-	
-	// Convert to big.Float for precise division
-	// Python: 2**256 // (target + 1)
 	quotient := new(big.Float).Quo(new(big.Float).SetInt(two_256), new(big.Float).SetInt(targetPlusOne))
-	
-	f, _ := quotient.Float64() // Convert to float64, _ discards exactness bool
+	f, _ := quotient.Float64()
 	return f
 }
 
@@ -247,42 +238,33 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	if err != nil {
 		logging.Warnf("Stratum: Failed to send difficulty to %s: %v", c.Conn.RemoteAddr(), err)
 	}
-	logging.Infof("Stratum: Difficulty set to %.6f for miner %s", diff, c.Conn.RemoteAddr()) // Corrected: Formatted diff for logging
-    logging.Debugf("sendDifficulty received diff: %.10f", diff) // Added for high precision logging
+	logging.Infof("Stratum: Difficulty set to %.6f for miner %s", diff, c.Conn.RemoteAddr())
+    logging.Debugf("sendDifficulty received diff: %.10f", diff)
 }
 
-// roundDifficultyToPowerOfTwo mirrors Python's power-of-2 rounding for difficulty.
-// It finds the closest difficulty that is a power of 2 (or fraction thereof)
-// and is less than or equal to the calculated difficulty.
-func roundDifficultyToPowerOfTwo(difficulty float64) float64 { // Removed dumbScryptDiff param
-	dumbScryptDiff := 16.0 // Corrected: Hardcode DumbScryptDiff to resolve undefined error
+func roundDifficultyToPowerOfTwo(difficulty float64) float64 {
+	dumbScryptDiff := 16.0
 	logging.Debugf("Vardiff Rounding: Input difficulty = %f, DumbScryptDiff = %f", difficulty, dumbScryptDiff)
 
-	// Adjust for DUMB_SCRYPT_DIFF as per Python's bitcoin_data.difficulty_to_target_alt
 	scaledDifficulty := difficulty / dumbScryptDiff
 	logging.Debugf("Vardiff Rounding: Scaled difficulty = %f", scaledDifficulty)
 
-	roundedDifficulty := 1.0 // Start with 1.0 as the base power of 2
+	roundedDifficulty := 1.0
 	
 	if scaledDifficulty >= 1.0 {
-		for i := 0; i < 32; i++ { // Limit iterations to prevent infinite loops and for sanity
+		for i := 0; i < 32; i++ {
 			nextRoundedDifficulty := roundedDifficulty * 2
-			// The Python condition is (rounded_difficulty + rounded_difficulty * 2) / 2 < difficulty
-			// This means (1.5 * rounded_difficulty) < scaledDifficulty
-			if (1.5 * roundedDifficulty) < scaledDifficulty { // Go for the next power of 2
+			if (1.5 * roundedDifficulty) < scaledDifficulty {
 				roundedDifficulty = nextRoundedDifficulty
 				logging.Debugf("Vardiff Rounding: Increasing roundedDifficulty to %f", roundedDifficulty)
 			} else {
 				break
 			}
 		}
-	} else { // scaledDifficulty < 1.0, round downwards
-		for i := 0; i < 32; i++ { // Limit iterations
+	} else {
+		for i := 0; i < 32; i++ {
 			nextRoundedDifficulty := roundedDifficulty / 2
-			// Python: (0.75 * rounded_difficulty) >= scaledDifficulty
-			// This means (0.75 * rounded_difficulty) >= scaledDifficulty
-			// Add a lower bound to prevent going to exactly zero
-			if (0.75 * roundedDifficulty) >= scaledDifficulty && nextRoundedDifficulty > 0 { // Ensure it's not zero or negative
+			if (0.75 * roundedDifficulty) >= scaledDifficulty && nextRoundedDifficulty > 0 {
 				roundedDifficulty = nextRoundedDifficulty
 				logging.Debugf("Vardiff Rounding: Decreasing roundedDifficulty to %f", roundedDifficulty)
 			} else {
@@ -291,7 +273,7 @@ func roundDifficultyToPowerOfTwo(difficulty float64) float64 { // Removed dumbSc
 		}
 	}
 	
-	finalRoundedDifficulty := roundedDifficulty * dumbScryptDiff // Scale back up by DUMB_SCRYPT_DIFF
+	finalRoundedDifficulty := roundedDifficulty * dumbScryptDiff
 	logging.Debugf("Vardiff Rounding: Final scaled roundedDifficulty = %f", finalRoundedDifficulty)
 	return finalRoundedDifficulty
 }
@@ -308,15 +290,9 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 			return
 		}
 		
-		// Use localRateMonitor to get current hashrate and avg share time
-		// Python's get_local_rates uses 10*60 seconds (10 minutes) as default lookback
-		// The vardiff loop itself uses the full history kept by RateMonitor
-		// (len(c.ShareTimestamps) is just a basic check)
-		
-		// For accurate avgTime calculation, we use the data from RateMonitor
 		datums, actualDuration := c.LocalRateMonitor.GetDatumsInLast(c.LocalRateMonitor.maxLookbackTime)
 
-		if len(datums) < 4 { // Needs at least 4 shares in the window for a stable calculation
+		if len(datums) < 4 {
 			c.Mutex.Unlock()
 			continue
 		}
@@ -350,32 +326,28 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 			logging.Debugf("Vardiff Loop for miner %s: newDiff clamped to minDiff = %f", c.WorkerName, newDiff)
 		}
 		
-		// Apply the power-of-2 rounding mirroring legacy Python
-		roundedDiff := roundDifficultyToPowerOfTwo(newDiff) // Corrected: Removed DumbScryptDiff param
+		roundedDiff := roundDifficultyToPowerOfTwo(newDiff)
 		logging.Debugf("Vardiff Loop for miner %s: Rounded newDiff = %f", c.WorkerName, roundedDiff)
 
 
 		currentDiff := c.CurrentDifficulty
-		// Check if newDiff is significantly different from currentDiff based on rounded value
 		if math.Abs(roundedDiff-currentDiff) > 0.0001 { 
-			c.Mutex.Unlock() // Unlock before calling sendDifficulty
+			c.Mutex.Unlock()
 			logging.Infof("Stratum: Retargeting miner %s from diff %f to %f (avg shares/sec: %.2f, total time span: %.2fs)", c.WorkerName, currentDiff, roundedDiff, avgSharesPerSec, totalTimeSpan)
 			s.sendDifficulty(c, roundedDiff)
-			c.Mutex.Lock() // Re-lock after sendDifficulty
+			c.Mutex.Lock()
 		}
 		
 		c.Mutex.Unlock()
 	}
 }
 
-// sendMiningJob is moved out of StratumServer struct to be a package-level function.
-// This matches the pattern in the provided Go codebase and resolves compilation error.
-func sendMiningJob(c *Client, tmpl *work.BlockTemplate, cleanJobs bool) { // Made standalone function
+func sendMiningJob(c *Client, tmpl *work.BlockTemplate, cleanJobs bool) {
 	if tmpl == nil {
 		logging.Warnf("Stratum: No block template available, cannot send job to miner %s", c.Conn.RemoteAddr())
 		return
 	}
-	jobID := fmt.Sprintf("job%d", rand.Intn(10000)) // Uses math/rand
+	jobID := fmt.Sprintf("job%d", rand.Intn(10000))
 
 	c.Mutex.Lock()
 	newJob := &Job{
