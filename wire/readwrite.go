@@ -3,6 +3,7 @@ package wire
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -239,12 +240,12 @@ func WriteFloatingInteger(w io.Writer, bits uint32) error {
 	return binary.Write(w, binary.LittleEndian, bits)
 }
 
-func ReadPossiblyNoneHash(r io.Reader, noneValue *chainhash.Hash) (*chainhash.Hash, error) {
+func ReadPossiblyNoneHash(r io.Reader) (*chainhash.Hash, error) {
 	hash, err := ReadChainHash(r)
 	if err != nil {
 		return nil, err
 	}
-	if hash.IsEqual(noneValue) {
+	if hash.IsEqual(&nullHash) {
 		return nil, nil
 	}
 	return hash, nil
@@ -296,7 +297,7 @@ func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	refs := make([]TransactionHashRef, pairCount)
 	for i := uint64(0); i < pairCount; i++ {
 		// For each pair, read the two VarInts.
@@ -322,7 +323,7 @@ func WriteTransactionHashRefs(w io.Writer, refs []TransactionHashRef) error {
 	if err != nil {
 		return err
 	}
-	
+
 	for _, ref := range refs {
 		err := WriteVarInt(w, ref.ShareCount)
 		if err != nil {
@@ -336,22 +337,39 @@ func WriteTransactionHashRefs(w io.Writer, refs []TransactionHashRef) error {
 	return nil
 }
 
+// New, resilient function
 func ReadShares(r io.Reader) ([]Share, error) {
 	shares := make([]Share, 0)
 	count, err := ReadVarInt(r)
 	if err != nil {
-		return shares, err
+		return shares, fmt.Errorf("failed to read shares count: %v", err)
 	}
 
 	for i := uint64(0); i < count; i++ {
 		var share Share
+		// We pass the reader 'r' to FromBytes. FromBytes will now log the
+		// raw hex on failure, which is what we want.
 		err = share.FromBytes(r)
+
 		if err != nil {
-			logging.Errorf("Failed to deserialize individual share contents: %v", err)
-			return shares, err
+			// Instead of stopping all processing, we log the error for the
+			// problematic share and continue to the next one.
+			// The original error (including the hex dump) is already logged inside FromBytes.
+			logging.Warnf("Skipping one malformed share from peer (share %d of %d). The error was: %v", i+1, count, err)
+			// Since each share is its own self-contained VarString, the reader 'r' is not
+			// hopelessly corrupted. When share.FromBytes is called in the next iteration,
+			// it will start by reading the next VarInt for Type, and a new VarString for contents,
+			// effectively resynchronizing the stream for the next share. We just need to
+			// make sure we don't return the error and stop the whole message processing.
+			continue
+		} else {
+			// Only add the share if it was successfully deserialized.
+			shares = append(shares, share)
 		}
-		shares = append(shares, share)
 	}
+
+	// We return nil error because we successfully processed the message,
+	// even if we had to skip some bad data within it.
 	return shares, nil
 }
 
