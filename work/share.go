@@ -95,7 +95,6 @@ func calculateMerkleRoot(hashes [][]byte) []byte {
 }
 
 // CreateShare takes a successful submission and converts it into a p2pool share object.
-// THE FIX IS HERE: Added stratumDifficulty parameter
 func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHex, payoutAddress string, shareChain *ShareChain, stratumDifficulty float64) (*p2pwire.Share, error) {
 	nonceBytes, err := hex.DecodeString(nonceHex)
 	if err != nil {
@@ -107,10 +106,8 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		return nil, err
 	}
 
-	// --- THE FIX IS HERE: Calculate share bits from stratum difficulty, not block difficulty ---
 	shareTarget := DiffToTarget(stratumDifficulty)
 	shareBits := blockchain.BigToCompact(shareTarget)
-	// ---
 
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
 	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
@@ -135,13 +132,12 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	powHash, _ := chainhash.NewHash(powHashBytes)
 	shareHash, _ := chainhash.NewHash(DblSha256(header))
 
-	// For the TXID Merkle Link, we need the wtxids, not the txids
 	coinbaseWtxid, _ := chainhash.NewHashFromStr("0000000000000000000000000000000000000000000000000000000000000000")
 	wtxids := []*chainhash.Hash{coinbaseWtxid}
 	for _, txTmpl := range job.Transactions {
 		txBytes, _ := hex.DecodeString(txTmpl.Data)
 		var msgTx wire.MsgTx
-		_ = msgTx.Deserialize(bytes.NewReader(txBytes)) // Error ignored as it's handled in CalculateWitnessCommitment
+		_ = msgTx.Deserialize(bytes.NewReader(txBytes))
 		wtxid := msgTx.WitnessHash()
 		wtxids = append(wtxids, &wtxid)
 	}
@@ -163,47 +159,47 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		newTxHashesForShareInfo = append(newTxHashesForShareInfo, h)
 	}
 
+	// This now initializes the new "flattened" p2pwire.Share struct,
+	// without the nested "Contents" field.
 	share := &p2pwire.Share{
 		Type: 17,
-		Contents: p2pwire.ShareContents{
-			MinHeader: p2pwire.SmallBlockHeader{
-				Version:       int32(job.Version),
-				PreviousBlock: prevBlockHash,
-				Timestamp:     binary.LittleEndian.Uint32(nTimeBytes),
-				Bits:          shareBits, // CORRECTED: Use share bits
-				Nonce:         nonceUint32,
-			},
-			ShareInfo: p2pwire.ShareInfo{
-				ShareData: p2pwire.ShareData{
-					PreviousShareHash: shareChain.GetTipHash(),
-					CoinBase:          coinbaseTxBytes,
-					Nonce:             nonceUint32,
-					PubKeyHash:        make([]byte, 20),
-					PubKeyHashVersion: 0,
-					Subsidy:           uint64(job.CoinbaseValue),
-					Donation:          uint16(config.Active.Fee * 100),
-				},
-				SegwitData: &p2pwire.SegwitData{
-					TXIDMerkleLink: p2pwire.MerkleLink{
-						Branch: txidMerkleLinkBranches,
-						Index:  0,
-					},
-					WTXIDMerkleRoot: wtxidMerkleRoot,
-				},
-				NewTransactionHashes: newTxHashesForShareInfo,
-				TransactionHashRefs:  []p2pwire.TransactionHashRef{},
-				FarShareHash:         nil,
-				MaxBits:              shareBits, // CORRECTED: Use share bits
-				Bits:                 shareBits, // CORRECTED: Use share bits
-				Timestamp:            int32(binary.LittleEndian.Uint32(nTimeBytes)),
-				AbsHeight:            int32(job.Height),
-				AbsWork:              new(big.Int),
-			},
-			MerkleLink:    p2pwire.MerkleLink{Branch: merkleLinkBranches, Index: 0},
-			RefMerkleLink: p2pwire.MerkleLink{Branch: []*chainhash.Hash{}, Index: 0},
+		MinHeader: p2pwire.SmallBlockHeader{
+			Version:       int32(job.Version),
+			PreviousBlock: prevBlockHash,
+			Timestamp:     binary.LittleEndian.Uint32(nTimeBytes),
+			Bits:          shareBits,
+			Nonce:         nonceUint32,
 		},
-		POWHash: powHash,
-		Hash:    shareHash,
+		ShareInfo: p2pwire.ShareInfo{
+			ShareData: p2pwire.ShareData{
+				PreviousShareHash: shareChain.GetTipHash(),
+				CoinBase:          coinbaseTxBytes,
+				Nonce:             nonceUint32,
+				PubKeyHash:        make([]byte, 20),
+				PubKeyHashVersion: 0,
+				Subsidy:           uint64(job.CoinbaseValue),
+				Donation:          uint16(config.Active.Fee * 100),
+			},
+			SegwitData: &p2pwire.SegwitData{
+				TXIDMerkleLink: p2pwire.MerkleLink{
+					Branch: txidMerkleLinkBranches,
+					Index:  0,
+				},
+				WTXIDMerkleRoot: wtxidMerkleRoot,
+			},
+			NewTransactionHashes: newTxHashesForShareInfo,
+			TransactionHashRefs:  []p2pwire.TransactionHashRef{},
+			FarShareHash:         nil,
+			MaxBits:              shareBits,
+			Bits:                 shareBits,
+			Timestamp:            int32(binary.LittleEndian.Uint32(nTimeBytes)),
+			AbsHeight:            int32(job.Height),
+			AbsWork:              new(big.Int),
+		},
+		MerkleLink:    p2pwire.MerkleLink{Branch: merkleLinkBranches, Index: 0},
+		RefMerkleLink: p2pwire.MerkleLink{Branch: []*chainhash.Hash{}, Index: 0},
+		POWHash:       powHash,
+		Hash:          shareHash,
 	}
 
 	logging.Infof("Successfully created new share with hash %s and populated SegwitData", share.Hash.String()[:12])
