@@ -476,6 +476,10 @@ func (s *Share) FromBytes(r io.Reader) error {
 
 finalize:
 	// --- HASHING LOGIC ---
+	if s.ShareInfo.Bits == 0 {
+		return fmt.Errorf("share missing Bits field")
+	}
+
 	shareHashBytes := util.Sha256d(payloadBytes)
 	s.Hash, _ = chainhash.NewHash(shareHashBytes)
 

@@ -18,7 +18,7 @@ type ShareChain struct {
 	Tail                  *ChainShare
 	AllShares             map[string]*ChainShare
 	AllSharesByPrev       map[string]*ChainShare
-	disconnectedShares    []*wire.Share
+	disconnectedShares    map[string]*wire.Share
 	disconnectedShareLock sync.Mutex
 	allSharesLock         sync.Mutex
 }
@@ -29,12 +29,12 @@ type ChainShare struct {
 	Next     *ChainShare
 }
 
-func NewShareChain() *ShareChain {
+func NewShareChain() *ShareChain { // Corrected return type
 	sc := &ShareChain{
-		disconnectedShares:    make([]*wire.Share, 0),
+		disconnectedShares:    make(map[string]*wire.Share),
 		allSharesLock:         sync.Mutex{},
-		AllSharesByPrev:       map[string]*ChainShare{},
-		AllShares:             map[string]*ChainShare{},
+		AllSharesByPrev:       make(map[string]*ChainShare),
+		AllShares:             make(map[string]*ChainShare),
 		disconnectedShareLock: sync.Mutex{},
 		SharesChannel:         make(chan []wire.Share, 10),
 		NeedShareChannel:      make(chan *chainhash.Hash, 10),
@@ -58,21 +58,25 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 		share := s[i] // Create a new variable for the loop to avoid pointer issues
 
 		if share.Hash != nil && share.IsValid() {
+			hashStr := share.Hash.String()
 			sc.allSharesLock.Lock()
-			_, ok := sc.AllShares[share.Hash.String()]
-			if !ok {
-				logging.Infof("ShareChain: Adding valid share %s to disconnected list", share.Hash.String()[:12])
-				sc.disconnectedShares = append(sc.disconnectedShares, &share)
-			}
+			_, inAllShares := sc.AllShares[hashStr]
 			sc.allSharesLock.Unlock()
+
+			_, inDisconnected := sc.disconnectedShares[hashStr]
+
+			if !inAllShares && !inDisconnected {
+				logging.Infof("ShareChain: Adding valid share %s to disconnected list", hashStr[:12])
+				sc.disconnectedShares[hashStr] = &share
+			}
 		} else {
 			if share.POWHash != nil && share.Hash != nil {
 				target := blockchain.CompactToBig(share.ShareInfo.Bits)
 				if target.Sign() < 0 {
 					target.Abs(target)
 				}
-				logging.Debugf("share %s fails PoW – target %064x vs hash %064x",
-					share.Hash.String()[:12], target.Bytes(), blockchain.HashToBig(share.POWHash).Bytes())
+				logging.Debugf("share %s PoW – target %064x  hash %064x",
+					share.Hash.String()[:12], target, blockchain.HashToBig(share.POWHash))
 			} else {
 				logging.Warnf("ShareChain: Ignoring invalid share (nil hash or PoWHash).")
 			}
@@ -97,11 +101,9 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 	var changedInLoop = true
 	for changedInLoop {
 		changedInLoop = false
-		newDisconnected := []*wire.Share{}
 
-		for _, share := range sc.disconnectedShares {
+		for hashStr, share := range sc.disconnectedShares {
 			if share.ShareInfo.ShareData.PreviousShareHash == nil {
-				newDisconnected = append(newDisconnected, share)
 				continue
 			}
 
@@ -121,6 +123,7 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 				sc.Tip = newChainShare
 				sc.Tail = newChainShare
 				sc.allSharesLock.Unlock()
+				delete(sc.disconnectedShares, hashStr) // Remove from disconnected
 				changedInLoop = true
 				continue
 			}
@@ -142,15 +145,13 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 						target.Abs(target)
 					}
 					logging.Infof("Accepted share %s becomes new tip. Height: %d, Target: %064x",
-						share.Hash.String()[:12], share.ShareInfo.AbsHeight, target.Bytes())
+						share.Hash.String()[:12], share.ShareInfo.AbsHeight, target)
 				}
 				sc.allSharesLock.Unlock()
+				delete(sc.disconnectedShares, hashStr) // Remove from disconnected
 				changedInLoop = true
-			} else {
-				newDisconnected = append(newDisconnected, share)
 			}
 		}
-		sc.disconnectedShares = newDisconnected
 	}
 }
 
