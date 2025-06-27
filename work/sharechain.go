@@ -29,7 +29,7 @@ type ChainShare struct {
 	Next     *ChainShare
 }
 
-func NewShareChain() *ShareChain { // Corrected return type
+func NewShareChain() *ShareChain {
 	sc := &ShareChain{
 		disconnectedShares:    make(map[string]*wire.Share),
 		allSharesLock:         sync.Mutex{},
@@ -98,46 +98,41 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 
 func (sc *ShareChain) Resolve(skipCommit bool) {
 	logging.Debugf("Resolving sharechain with %d disconnected shares", len(sc.disconnectedShares))
-	var changedInLoop = true
-	for changedInLoop {
+	for changedInLoop := true; changedInLoop; {
 		changedInLoop = false
 
 		for hashStr, share := range sc.disconnectedShares {
+			// Handle genesis share
 			if share.ShareInfo.ShareData.PreviousShareHash == nil {
-				continue
+				sc.allSharesLock.Lock()
+				// Only accept a genesis share if the chain is empty
+				if sc.Tip == nil {
+					logging.Infof("Accepting share %s as genesis", share.Hash.String()[:12])
+					newChainShare := &ChainShare{Share: share}
+					sc.AllShares[hashStr] = newChainShare
+					sc.Tip = newChainShare
+					sc.Tail = newChainShare
+					changedInLoop = true
+					delete(sc.disconnectedShares, hashStr)
+				}
+				sc.allSharesLock.Unlock()
+				continue // Move to next share
 			}
 
+			// Handle regular shares
 			prevHashStr := share.ShareInfo.ShareData.PreviousShareHash.String()
-
 			sc.allSharesLock.Lock()
 			parent, exists := sc.AllShares[prevHashStr]
-			isGenesis := sc.Tip == nil && len(sc.AllShares) == 0
 			sc.allSharesLock.Unlock()
 
-			if isGenesis {
-				logging.Infof("Accepting share %s as genesis", share.Hash.String()[:12])
-				newChainShare := &ChainShare{Share: share}
-				sc.allSharesLock.Lock()
-				sc.AllShares[share.Hash.String()] = newChainShare
-				sc.AllSharesByPrev[prevHashStr] = newChainShare
-				sc.Tip = newChainShare
-				sc.Tail = newChainShare
-				sc.allSharesLock.Unlock()
-				delete(sc.disconnectedShares, hashStr) // Remove from disconnected
-				changedInLoop = true
-				continue
-			}
-
 			if exists {
-				logging.Infof("Linking share %s to parent %s", share.Hash.String()[:12], prevHashStr[:12])
+				logging.Infof("Linking share %s to parent %s", hashStr[:12], prevHashStr[:12])
 				newChainShare := &ChainShare{Share: share, Previous: parent}
 				parent.Next = newChainShare
 
 				sc.allSharesLock.Lock()
-				sc.AllShares[share.Hash.String()] = newChainShare
-				sc.AllSharesByPrev[prevHashStr] = newChainShare
+				sc.AllShares[hashStr] = newChainShare
 
-				// If the parent was the tip, this is the new tip
 				if sc.Tip == parent {
 					sc.Tip = newChainShare
 					target := blockchain.CompactToBig(share.ShareInfo.Bits)
@@ -145,10 +140,11 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 						target.Abs(target)
 					}
 					logging.Infof("Accepted share %s becomes new tip. Height: %d, Target: %064x",
-						share.Hash.String()[:12], share.ShareInfo.AbsHeight, target)
+						hashStr[:12], share.ShareInfo.AbsHeight, target)
 				}
 				sc.allSharesLock.Unlock()
-				delete(sc.disconnectedShares, hashStr) // Remove from disconnected
+
+				delete(sc.disconnectedShares, hashStr)
 				changedInLoop = true
 			}
 		}
