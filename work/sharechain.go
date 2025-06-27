@@ -5,7 +5,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/btcsuite/btcd/blockchain" // Added import
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/gertjaap/p2pool-go/logging"
 	"github.com/gertjaap/p2pool-go/wire"
@@ -66,12 +66,16 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 			}
 			sc.allSharesLock.Unlock()
 		} else {
-			// Added detailed debug log as requested
-			if share.POWHash != nil {
-				logging.Debugf("share %v fails PoW – target %064x vs hash %064x",
-					share.Hash, blockchain.CompactToBig(share.ShareInfo.Bits), share.POWHash)
+			if share.POWHash != nil && share.Hash != nil {
+				target := blockchain.CompactToBig(share.ShareInfo.Bits)
+				if target.Sign() < 0 {
+					target.Abs(target)
+				}
+				logging.Debugf("share %s fails PoW – target %064x vs hash %064x",
+					share.Hash.String()[:12], target.Bytes(), blockchain.HashToBig(share.POWHash).Bytes())
+			} else {
+				logging.Warnf("ShareChain: Ignoring invalid share (nil hash or PoWHash).")
 			}
-			logging.Warnf("ShareChain: Ignoring invalid share received from peer.")
 		}
 	}
 	sc.Resolve(false)
@@ -89,8 +93,65 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 }
 
 func (sc *ShareChain) Resolve(skipCommit bool) {
-	logging.Debugf("Resolving sharechain")
-	// TODO: Implement logic to connect disconnected shares into a chain
+	logging.Debugf("Resolving sharechain with %d disconnected shares", len(sc.disconnectedShares))
+	var changedInLoop = true
+	for changedInLoop {
+		changedInLoop = false
+		newDisconnected := []*wire.Share{}
+
+		for _, share := range sc.disconnectedShares {
+			if share.ShareInfo.ShareData.PreviousShareHash == nil {
+				newDisconnected = append(newDisconnected, share)
+				continue
+			}
+
+			prevHashStr := share.ShareInfo.ShareData.PreviousShareHash.String()
+
+			sc.allSharesLock.Lock()
+			parent, exists := sc.AllShares[prevHashStr]
+			isGenesis := sc.Tip == nil && len(sc.AllShares) == 0
+			sc.allSharesLock.Unlock()
+
+			if isGenesis {
+				logging.Infof("Accepting share %s as genesis", share.Hash.String()[:12])
+				newChainShare := &ChainShare{Share: share}
+				sc.allSharesLock.Lock()
+				sc.AllShares[share.Hash.String()] = newChainShare
+				sc.AllSharesByPrev[prevHashStr] = newChainShare
+				sc.Tip = newChainShare
+				sc.Tail = newChainShare
+				sc.allSharesLock.Unlock()
+				changedInLoop = true
+				continue
+			}
+
+			if exists {
+				logging.Infof("Linking share %s to parent %s", share.Hash.String()[:12], prevHashStr[:12])
+				newChainShare := &ChainShare{Share: share, Previous: parent}
+				parent.Next = newChainShare
+
+				sc.allSharesLock.Lock()
+				sc.AllShares[share.Hash.String()] = newChainShare
+				sc.AllSharesByPrev[prevHashStr] = newChainShare
+
+				// If the parent was the tip, this is the new tip
+				if sc.Tip == parent {
+					sc.Tip = newChainShare
+					target := blockchain.CompactToBig(share.ShareInfo.Bits)
+					if target.Sign() < 0 {
+						target.Abs(target)
+					}
+					logging.Infof("Accepted share %s becomes new tip. Height: %d, Target: %064x",
+						share.Hash.String()[:12], share.ShareInfo.AbsHeight, target.Bytes())
+				}
+				sc.allSharesLock.Unlock()
+				changedInLoop = true
+			} else {
+				newDisconnected = append(newDisconnected, share)
+			}
+		}
+		sc.disconnectedShares = newDisconnected
+	}
 }
 
 func (sc *ShareChain) Commit() error {

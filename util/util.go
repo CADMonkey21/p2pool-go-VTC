@@ -42,3 +42,29 @@ func GetRandomId() *chainhash.Hash {
 	id, _ := chainhash.NewHash(idBytes)
 	return id
 }
+
+// ReverseBytes is a helper for handling endianness differences.
+func ReverseBytes(b []byte) []byte {
+	r := make([]byte, len(b))
+	for i := 0; i < len(b); i++ {
+		r[i] = b[len(b)-1-i]
+	}
+	return r
+}
+
+// ComputeMerkleRootFromLink calculates the merkle root by applying a branch to a leaf hash.
+func ComputeMerkleRootFromLink(leaf *chainhash.Hash, branch []*chainhash.Hash, index uint64) *chainhash.Hash {
+	currentHash := leaf
+	for _, branchHash := range branch {
+		var combined []byte
+		if (index & 1) == 0 {
+			combined = append(currentHash[:], branchHash[:]...)
+		} else {
+			combined = append(branchHash[:], currentHash[:]...)
+		}
+		newHashBytes := Sha256d(combined)
+		currentHash, _ = chainhash.NewHash(newHashBytes)
+		index >>= 1
+	}
+	return currentHash
+}

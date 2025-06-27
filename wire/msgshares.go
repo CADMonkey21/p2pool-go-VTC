@@ -10,6 +10,8 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/gertjaap/p2pool-go/logging"
+	p2pnet "github.com/gertjaap/p2pool-go/net"
+	"github.com/gertjaap/p2pool-go/util"
 )
 
 // helper — returns io.EOF when need > have
@@ -192,8 +194,13 @@ func (s *Share) IsValid() bool {
 		return false
 	}
 	target := blockchain.CompactToBig(s.ShareInfo.Bits)
-	bnHash := blockchain.HashToBig(s.POWHash)
-	return bnHash.Cmp(target) <= 0
+
+	// Ensure the target is always treated as a non-negative number
+	if target.Sign() < 0 {
+		target.Abs(target)
+	}
+
+	return blockchain.HashToBig(s.POWHash).Cmp(target) <= 0
 }
 
 // ToBytes correctly serializes a Share object according to the definitive blueprint for Vertcoin's P2Pool.
@@ -205,6 +212,12 @@ func (s *Share) ToBytes() ([]byte, error) {
 
 func (s *Share) FromBytes(r io.Reader) error {
 	var err error
+	// Declare all variables at the top of the function to avoid goto errors
+	var refIndex, midx uint32
+	var mStart, mNeed, startN, needList, needTot, mSz, sz int
+	var mCnt, cnt uint64
+	var mErr, perr error
+	var peekM, peekR, peekReader *bytes.Reader
 
 	s.Type, err = ReadVarInt(r)
 	if err != nil {
@@ -284,8 +297,8 @@ func (s *Share) FromBytes(r io.Reader) error {
 	}
 
 	if s.Type >= 17 {
-		startN := lr.Len()
-		peekReader := bytes.NewReader(payloadBytes[len(payloadBytes)-startN:])
+		startN = lr.Len()
+		peekReader = bytes.NewReader(payloadBytes[len(payloadBytes)-startN:])
 		cnt, sz, peekErr := compactSizePeek(peekReader)
 		if peekErr != nil && peekErr != io.EOF {
 			return fmt.Errorf("peek segwit VarInt: %w", peekErr)
@@ -314,8 +327,8 @@ func (s *Share) FromBytes(r io.Reader) error {
 	}
 
 	if lr.Len() > 0 {
-		startN := lr.Len()
-		peekReader := bytes.NewReader(payloadBytes[len(payloadBytes)-startN:])
+		startN = lr.Len()
+		peekReader = bytes.NewReader(payloadBytes[len(payloadBytes)-startN:])
 		cnt, sz, peekErr := compactSizePeek(peekReader)
 		if peekErr != nil && peekErr != io.EOF {
 			return fmt.Errorf("peek NewTxHashes VarInt: %w", peekErr)
@@ -340,7 +353,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 
 	if err = needBytes(lr, 1); err != nil {
 		if err == io.EOF {
-			return nil
+			goto finalize
 		}
 		return err
 	}
@@ -397,37 +410,33 @@ func (s *Share) FromBytes(r io.Reader) error {
 
 	// --- RefMerkleLink & trailer ---
 	if lr.Len() == 0 {
-		return nil // nothing left – perfectly valid old share
+		goto finalize
 	}
 
-	// peek the branch-count to see whether a *complete* RefMerkleLink fits
-	startN := lr.Len()
-	peekR := bytes.NewReader(payloadBytes[len(payloadBytes)-startN:])
-	cnt, sz, perr := compactSizePeek(peekR)
+	startN = lr.Len()
+	peekR = bytes.NewReader(payloadBytes[len(payloadBytes)-startN:])
+	cnt, sz, perr = compactSizePeek(peekR)
 	if perr != nil && perr != io.EOF {
 		return fmt.Errorf("peek RefMerkleLink VarInt: %w", perr)
 	}
 
-	needList := int(cnt) * 32         // branch hashes
-	needTot := sz + needList + 4 // varint + branch + uint32 index
+	needList = int(cnt) * 32
+	needTot = sz + needList + 4
 	if startN < needTot {
-		return nil // incomplete → treat as “no RefMerkleLink”
+		goto finalize
 	}
 
-	// If we get here, the full RefMerkleLink and trailer should exist.
 	s.RefMerkleLink.Branch, err = ReadChainHashList(lr)
 	if err != nil {
 		return fmt.Errorf("failed on RefMerkleLink.Branch: %v", err)
 	}
 
-	var refIndex uint32
 	err = binary.Read(lr, binary.LittleEndian, &refIndex)
 	if err != nil {
 		return fmt.Errorf("failed on RefMerkleLink.Index: %v", err)
 	}
 	s.RefMerkleLink.Index = uint64(refIndex)
 
-	// ---- hash-link block ----
 	s.LastTxOutNonce, err = ReadVarInt(lr)
 	if err != nil {
 		return fmt.Errorf("LastTxOutNonce: %w", err)
@@ -444,29 +453,58 @@ func (s *Share) FromBytes(r io.Reader) error {
 
 	// ---- MerkleLink (optional) ----
 	if lr.Len() > 0 {
-		// Peek the branch count first
-		mStart := lr.Len()
-		peekM := bytes.NewReader(payloadBytes[len(payloadBytes)-mStart:])
-		mCnt, mSz, mErr := compactSizePeek(peekM)
+		mStart = lr.Len()
+		peekM = bytes.NewReader(payloadBytes[len(payloadBytes)-mStart:])
+		mCnt, mSz, mErr = compactSizePeek(peekM)
 		if mErr != nil && mErr != io.EOF {
 			return fmt.Errorf("peek MerkleLink VarInt: %w", mErr)
 		}
-		mNeed := mSz + int(mCnt)*32 + 4 // varint + branch + uint32 index
+		mNeed = mSz + int(mCnt)*32 + 4
 
-		if mStart >= mNeed { // complete MerkleLink is present
+		if mStart >= mNeed {
 			if s.MerkleLink.Branch, err = ReadChainHashList(lr); err != nil {
 				return fmt.Errorf("MerkleLink.Branch: %w", err)
 			}
-			var midx uint32
 			if err = binary.Read(lr, binary.LittleEndian, &midx); err != nil {
 				if err != io.EOF {
 					return fmt.Errorf("MerkleLink.Index: %w", err)
 				}
-				// Reached exact end – still fine
 			}
 			s.MerkleLink.Index = uint64(midx)
 		}
 	}
+
+finalize:
+	// --- HASHING LOGIC ---
+	shareHashBytes := util.Sha256d(payloadBytes)
+	s.Hash, _ = chainhash.NewHash(shareHashBytes)
+
+	coinbaseTxHashBytes := util.Sha256d(s.ShareInfo.ShareData.CoinBase)
+	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
+
+	merkleRoot := util.ComputeMerkleRootFromLink(
+		coinbaseTxHash, s.MerkleLink.Branch, s.MerkleLink.Index)
+
+	var hdr bytes.Buffer
+	binary.Write(&hdr, binary.LittleEndian, s.MinHeader.Version)
+	if s.MinHeader.PreviousBlock != nil {
+		hdr.Write(util.ReverseBytes(s.MinHeader.PreviousBlock.CloneBytes()))
+	} else {
+		hdr.Write(make([]byte, 32))
+	}
+	hdr.Write(util.ReverseBytes(merkleRoot.CloneBytes()))
+	binary.Write(&hdr, binary.LittleEndian, s.MinHeader.Timestamp)
+	binary.Write(&hdr, binary.LittleEndian, s.MinHeader.Bits)
+	binary.Write(&hdr, binary.LittleEndian, s.MinHeader.Nonce)
+
+	powBytes, err := p2pnet.ActiveNetwork.Verthash.SumVerthash(hdr.Bytes())
+	if err != nil {
+		return fmt.Errorf("verthash: %w", err)
+	}
+	// Reverse the PoW hash to little-endian for correct comparison
+	powLE := util.ReverseBytes(powBytes[:])
+	s.POWHash, _ = chainhash.NewHash(powLE)
+
 	return nil
 }
 

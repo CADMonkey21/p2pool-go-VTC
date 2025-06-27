@@ -153,6 +153,12 @@ func ReadChainHashList(r io.Reader) ([]*chainhash.Hash, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Add a sanity check to prevent panics from malicious payloads
+	const maxHashes = 1024 // A reasonable upper limit for any list of hashes
+	if count > maxHashes {
+		return nil, fmt.Errorf("hash list too large: %d > %d", count, maxHashes)
+	}
+
 	hashes := make([]*chainhash.Hash, count)
 	for i := uint64(0); i < count; i++ {
 		hashes[i], err = ReadChainHash(r)
