@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/btcsuite/btcd/blockchain" // Added import
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/gertjaap/p2pool-go/logging"
 	"github.com/gertjaap/p2pool-go/wire"
@@ -55,7 +56,7 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 
 	for i := range s {
 		share := s[i] // Create a new variable for the loop to avoid pointer issues
-		
+
 		if share.Hash != nil && share.IsValid() {
 			sc.allSharesLock.Lock()
 			_, ok := sc.AllShares[share.Hash.String()]
@@ -65,6 +66,11 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 			}
 			sc.allSharesLock.Unlock()
 		} else {
+			// Added detailed debug log as requested
+			if share.POWHash != nil {
+				logging.Debugf("share %v fails PoW – target %064x vs hash %064x",
+					share.Hash, blockchain.CompactToBig(share.ShareInfo.Bits), share.POWHash)
+			}
 			logging.Warnf("ShareChain: Ignoring invalid share received from peer.")
 		}
 	}
@@ -74,7 +80,7 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 	sc.allSharesLock.Lock()
 	defer sc.allSharesLock.Unlock()
-	
+
 	if sc.Tip != nil {
 		return sc.Tip.Share.Hash
 	}
@@ -123,4 +129,3 @@ func (sc *ShareChain) Load() error {
 
 	return nil
 }
-
