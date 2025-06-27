@@ -365,9 +365,8 @@ func ReadShares(r io.Reader) ([]Share, error) {
 	shares := make([]Share, 0)
 	count, err := ReadVarInt(r)
 	if err != nil {
-		// If we can't even read the count, it's a fatal error for this message.
 		if err == io.EOF {
-			return shares, nil // No shares to read is not an error.
+			return shares, nil
 		}
 		return shares, fmt.Errorf("failed to read shares count: %v", err)
 	}
@@ -377,16 +376,10 @@ func ReadShares(r io.Reader) ([]Share, error) {
 		err = share.FromBytes(r)
 
 		if err != nil {
-			// Log the specific error for the problematic share and continue.
-			logging.Warnf("Skipping one malformed share from peer (share %d of %d). The error was: %v", i+1, count, err)
-			// This is tricky. If FromBytes fails mid-stream, the reader 'r' might be
-			// in an unrecoverable state for this message. The best we can do is
-			// stop processing this shares message.
-			// A more robust solution would require reading the share's "Contents Length"
-			// and skipping that many bytes to get to the next share.
+			// Downgraded to Debugf to reduce console noise for expected errors
+			logging.Debugf("Skipping one malformed share from peer (share %d of %d). The error was: %v", i+1, count, err)
 			return shares, fmt.Errorf("error processing share %d: %v; stopping deserialization of this message", i+1, err)
 		} else {
-			// Only add the share if it was successfully deserialized.
 			shares = append(shares, share)
 		}
 	}
