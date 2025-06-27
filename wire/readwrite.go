@@ -185,7 +185,13 @@ func ReadFixedBytes(r io.Reader, length int) ([]byte, error) {
 
 func WriteFixedBytes(w io.Writer, b []byte, length int) error {
 	if len(b) != length {
-		return errors.New("byte slice length mismatch for fixed bytes write")
+		// Pad with leading zeros if too short
+		if len(b) < length {
+			padding := make([]byte, length-len(b))
+			b = append(padding, b...)
+		} else {
+			return errors.New("byte slice length mismatch for fixed bytes write")
+		}
 	}
 	_, err := w.Write(b)
 	return err
@@ -241,20 +247,31 @@ func WriteFloatingInteger(w io.Writer, bits uint32) error {
 }
 
 func ReadPossiblyNoneHash(r io.Reader) (*chainhash.Hash, error) {
-	hash, err := ReadChainHash(r)
+	var isPresent uint8
+	err := binary.Read(r, binary.LittleEndian, &isPresent)
 	if err != nil {
 		return nil, err
 	}
-	if hash.IsEqual(&nullHash) {
-		return nil, nil
+
+	if isPresent == 0x00 {
+		return nil, nil // Hash is not present
 	}
-	return hash, nil
+
+	// If isPresent is 0x01 (or anything else, to be lenient), the hash follows.
+	return ReadChainHash(r)
 }
 
-func WritePossiblyNoneHash(w io.Writer, h *chainhash.Hash, noneValue *chainhash.Hash) error {
+func WritePossiblyNoneHash(w io.Writer, h *chainhash.Hash) error {
 	if h == nil {
-		return WriteChainHash(w, noneValue)
+		// Write 0x00 to indicate no hash
+		return binary.Write(w, binary.LittleEndian, uint8(0x00))
 	}
+	// Write 0x01 to indicate a hash follows
+	err := binary.Write(w, binary.LittleEndian, uint8(0x01))
+	if err != nil {
+		return err
+	}
+	// Write the actual hash
 	return WriteChainHash(w, h)
 }
 
@@ -342,34 +359,32 @@ func ReadShares(r io.Reader) ([]Share, error) {
 	shares := make([]Share, 0)
 	count, err := ReadVarInt(r)
 	if err != nil {
+		// If we can't even read the count, it's a fatal error for this message.
+		if err == io.EOF {
+			return shares, nil // No shares to read is not an error.
+		}
 		return shares, fmt.Errorf("failed to read shares count: %v", err)
 	}
 
 	for i := uint64(0); i < count; i++ {
 		var share Share
-		// We pass the reader 'r' to FromBytes. FromBytes will now log the
-		// raw hex on failure, which is what we want.
 		err = share.FromBytes(r)
 
 		if err != nil {
-			// Instead of stopping all processing, we log the error for the
-			// problematic share and continue to the next one.
-			// The original error (including the hex dump) is already logged inside FromBytes.
+			// Log the specific error for the problematic share and continue.
 			logging.Warnf("Skipping one malformed share from peer (share %d of %d). The error was: %v", i+1, count, err)
-			// Since each share is its own self-contained VarString, the reader 'r' is not
-			// hopelessly corrupted. When share.FromBytes is called in the next iteration,
-			// it will start by reading the next VarInt for Type, and a new VarString for contents,
-			// effectively resynchronizing the stream for the next share. We just need to
-			// make sure we don't return the error and stop the whole message processing.
-			continue
+			// This is tricky. If FromBytes fails mid-stream, the reader 'r' might be
+			// in an unrecoverable state for this message. The best we can do is
+			// stop processing this shares message.
+			// A more robust solution would require reading the share's "Contents Length"
+			// and skipping that many bytes to get to the next share.
+			return shares, fmt.Errorf("error processing share %d: %v; stopping deserialization of this message", i+1, err)
 		} else {
 			// Only add the share if it was successfully deserialized.
 			shares = append(shares, share)
 		}
 	}
 
-	// We return nil error because we successfully processed the message,
-	// even if we had to skip some bad data within it.
 	return shares, nil
 }
 
