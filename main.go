@@ -24,15 +24,26 @@ func main() {
 
 	rpcClient := rpc.NewClient(config.Active)
 	sc := work.NewShareChain()
-	
+	sc.Load() // Load existing sharechain from disk
+
 	workManager := work.NewWorkManager(rpcClient, sc)
 	go workManager.WatchBlockTemplate()
 
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
-	
-	// Correctly pass both the workManager and peerManager
+
 	stratumServer := stratum.NewStratumServer(workManager, pm)
 	go stratumServer.ListenForMiners()
+
+	// Periodically commit the sharechain to disk
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			logging.Infof("Committing sharechain to disk...")
+			if err := sc.Commit(); err != nil {
+				logging.Warnf("Could not commit sharechain to disk: %v", err)
+			}
+		}
+	}()
 
 	for {
 		logging.Debugf("Number of active peers: %d", pm.GetPeerCount())

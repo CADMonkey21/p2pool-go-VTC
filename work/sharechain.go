@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -30,6 +31,7 @@ type ShareChain struct {
 	AllShares             map[string]*ChainShare
 	AllSharesByPrev       map[string]*ChainShare
 	disconnectedShares    map[string]*orphanInfo
+	requestedParents      map[string]time.Time // Cache for pending parent requests
 	disconnectedShareLock sync.Mutex
 	allSharesLock         sync.Mutex
 }
@@ -43,6 +45,7 @@ type ChainShare struct {
 func NewShareChain() *ShareChain {
 	sc := &ShareChain{
 		disconnectedShares:    make(map[string]*orphanInfo),
+		requestedParents:      make(map[string]time.Time),
 		allSharesLock:         sync.Mutex{},
 		AllSharesByPrev:       make(map[string]*ChainShare),
 		AllShares:             make(map[string]*ChainShare),
@@ -70,6 +73,7 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 
 		// Early filter for shares that are guaranteed to be invalid
 		if share.ShareInfo.Bits == 0 {
+			logging.Debugf("Ignoring share with Bits == 0")
 			continue
 		}
 
@@ -101,6 +105,17 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 	sc.Resolve(false)
 }
 
+// GetShare retrieves a single share from the chain by its hash.
+func (sc *ShareChain) GetShare(hashStr string) *wire.Share {
+	sc.allSharesLock.Lock()
+	defer sc.allSharesLock.Unlock()
+	if cs, ok := sc.AllShares[hashStr]; ok {
+		return cs.Share
+	}
+	return nil
+}
+
+
 func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 	sc.allSharesLock.Lock()
 	defer sc.allSharesLock.Unlock()
@@ -112,12 +127,18 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 }
 
 func (sc *ShareChain) Resolve(skipCommit bool) {
+	sc.disconnectedShareLock.Lock()
+	defer sc.disconnectedShareLock.Unlock()
+
 	logging.Debugf("Resolving sharechain with %d disconnected shares", len(sc.disconnectedShares))
 	for changedInLoop := true; changedInLoop; {
 		changedInLoop = false
 
 		// First pass: try to link everything
 		for hashStr, orphan := range sc.disconnectedShares {
+			if orphan.share.ShareInfo.ShareData.PreviousShareHash == nil {
+				continue // Genesis is handled in the aging pass
+			}
 			prevHashStr := orphan.share.ShareInfo.ShareData.PreviousShareHash.String()
 			sc.allSharesLock.Lock()
 			parent, exists := sc.AllShares[prevHashStr]
@@ -151,7 +172,6 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 		// If no changes were made and the chain is still empty, consider forcing a genesis
 		sc.allSharesLock.Lock()
 		if !changedInLoop && sc.Tip == nil && len(sc.disconnectedShares) > 0 {
-			// Find the best candidate to be our new genesis
 			var bestOrphan *orphanInfo
 			var bestOrphanHash string
 			for hash, orphan := range sc.disconnectedShares {
@@ -176,16 +196,17 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 		if !changedInLoop {
 			for hashStr, orphan := range sc.disconnectedShares {
 				orphan.age++
-				if orphan.age > maxOrphanAge { // Purge if it's been an orphan for too long
+				if orphan.age > maxOrphanAge {
 					logging.Debugf("Purging stale orphan share %s", hashStr[:12])
 					delete(sc.disconnectedShares, hashStr)
-				} else if orphan.age%requestEvery == 1 { // Periodically re-request the parent
-					if orphan.share.ShareInfo.ShareData.PreviousShareHash != nil {
+				} else {
+					if lastReq, ok := sc.requestedParents[hashStr]; !ok || time.Since(lastReq) > 30*time.Second {
 						select {
 						case sc.NeedShareChannel <- orphan.share.ShareInfo.ShareData.PreviousShareHash:
 							logging.Debugf("Requesting missing parent %s for share %s", orphan.share.ShareInfo.ShareData.PreviousShareHash.String()[:12], hashStr[:12])
+							sc.requestedParents[hashStr] = time.Now()
 						default:
-							// channel full – drop the request; we'll try again next cycle
+							// channel full
 						}
 					}
 				}
