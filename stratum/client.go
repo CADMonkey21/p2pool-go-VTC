@@ -10,8 +10,10 @@ import (
 	"math/big"
 	"net"
 	"sync"
-	"sync/atomic" // Added for atomic boolean
+	"sync/atomic"
 	"time"
+
+	"github.com/gertjaap/p2pool-go/logging" // Corrected import path
 )
 
 // ShareDatum represents a single data point for rate monitoring.
@@ -132,7 +134,7 @@ type Client struct {
 	ShareTimestamps      []float64
 	LocalRateMonitor     *RateMonitor
 	LocalAddrRateMonitor *RateMonitor
-	closed               atomic.Bool // Added thread-safe flag
+	closed               atomic.Bool
 }
 
 // send encodes and sends a JSON-RPC message, then flushes the writer.
@@ -143,6 +145,16 @@ func (c *Client) send(v interface{}) error {
 	if c.Conn == nil || c.closed.Load() {
 		return errors.New("connection is closed")
 	}
+
+	// ---- START OF NEW DEBUGGING CODE ----
+	// Marshal the data to a JSON string for logging
+	jsonData, err := json.Marshal(v)
+	if err != nil {
+		logging.Errorf("Stratum: FAILED TO MARSHAL JSON FOR DEBUG LOG: %v", err)
+	} else {
+		logging.Debugf("Stratum: SENDING RAW JSON -> %s", string(jsonData))
+	}
+	// ---- END OF NEW DEBUGGING CODE ----
 
 	if err := c.Encoder.Encode(v); err != nil {
 		return err
@@ -175,7 +187,7 @@ func NewClient(conn net.Conn) *Client {
 		LocalRateMonitor:     NewRateMonitor(10 * time.Minute),
 		LocalAddrRateMonitor: NewRateMonitor(10 * time.Minute),
 	}
-	client.closed.Store(false) // Initialize the flag
+	client.closed.Store(false)
 
 	return client
 }

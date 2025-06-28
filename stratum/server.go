@@ -64,15 +64,20 @@ func (s *StratumServer) keepAliveLoop() {
 		}
 
 		s.clientsMutex.RLock()
-		if len(s.clients) > 0 {
-			logging.Debugf("Stratum: Sending keep-alive job to %d miners", len(s.clients))
-			for _, client := range s.clients {
+		currentClients := make([]*Client, 0, len(s.clients))
+		for _, client := range s.clients {
+			currentClients = append(currentClients, client)
+		}
+		s.clientsMutex.RUnlock()
+
+		if len(currentClients) > 0 {
+			logging.Debugf("Stratum: Sending keep-alive job to %d miners", len(currentClients))
+			for _, client := range currentClients {
 				if client.Authorized {
-					sendMiningJob(client, job.BlockTemplate, false)
+					s.sendMiningJob(client, job.BlockTemplate, false)
 				}
 			}
 		}
-		s.clientsMutex.RUnlock()
 	}
 }
 
@@ -89,17 +94,20 @@ func (s *StratumServer) jobBroadcaster() {
 		s.lastJobMutex.Unlock()
 
 		s.clientsMutex.RLock()
-		if len(s.clients) > 0 {
-			logging.Infof("Stratum: Broadcasting new job for height %d to %d miners", template.Height, len(s.clients))
-			for _, c := range s.clients {
-				go func(client *Client) {
-					if client.Authorized {
-						sendMiningJob(client, template, true)
-					}
-				}(c)
-			}
+		currentClients := make([]*Client, 0, len(s.clients))
+		for _, c := range s.clients {
+			currentClients = append(currentClients, c)
 		}
 		s.clientsMutex.RUnlock()
+
+		if len(currentClients) > 0 {
+			logging.Infof("Stratum: Broadcasting new job for height %d to %d miners", template.Height, len(currentClients))
+			for _, client := range currentClients {
+				if client.Authorized {
+					s.sendMiningJob(client, template, true)
+				}
+			}
+		}
 	}
 }
 
@@ -215,7 +223,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
 	}
 
-	// This response format is specifically for VerthashMiner and other strict clients
 	response := JSONRPCResponse{ID: copyRaw(req.ID), Result: shareAccepted, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: failed to send submit response to %s: %v", c.Conn.RemoteAddr(), err)
@@ -264,7 +271,7 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	s.lastJobMutex.RUnlock()
 
 	if latestJob != nil {
-		go sendMiningJob(c, latestJob.BlockTemplate, true)
+		go s.sendMiningJob(c, latestJob.BlockTemplate, true)
 	}
 }
 
@@ -369,7 +376,7 @@ func roundDifficultyToPowerOfTwo(difficulty float64) float64 {
 	return roundedDifficulty * dumbScryptDiff
 }
 
-func sendMiningJob(c *Client, tmpl *work.BlockTemplate, cleanJobs bool) {
+func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, cleanJobs bool) {
 	if tmpl == nil {
 		logging.Warnf("Stratum: No block template available, cannot send job to miner %s", c.Conn.RemoteAddr())
 		return
