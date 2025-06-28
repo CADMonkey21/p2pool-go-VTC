@@ -50,6 +50,24 @@ func NewStratumServer(wm *work.WorkManager, pm *p2p.PeerManager) *StratumServer 
 	return s
 }
 
+func (s *StratumServer) dropClient(c *Client) {
+	c.closed.Store(true)
+	s.clientsMutex.Lock()
+	if _, ok := s.clients[c.ID]; ok {
+		c.Conn.Close()
+		delete(s.clients, c.ID)
+		logging.Infof("Stratum: Miner %s disconnected.", c.Conn.RemoteAddr())
+	}
+	s.clientsMutex.Unlock()
+}
+
+func (s *StratumServer) isClientActive(id uint64) bool {
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+	_, ok := s.clients[id]
+	return ok
+}
+
 func (s *StratumServer) keepAliveLoop() {
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
@@ -73,7 +91,7 @@ func (s *StratumServer) keepAliveLoop() {
 		if len(currentClients) > 0 {
 			logging.Debugf("Stratum: Sending keep-alive job to %d miners", len(currentClients))
 			for _, client := range currentClients {
-				if client.Authorized {
+				if client.Authorized && s.isClientActive(client.ID) {
 					s.sendMiningJob(client, job.BlockTemplate, false)
 				}
 			}
@@ -99,11 +117,11 @@ func (s *StratumServer) jobBroadcaster() {
 			currentClients = append(currentClients, c)
 		}
 		s.clientsMutex.RUnlock()
-
+		
 		if len(currentClients) > 0 {
 			logging.Infof("Stratum: Broadcasting new job for height %d to %d miners", template.Height, len(currentClients))
 			for _, client := range currentClients {
-				if client.Authorized {
+				if client.Authorized && s.isClientActive(client.ID) {
 					s.sendMiningJob(client, template, true)
 				}
 			}
@@ -136,18 +154,13 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 	s.clientsMutex.Lock()
 	s.clients[client.ID] = client
 	s.clientsMutex.Unlock()
-	defer func() {
-		s.clientsMutex.Lock()
-		delete(s.clients, client.ID)
-		s.clientsMutex.Unlock()
-		client.Conn.Close()
-		logging.Infof("Stratum: Miner %s disconnected.", conn.RemoteAddr())
-	}()
+
+	defer s.dropClient(client)
 
 	go s.vardiffLoop(client)
 	decoder := json.NewDecoder(client.Reader)
 	for {
-		client.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
+		client.Conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		var req JSONRPCRequest
 		err := decoder.Decode(&req)
 		if err != nil {
@@ -223,9 +236,17 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
 	}
 
-	response := JSONRPCResponse{ID: copyRaw(req.ID), Result: shareAccepted, Error: nil}
+	var respID interface{}
+	if req.ID == nil || string(*req.ID) == "null" {
+		respID = 0 // Legacy p2pool answers with numeric 0 on null-id submits
+	} else {
+		respID = json.RawMessage(*req.ID)
+	}
+	
+	response := JSONRPCResponse{ID: respID, Result: shareAccepted, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: failed to send submit response to %s: %v", c.Conn.RemoteAddr(), err)
+		s.dropClient(c)
 	}
 }
 
@@ -242,6 +263,7 @@ func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 	response := JSONRPCResponse{ID: copyRaw(req.ID), Result: result, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: Failed to send subscribe response to %s: %v", c.Conn.RemoteAddr(), err)
+		s.dropClient(c)
 	}
 }
 
@@ -262,6 +284,7 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	response := JSONRPCResponse{ID: copyRaw(req.ID), Result: true, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: Failed to send authorize response to %s: %v", c.Conn.RemoteAddr(), err)
+		s.dropClient(c)
 	}
 
 	s.sendDifficulty(c, config.Active.Vardiff.MinDiff)
@@ -276,6 +299,9 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 }
 
 func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
+	if c.closed.Load() {
+		return
+	}
 	c.Mutex.Lock()
 	c.CurrentDifficulty = diff
 	c.Mutex.Unlock()
@@ -284,6 +310,8 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	diffResponse := JSONRPCResponse{Method: "mining.set_difficulty", Params: params}
 	if err := c.send(diffResponse); err != nil {
 		logging.Warnf("Stratum: Failed to send difficulty to %s: %v", c.Conn.RemoteAddr(), err)
+		s.dropClient(c)
+		return
 	}
 	logging.Infof("Stratum: Difficulty set to %.6f for miner %s", diff, c.Conn.RemoteAddr())
 }
@@ -293,6 +321,9 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 	defer ticker.Stop()
 	for {
 		<-ticker.C
+		if c.closed.Load() {
+			return
+		}
 		c.Mutex.Lock()
 		if !c.Authorized {
 			c.Mutex.Unlock()
@@ -325,10 +356,11 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 		}
 		roundedDiff := roundDifficultyToPowerOfTwo(newDiff)
 		currentDiff := c.CurrentDifficulty
+		workerName := c.WorkerName
 		c.Mutex.Unlock()
 
 		if math.Abs(roundedDiff-currentDiff) > 0.0001 {
-			logging.Infof("Stratum: Retargeting miner %s from diff %f to %f (avg shares/sec: %.2f, total time span: %.2fs)", c.WorkerName, currentDiff, roundedDiff, avgSharesPerSec, totalTimeSpan)
+			logging.Infof("Stratum: Retargeting miner %s from diff %f to %f (avg shares/sec: %.2f, total time span: %.2fs)", workerName, currentDiff, roundedDiff, avgSharesPerSec, totalTimeSpan)
 			s.sendDifficulty(c, roundedDiff)
 		}
 	}
@@ -377,6 +409,9 @@ func roundDifficultyToPowerOfTwo(difficulty float64) float64 {
 }
 
 func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, cleanJobs bool) {
+	if c.closed.Load() {
+		return
+	}
 	if tmpl == nil {
 		logging.Warnf("Stratum: No block template available, cannot send job to miner %s", c.Conn.RemoteAddr())
 		return
@@ -408,7 +443,8 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	jobResponse := JSONRPCResponse{Method: "mining.notify", Params: params}
 
 	if err := c.send(jobResponse); err != nil {
-		logging.Warnf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
+		logging.Debugf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
+		s.dropClient(c)
 	} else {
 		logging.Infof("Stratum: Sent new job %s to worker %s", jobID, workerName)
 	}

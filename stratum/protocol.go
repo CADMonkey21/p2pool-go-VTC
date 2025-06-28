@@ -11,9 +11,9 @@ type JSONRPCRequest struct {
 
 // JSONRPCResponse can represent both a response and a notification to the miner.
 type JSONRPCResponse struct {
-	ID     *json.RawMessage `json:"id,omitempty"`
+	ID     interface{}      `json:"id"`           // Corrected: No omitempty
 	Result interface{}      `json:"result,omitempty"`
-	Error  interface{}      `json:"error,omitempty"` // omitempty restored
+	Error  interface{}      `json:"error"`          // Corrected: No omitempty
 	Method string           `json:"method,omitempty"`
 	Params interface{}      `json:"params,omitempty"`
 }
