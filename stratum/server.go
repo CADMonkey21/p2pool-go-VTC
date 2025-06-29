@@ -80,7 +80,6 @@ func (s *StratumServer) GetLocalHashrate() float64 {
 	return totalHashrate
 }
 
-
 func (s *StratumServer) dropClient(c *Client) {
 	c.closed.Store(true)
 	s.clientsMutex.Lock()
@@ -148,7 +147,7 @@ func (s *StratumServer) jobBroadcaster() {
 			currentClients = append(currentClients, c)
 		}
 		s.clientsMutex.RUnlock()
-		
+
 		if len(currentClients) > 0 {
 			logging.Infof("Stratum: Broadcasting new job for height %d to %d miners", template.Height, len(currentClients))
 			for _, client := range currentClients {
@@ -266,7 +265,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	} else {
 		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
 	}
-	
+
 	// This section is refactored to be more explicit for the compiler.
 	var response JSONRPCResponse
 	if req.ID == nil || string(*req.ID) == "null" {
@@ -277,7 +276,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	} else {
 		response = JSONRPCResponse{ID: copyRaw(req.ID), Result: shareAccepted, Error: nil}
 	}
-	
+
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: failed to send submit response to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)
