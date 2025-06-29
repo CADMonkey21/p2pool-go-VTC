@@ -2,6 +2,8 @@ package work
 
 import (
 	"fmt"
+	"math"
+	"math/big"
 	"os"
 	"sync"
 	"time"
@@ -13,14 +15,26 @@ import (
 )
 
 const (
-	maxOrphanAge   = 40 // How many resolve cycles an orphan can live before being purged
-	requestEvery   = 10 // Repeat parent request every N cycles
+	maxOrphanAge     = 40  // How many resolve cycles an orphan can live before being purged
+	requestEvery     = 10  // Repeat parent request every N cycles
+	maxResolvePasses = 100 // Safety break to prevent infinite loops on corrupted data
 )
 
 // orphanInfo holds a share and its age in resolve cycles.
 type orphanInfo struct {
 	share *wire.Share
 	age   uint8
+}
+
+// ChainStats holds calculated statistics for the sharechain.
+type ChainStats struct {
+	SharesTotal   int
+	SharesOrphan  int
+	SharesDead    int
+	Efficiency    float64
+	PoolHashrate  float64
+	TimeToBlock   float64
+	CurrentPayout float64 // Payout is a placeholder for now, as PPLNS is a major feature.
 }
 
 type ShareChain struct {
@@ -115,7 +129,6 @@ func (sc *ShareChain) GetShare(hashStr string) *wire.Share {
 	return nil
 }
 
-
 func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 	sc.allSharesLock.Lock()
 	defer sc.allSharesLock.Unlock()
@@ -126,18 +139,102 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 	return &chainhash.Hash{}
 }
 
+// GetStats calculates and returns statistics for the share chain.
+func (sc *ShareChain) GetStats() ChainStats {
+	sc.allSharesLock.Lock()
+	defer sc.allSharesLock.Unlock()
+
+	stats := ChainStats{}
+	stats.SharesTotal = len(sc.AllShares)
+	stats.SharesOrphan = len(sc.disconnectedShares)
+
+	// Use a 30-minute window for pool hashrate calculation
+	lookbackDuration := 30 * time.Minute
+	startTime := time.Now().Add(-lookbackDuration)
+
+	var totalWork = new(big.Int)
+	var deadShares = 0
+
+	current := sc.Tip
+	for current != nil && time.Unix(int64(current.Share.ShareInfo.Timestamp), 0).After(startTime) {
+		if current.Share.ShareInfo.ShareData.StaleInfo != wire.StaleInfoNone {
+			deadShares++
+		}
+
+		// Difficulty = max_target / share_target
+		// Work is proportional to difficulty
+		maxTarget := new(big.Int)
+		maxTarget.SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+
+		shareTarget := blockchain.CompactToBig(current.Share.ShareInfo.Bits)
+		if shareTarget.Sign() <= 0 {
+			shareTarget.SetInt64(1)
+		}
+
+		difficulty := new(big.Int).Div(maxTarget, shareTarget)
+		totalWork.Add(totalWork, difficulty)
+
+		current = current.Previous
+	}
+
+	stats.SharesDead = deadShares
+
+	if stats.SharesTotal > 0 {
+		stats.Efficiency = 100 * (1 - (float64(stats.SharesDead+stats.SharesOrphan) / float64(stats.SharesTotal)))
+	}
+
+	// Pool Hashrate = (Total Work * 2^32) / Time Period
+	totalWorkFloat := new(big.Float).SetInt(totalWork)
+	pow32 := new(big.Float).SetFloat64(math.Pow(2, 32))
+	workTerm := new(big.Float).Mul(totalWorkFloat, pow32)
+
+	poolRate, _ := new(big.Float).Quo(workTerm, new(big.Float).SetFloat64(lookbackDuration.Seconds())).Float64()
+	stats.PoolHashrate = poolRate
+
+	// Expected time to block (in seconds) = Network Difficulty * 2^32 / Pool Hashrate
+	// For now, we'll estimate network difficulty from the tip share. A real implementation would get this from RPC.
+	if sc.Tip != nil {
+		netTarget := blockchain.CompactToBig(sc.Tip.Share.MinHeader.Bits)
+		if netTarget.Sign() > 0 {
+			maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+			netDiff := new(big.Int).Div(maxTarget, netTarget)
+
+			netDiffFloat := new(big.Float).SetInt(netDiff)
+			netWorkTerm := new(big.Float).Mul(netDiffFloat, pow32)
+
+			if stats.PoolHashrate > 0 {
+				timeToBlock, _ := new(big.Float).Quo(netWorkTerm, new(big.Float).SetFloat64(stats.PoolHashrate)).Float64()
+				stats.TimeToBlock = timeToBlock
+			}
+		}
+	}
+
+	// Placeholder for Payout
+	stats.CurrentPayout = 0.0
+
+	return stats
+}
+
 func (sc *ShareChain) Resolve(skipCommit bool) {
 	sc.disconnectedShareLock.Lock()
 	defer sc.disconnectedShareLock.Unlock()
 
 	logging.Debugf("Resolving sharechain with %d disconnected shares", len(sc.disconnectedShares))
+
+	passCount := 0
 	for changedInLoop := true; changedInLoop; {
+		// Anti-hang safeguard
+		passCount++
+		if passCount > maxResolvePasses {
+			logging.Warnf("Resolve loop exceeded max passes, breaking to prevent hang.")
+			break
+		}
+
 		changedInLoop = false
 
-		// First pass: try to link everything
 		for hashStr, orphan := range sc.disconnectedShares {
 			if orphan.share.ShareInfo.ShareData.PreviousShareHash == nil {
-				continue // Genesis is handled in the aging pass
+				continue
 			}
 			prevHashStr := orphan.share.ShareInfo.ShareData.PreviousShareHash.String()
 			sc.allSharesLock.Lock()
@@ -145,7 +242,6 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 			sc.allSharesLock.Unlock()
 
 			if exists {
-				// Parent found, link the share
 				logging.Infof("Linking share %s to parent %s", hashStr[:12], prevHashStr[:12])
 				newChainShare := &ChainShare{Share: orphan.share, Previous: parent}
 				parent.Next = newChainShare
@@ -169,7 +265,6 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 			}
 		}
 
-		// If no changes were made and the chain is still empty, consider forcing a genesis
 		sc.allSharesLock.Lock()
 		if !changedInLoop && sc.Tip == nil && len(sc.disconnectedShares) > 0 {
 			var bestOrphan *orphanInfo
@@ -186,13 +281,12 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 				cs := &ChainShare{Share: bestOrphan.share}
 				sc.AllShares[bestOrphanHash] = cs
 				sc.Tip, sc.Tail = cs, cs
-				changedInLoop = true // Restart the loop to link any children
+				changedInLoop = true
 				delete(sc.disconnectedShares, bestOrphanHash)
 			}
 		}
 		sc.allSharesLock.Unlock()
 
-		// If still no changes, age the remaining orphans
 		if !changedInLoop {
 			for hashStr, orphan := range sc.disconnectedShares {
 				orphan.age++
@@ -201,12 +295,14 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 					delete(sc.disconnectedShares, hashStr)
 				} else {
 					if lastReq, ok := sc.requestedParents[hashStr]; !ok || time.Since(lastReq) > 30*time.Second {
-						select {
-						case sc.NeedShareChannel <- orphan.share.ShareInfo.ShareData.PreviousShareHash:
-							logging.Debugf("Requesting missing parent %s for share %s", orphan.share.ShareInfo.ShareData.PreviousShareHash.String()[:12], hashStr[:12])
-							sc.requestedParents[hashStr] = time.Now()
-						default:
-							// channel full
+						if orphan.share.ShareInfo.ShareData.PreviousShareHash != nil {
+							select {
+							case sc.NeedShareChannel <- orphan.share.ShareInfo.ShareData.PreviousShareHash:
+								logging.Debugf("Requesting missing parent %s for share %s", orphan.share.ShareInfo.ShareData.PreviousShareHash.String()[:12], hashStr[:12])
+								sc.requestedParents[hashStr] = time.Now()
+							default:
+								// channel full
+							}
 						}
 					}
 				}

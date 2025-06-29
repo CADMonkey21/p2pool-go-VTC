@@ -5,20 +5,27 @@ import (
 
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
-	"github.com/gertjaap/verthash-go" // Corrected import path
+	"github.com/gertjaap/verthash-go"
 )
 
 func Vertcoin(testnet bool) Network {
-	logging.Infof("Initializing Verthash... This will take a moment and consume >1GB of RAM.")
+	logging.Infof("--> [DEBUG] Attempting to initialize Verthash...")
+	
 	vh, err := verthash.NewVerthash("verthash.dat", false)
+	
+	logging.Infof("--> [DEBUG] Verthash initialization function has returned.")
+
 	if err != nil {
+		logging.Errorf("--> [DEBUG] Verthash initialization returned an error: %v", err)
 		panic(err)
 	}
 
+	logging.Infof("--> [DEBUG] Verthash initialization successful!")
+
 	n := Network{
 		P2PPort:         config.Active.P2PPort,
-		StandardP2PPort: 9346, // Matches legacy Python p2pool-vtc/p2pool/networks/vertcoin.py
-		ProtocolVersion: 3501, // Keeping at 3501 as per your preference.
+		StandardP2PPort: 9346,
+		ProtocolVersion: 3501,
 		RPCPort:         config.Active.RPCPort,
 		WorkerPort:      config.Active.StratumPort,
 		ChainLength:     5100,
@@ -36,7 +43,6 @@ func Vertcoin(testnet bool) Network {
 
 	n.SeedHosts = config.Active.Peers
 	
-	// Corrected to match the OBSERVED legacy Python P2Pool message prefix (from runtime logs)
 	n.MessagePrefix, _ = hex.DecodeString("1c0c1c71cc197bc1") 
 	
 	n.Identifier, _ = hex.DecodeString("a06a81c827cab983")
