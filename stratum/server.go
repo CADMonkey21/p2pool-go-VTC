@@ -148,7 +148,7 @@ func (s *StratumServer) jobBroadcaster() {
 			currentClients = append(currentClients, c)
 		}
 		s.clientsMutex.RUnlock()
-		
+
 		if len(currentClients) > 0 {
 			logging.Infof("Stratum: Broadcasting new job for height %d to %d miners", template.Height, len(currentClients))
 			for _, client := range currentClients {
@@ -262,7 +262,8 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		if err != nil {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
 		} else {
-			s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
+			// A share from our own miner has already been validated and can be trusted.
+			s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
 			s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 		}
 	} else {

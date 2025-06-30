@@ -1,29 +1,31 @@
 # p2pool-go-VTC
 
 
-This is a **Go‑based** implementation of the P2Pool protocol with first‑class support for **Vertcoin (VTC)**.  
+This is a **Go‑based** implementation of the P2Pool protocol with first‑class support for **Vertcoin (VTC)**.
 The aim is a modern, high‑performance, cross‑platform node that is simple to deploy on anything from a Raspberry Pi to a full server.
 
 ---
 
-### Current State: Alpha (Stable P2P + Functional Mining)
+### Current State: Functional Alpha (Core Logic Stable)
 
-The node is in a **functional alpha**. Recent work fixed the share‑chain resolver and the wire‑protocol edge cases, so a Go node can:
+The node is in a **functional alpha state**. Thanks to recent debugging and development, the core logic is now stable. The node can:
 
-* handshake with legacy Python peers and stay connected,
-* accept Verthash miners over Stratum (`9172`),
-* fully validate miner shares and broadcast them to the network.
+* Connect to legacy Python peers and maintain a stable connection.
+* Accept Verthash miners over the Stratum protocol (port `9172`).
+* Correctly validate shares from its local miners.
+* Build and manage a local share chain, broadcasting new shares to the network.
+* Load the existing share chain from disk quickly on startup.
 
-Shares from some legacy peers still fail a PoW test (target too easy) – investigation is ongoing – but the core loop is now solid.
+With the main validation and performance issues resolved, the primary focus is now on implementing the payout and block submission logic.
 
 ---
 
 ## Prerequisites
 
-1. A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
-2. The **`verthash.dat`** dataset (≈ 6 GB). Copy it from `~/.vertcoin/` or let the node download on first start.
-3. **Go 1.18+** (Go 1.22 recommended).
-4. An **open P2P port** on your router/​firewall – this fork defaults to **`19172`** – forwarded to the machine running the node.
+1.  A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
+2.  The **`verthash.dat`** dataset (≈ 6 GB). Copy it from `~/.vertcoin/` or let the node download on first start.
+3.  **Go 1.18+** (Go 1.22 recommended).
+4.  An **open P2P port** on your router/​firewall – this fork defaults to **`19172`** – forwarded to the machine running the node.
 
 ---
 
@@ -61,22 +63,22 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] Wire-protocol (version, ping, addrs, shares, get_shares)
     -   [x] Peer manager (dial, listen :19172, discovery)
     -   [x] Stable handshakes & keep‑alive
-    -   [x] Outgoing and incoming shares (deserialization bug fixed)
-    -   [ ] Some legacy shares fail PoW check (target mismatch).
+    -   [x] Outgoing and incoming shares (core validation logic fixed)
+    -   [x] PoW validation of peer shares (primary bugs resolved)
 -   **RPC Client**
     -   [x] Connect / auth to vertcoind
     -   [x] Fetch block templates & network stats
 -   **Stratum Server & Share Logic**
-    -   [x] subscribe / authorize handshake
+    -   [x] `subscribe` / `authorize` handshake
     -   [x] Vardiff engine
-    -   [x] Verthash PoW, target test & share creation
+    -   [x] Verthash PoW, target validation & share creation
     -   [x] Broadcast miner shares to P2P
 -   **Persistence**
-    -   [x] On‑disk sharechain (shares.dat) with periodic autosave
+    -   [x] On‑disk sharechain (`shares.dat`) with periodic autosave and fast loading
 -   **Next Steps**
-    -   [ ] Investigate / filter “easy” legacy shares
-    -   [ ] Implement payout splitter and block‑submission
+    -   [ ] **Implement payout processing and block submission**
     -   [ ] Add web dashboard for stats
+    -   [ ] Further peer management hardening and network stability improvements
 
 ## Contributing
 

@@ -93,6 +93,8 @@ type Share struct {
 	MerkleLink     MerkleLink
 	Hash           *chainhash.Hash
 	POWHash        *chainhash.Hash
+	// Caching the raw header bytes avoids reconstructing them for on-demand validation.
+	rawHeaderForPOW []byte
 }
 
 type MerkleLink struct {
@@ -161,34 +163,36 @@ type MsgShares struct {
 	Shares []Share
 }
 
-// CORRECTED: This now properly handles little-endian hash comparison.
+// IsValid checks if the share's PoW hash is less than or equal to its target.
+// This function now performs the expensive Verthash calculation on-demand.
 func (s *Share) IsValid() bool {
-	if s.POWHash == nil || s.ShareInfo.Bits == 0 {
+	if s.rawHeaderForPOW == nil {
+		logging.Warnf("IsValid called on share %s without cached header; cannot validate.", s.Hash.String()[:12])
+		return false
+	}
+	if s.ShareInfo.Bits == 0 {
 		return false
 	}
 
-	// 1. Target from compact bits -> *big.Int
+	// 1. Perform the expensive Verthash PoW calculation.
+	powBytesLE, err := p2pnet.ActiveNetwork.Verthash.SumVerthash(s.rawHeaderForPOW)
+	if err != nil {
+		logging.Errorf("Verthash failed during on-demand validation: %v", err)
+		return false
+	}
+
+	// 2. Convert hash and target to big.Int for comparison.
+	powBytesBE := util.ReverseBytes(powBytesLE[:])
+	s.POWHash, _ = chainhash.NewHash(powBytesBE)
+	hashInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
 	target := blockchain.CompactToBig(s.ShareInfo.Bits)
-	if target.Sign() <= 0 {
-		return false
-	}
 
-	// 2. Hash -> little-endian bytes -> *big.Int
-	// The POWHash from the Verthash library is already in the correct byte order
-	// to be interpreted as a little-endian integer by big.Int.
-	// We just need to reverse it for the comparison.
-	hashBytes := s.POWHash.CloneBytes()
-	// Reverse the bytes for little-endian comparison
-	for i, j := 0, len(hashBytes)-1; i < j; i, j = i+1, j-1 {
-		hashBytes[i], hashBytes[j] = hashBytes[j], hashBytes[i]
-	}
-	hashInt := new(big.Int).SetBytes(hashBytes)
-
-	// 3. Valid if hash <= target
+	// 3. A share is valid if its hash is numerically less than or equal to the target.
 	return hashInt.Cmp(target) <= 0
 }
 
 func (s *Share) ToBytes() ([]byte, error) {
+	// This function is not implemented as we are only deserializing shares.
 	return []byte{}, nil
 }
 
@@ -205,7 +209,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 
 	payloadBytes := make([]byte, contentsLength)
 	if _, err := io.ReadFull(r, payloadBytes); err != nil { return fmt.Errorf("could not read full share payload: %w", err) }
-	
+
 	lr := bytes.NewReader(payloadBytes)
 	initialLen := lr.Len()
 
@@ -244,7 +248,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 			}
 		}
 	}
-	
+
 	isEOF := func(e error) bool { return e == io.EOF || e == io.ErrUnexpectedEOF }
 
 	if s.ShareInfo.NewTransactionHashes, err = ReadChainHashList(lr); err != nil { if isEOF(err) { goto finalize }; return err }
@@ -254,7 +258,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.Bits); err != nil { if isEOF(err) { goto finalize }; return err }
 	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.Timestamp); err != nil { if isEOF(err) { goto finalize }; return err }
 	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.AbsHeight); err != nil { if isEOF(err) { goto finalize }; return err }
-	
+
 	aw, err = ReadFixedBytes(lr, 16)
 	if err != nil { if isEOF(err) { goto finalize }; return err }
 	s.ShareInfo.AbsWork.SetBytes(aw)
@@ -267,7 +271,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 	if s.HashLink.State, err = ReadFixedBytes(lr, 32); err != nil { if isEOF(err) { goto finalize }; return err }
 	if s.HashLink.ExtraData, err = ReadVarString(lr); err != nil { if isEOF(err) { goto finalize }; return err }
 	if s.HashLink.Length, err = ReadVarInt(lr); err != nil { if isEOF(err) { goto finalize }; return err }
-	
+
 	if s.MerkleLink.Branch, err = ReadChainHashList(lr); err != nil { if isEOF(err) { goto finalize }; return err }
 	if err = binary.Read(lr, binary.LittleEndian, &mIndex); err != nil { if isEOF(err) { goto finalize }; return err }
 	s.MerkleLink.Index = uint64(mIndex)
@@ -276,8 +280,13 @@ finalize:
 	bytesRead := initialLen - lr.Len()
 	finalPayload := payloadBytes[:bytesRead]
 
+	// The share hash is a hash of its serialized content. This is fast and always needed.
 	shareHashBytes := util.Sha256d(finalPayload)
 	s.Hash, _ = chainhash.NewHash(shareHashBytes)
+
+	// --- SLOW PoW CALCULATION REMOVED ---
+	// The PoW hash is no longer calculated here. Instead, we construct and cache
+	// the header bytes, so it can be calculated on-demand by IsValid() if needed.
 
 	coinbaseTxHashBytes := util.Sha256d(s.ShareInfo.ShareData.CoinBase)
 	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
@@ -296,16 +305,12 @@ finalize:
 	binary.Write(&hdr, binary.LittleEndian, s.MinHeader.Bits)
 	binary.Write(&hdr, binary.LittleEndian, s.MinHeader.Nonce)
 
-	powBytes, err := p2pnet.ActiveNetwork.Verthash.SumVerthash(hdr.Bytes())
-	if err != nil {
-		return fmt.Errorf("verthash: %w", err)
-	}
-
-	powLE := util.ReverseBytes(powBytes[:])
-	s.POWHash, _ = chainhash.NewHash(powLE)
+	// Cache the constructed header for later use in IsValid().
+	s.rawHeaderForPOW = hdr.Bytes()
 
 	return nil
 }
+
 
 func (m *MsgShares) FromBytes(b []byte) error {
 	r := bytes.NewReader(b)

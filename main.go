@@ -49,7 +49,7 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 			stats.SharesTotal, stats.SharesTotal, stats.SharesTotal, pm.GetPeerCount())
 		logging.Infof(" Local: %s   Expected share ≈ %s",
 			formatHashrate(local), formatDuration(stats.TimeToBlock))
-		logging.Infof(" Shares: %d (%d orphan, %d dead)  Efficiency: %.2f %%  |  Payout: %.4f VTC",
+		logging.Infof(" Shares: %d (%d orphan, %d dead)  Efficiency: %.2f %%  |  Payout: %.4f VTC",
 			stats.SharesTotal, stats.SharesOrphan, stats.SharesDead, stats.Efficiency, stats.CurrentPayout)
 		logging.Infof("  Pool: %s   Expected block ≈ %s",
 			formatHashrate(stats.PoolHashrate), formatDuration(stats.TimeToBlock))
@@ -68,30 +68,47 @@ func main() {
 	// ------------------------------------------------------------------------
 	// 1) Load config & network params
 	// ------------------------------------------------------------------------
+	logging.Debugf("MAIN: Loading configuration...")
 	config.LoadConfig()
+	logging.Debugf("MAIN: Setting network parameters for '%s'...", config.Active.Network)
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
+	logging.Debugf("MAIN: Verthash initialized and network set.")
 
 	// ------------------------------------------------------------------------
 	// 2) **Override just the listen/advertise port**
 	// ------------------------------------------------------------------------
 	p2pnet.ActiveNetwork.P2PPort = 19172 // <— our new inbound port
+	logging.Debugf("MAIN: P2P listen port override set to %d.", p2pnet.ActiveNetwork.P2PPort)
 
 	// ------------------------------------------------------------------------
 	// 3) Spin everything up
 	// ------------------------------------------------------------------------
+	logging.Debugf("MAIN: Initializing RPC client...")
 	rpcClient := rpc.NewClient(config.Active)
 
+	logging.Debugf("MAIN: Initializing ShareChain...")
 	sc := work.NewShareChain(rpcClient)
-	_ = sc.Load()
+	logging.Debugf("MAIN: Loading sharechain from shares.dat...")
+	err := sc.Load()
+	if err != nil {
+		logging.Fatalf("MAIN: Failed to load sharechain: %v", err)
+	}
+	logging.Debugf("MAIN: Sharechain loading complete.")
 
+	logging.Debugf("MAIN: Initializing WorkManager...")
 	workManager := work.NewWorkManager(rpcClient, sc)
 	go workManager.WatchBlockTemplate()
+	logging.Debugf("MAIN: WorkManager is watching for new block templates.")
 
+	logging.Debugf("MAIN: Initializing PeerManager...")
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
-	go pm.ListenForPeers() // listener is safe again – now on 19172
+	go pm.ListenForPeers()
+	logging.Debugf("MAIN: PeerManager is listening for peers.")
 
+	logging.Debugf("MAIN: Initializing StratumServer...")
 	stratumSrv := stratum.NewStratumServer(workManager, pm)
-	go stratumSrv.ListenForMiners() // still on 9172 unless you change it
+	go stratumSrv.ListenForMiners()
+	logging.Debugf("MAIN: StratumServer is listening for miners.")
 
 	go logStats(pm, sc, stratumSrv)
 
@@ -106,9 +123,9 @@ func main() {
 		}
 	}()
 
+	logging.Infof("MAIN: Startup complete. Running...")
 	// keep the main goroutine alive
 	for {
 		time.Sleep(1 * time.Hour)
 	}
 }
-

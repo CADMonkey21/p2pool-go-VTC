@@ -193,7 +193,8 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			}
 		case *wire.MsgShares:
 			logging.Infof("Received shares message from %s with %d shares.", p.RemoteIP, len(t.Shares))
-			pm.shareChain.AddShares(t.Shares)
+			// Shares from the network are untrusted and MUST be validated.
+			pm.shareChain.AddShares(t.Shares, false)
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
 			for _, h := range t.Hashes {
