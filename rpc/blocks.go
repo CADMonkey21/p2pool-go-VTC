@@ -1,8 +1,11 @@
 package rpc
 
 import (
+	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // GetBlockTemplate now returns the raw JSON result.
@@ -10,7 +13,7 @@ func (c *Client) GetBlockTemplate() (json.RawMessage, error) {
 	params := []interface{}{
 		map[string][]string{"rules": {"segwit", "taproot"}},
 	}
-	
+
 	resp, err := c.Call("getblocktemplate", params)
 	if err != nil {
 		return nil, err
@@ -38,4 +41,20 @@ func (c *Client) GetBlockHeader(hash *chainhash.Hash) (*BlockHeaderInfo, error) 
 	}
 
 	return &headerInfo, nil
+}
+
+// SubmitBlock sends a serialized block to the RPC server.
+func (c *Client) SubmitBlock(block *wire.MsgBlock) error {
+	var blockBuf bytes.Buffer
+	if err := block.Serialize(&blockBuf); err != nil {
+		return err
+	}
+	blockHex := hex.EncodeToString(blockBuf.Bytes())
+
+	params := []interface{}{
+		blockHex,
+	}
+
+	_, err := c.Call("submitblock", params)
+	return err
 }

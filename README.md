@@ -1,22 +1,24 @@
 # p2pool-go-VTC
 
 
-This is a **Go‑based** implementation of the P2Pool protocol with first‑class support for **Vertcoin (VTC)**.
+This is a **Go‑based** implementation of the P2Pool protocol with first‑class support for **Vertcoin (VTC)**.  
 The aim is a modern, high‑performance, cross‑platform node that is simple to deploy on anything from a Raspberry Pi to a full server.
 
 ---
 
 ### Current State: Functional Alpha (Core Logic Stable)
 
-The node is in a **functional alpha state**. Thanks to recent debugging and development, the core logic is now stable. The node can:
+The node is in a **functional alpha state**. The core logic is now stable, and the node is fully interoperable with the live p2pool network. The latest updates have resolved critical performance and validation bugs.
 
-* Connect to legacy Python peers and maintain a stable connection.
+The node can now:
+
+* Connect to legacy Python peers and maintain stable connections.
 * Accept Verthash miners over the Stratum protocol (port `9172`).
-* Correctly validate shares from its local miners.
-* Build and manage a local share chain, broadcasting new shares to the network.
+* Correctly validate shares from its own miners **and from network peers**.
+* Build and manage a share chain that is in sync with the global p2pool network.
 * Load the existing share chain from disk quickly on startup.
 
-With the main validation and performance issues resolved, the primary focus is now on implementing the payout and block submission logic.
+With the core functionality now stable and proven, the primary remaining task is to implement the payout and block submission logic.
 
 ---
 
@@ -63,22 +65,26 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] Wire-protocol (version, ping, addrs, shares, get_shares)
     -   [x] Peer manager (dial, listen :19172, discovery)
     -   [x] Stable handshakes & keep‑alive
-    -   [x] Outgoing and incoming shares (core validation logic fixed)
-    -   [x] PoW validation of peer shares (primary bugs resolved)
 -   **RPC Client**
     -   [x] Connect / auth to vertcoind
     -   [x] Fetch block templates & network stats
+    -   [x] Block submission
 -   **Stratum Server & Share Logic**
     -   [x] `subscribe` / `authorize` handshake
     -   [x] Vardiff engine
     -   [x] Verthash PoW, target validation & share creation
+    -   [x] Block finding detection
     -   [x] Broadcast miner shares to P2P
+-   **Share Chain**
+    -   [x] Correctly validate shares from local miners and network peers
+    -   [x] Stable share chain management (linking, orphan handling)
 -   **Persistence**
-    -   [x] On‑disk sharechain (`shares.dat`) with periodic autosave and fast loading
+    -   [x] On‑disk sharechain (`shares.dat`) with periodic autosave
+    -   [x] Fast loading of persisted share chain
 -   **Next Steps**
-    -   [ ] **Implement payout processing and block submission**
-    -   [ ] Add web dashboard for stats
-    -   [ ] Further peer management hardening and network stability improvements
+    -   [ ] **Implement PPLNS payout logic**
+    -   [ ] Add web dashboard for stats and monitoring
+    -   [ ] General code cleanup and further hardening
 
 ## Contributing
 

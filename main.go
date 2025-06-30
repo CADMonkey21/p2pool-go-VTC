@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gertjaap/p2pool-go/config"
@@ -49,7 +51,7 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 			stats.SharesTotal, stats.SharesTotal, stats.SharesTotal, pm.GetPeerCount())
 		logging.Infof(" Local: %s   Expected share ≈ %s",
 			formatHashrate(local), formatDuration(stats.TimeToBlock))
-		logging.Infof(" Shares: %d (%d orphan, %d dead)  Efficiency: %.2f %%  |  Payout: %.4f VTC",
+		logging.Infof(" Shares: %d (%d orphan, %d dead)  Efficiency: %.2f %%  |  Payout: 0.0000 VTC",
 			stats.SharesTotal, stats.SharesOrphan, stats.SharesDead, stats.Efficiency, stats.CurrentPayout)
 		logging.Infof("  Pool: %s   Expected block ≈ %s",
 			formatHashrate(stats.PoolHashrate), formatDuration(stats.TimeToBlock))
@@ -112,20 +114,21 @@ func main() {
 
 	go logStats(pm, sc, stratumSrv)
 
-	// periodic share‑db flush
-	go func() {
-		tick := time.NewTicker(5 * time.Minute)
-		for range tick.C {
-			logging.Infof("Committing sharechain to disk …")
-			if err := sc.Commit(); err != nil {
-				logging.Warnf("Could not commit sharechain: %v", err)
-			}
-		}
-	}()
+	// Set up a channel to listen for shutdown signals
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
+	logging.Infof("MAIN: Startup complete. Press Ctrl+C to shut down.")
 
-	logging.Infof("MAIN: Startup complete. Running...")
-	// keep the main goroutine alive
-	for {
-		time.Sleep(1 * time.Hour)
+	// Block main goroutine until a signal is received
+	<-shutdownChan
+
+	// Signal received, starting graceful shutdown
+	logging.Warnf("\nShutdown signal received. Saving share chain and exiting.")
+
+	// Perform final cleanup, like saving the sharechain to disk
+	if err := sc.Commit(); err != nil {
+		logging.Errorf("Could not commit sharechain on shutdown: %v", err)
+	} else {
+		logging.Infof("Sharechain committed successfully.")
 	}
 }

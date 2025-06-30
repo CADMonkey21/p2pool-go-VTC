@@ -1,6 +1,7 @@
 package stratum
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
@@ -235,13 +237,13 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	header, _, err := work.CreateHeader(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress)
+	headerBytes, _, err := work.CreateHeader(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress)
 	if err != nil {
 		logging.Errorf("Stratum: Failed to create block header for validation: %v", err)
 		return
 	}
 
-	powHash := p2pnet.ActiveNetwork.POWHash(header)
+	powHash := p2pnet.ActiveNetwork.POWHash(headerBytes)
 	logging.Debugf("PoW hash for submission: %s", hex.EncodeToString(work.ReverseBytes(powHash)))
 
 	shareTargetBigInt := work.DiffToTarget(c.CurrentDifficulty)
@@ -251,13 +253,14 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	shareAccepted := false
 	if powHashInt.Cmp(shareTargetBigInt) <= 0 {
 		logging.Infof("Stratum: SHARE ACCEPTED! Valid work from %s", c.WorkerName)
+		shareAccepted = true
 		c.LocalRateMonitor.AddDatum(ShareDatum{
 			Work:        targetToAverageAttempts(shareTargetBigInt),
 			IsDead:      false,
 			WorkerName:  c.WorkerName,
 			ShareTarget: shareTargetBigInt,
 		})
-		shareAccepted = true
+
 		newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress, s.workManager.ShareChain, c.CurrentDifficulty)
 		if err != nil {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
@@ -265,13 +268,26 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			// A share from our own miner has already been validated and can be trusted.
 			s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
 			s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
+
+			// Check if the share is also a block
+			bits, err := hex.DecodeString(job.BlockTemplate.Bits)
+			if err != nil {
+				logging.Errorf("Could not decode bits from template: %v", err)
+			} else {
+				nBits := binary.LittleEndian.Uint32(bits)
+				netTarget := blockchain.CompactToBig(nBits)
+				if powHashInt.Cmp(netTarget) <= 0 {
+					logging.Infof("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
+					go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
+				}
+			}
 		}
 	} else {
 		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
 	}
 
 	response := JSONRPCResponse{
-		ID:     id, // Use the extracted, correctly-typed ID
+		ID:     id,
 		Result: shareAccepted,
 		Error:  nil,
 	}
