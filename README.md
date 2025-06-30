@@ -1,19 +1,31 @@
 # p2pool-go-VTC
 
-This is a Go-based implementation of the p2pool protocol, with initial support for Vertcoin (VTC). The goal is to create a modern, high-performance, and cross-platform p2pool node that is easy to set up and maintain.
 
-### Current State: Alpha (Improving P2P Stability)
+This is a **Go‑based** implementation of the P2Pool protocol with first‑class support for **Vertcoin (VTC)**.  
+The aim is a modern, high‑performance, cross‑platform node that is simple to deploy on anything from a Raspberry Pi to a full server.
 
-The node is currently in a **functional alpha stage**. The core components for connecting to the network, communicating with peers, and serving miners are in place. Recent efforts have focused on stabilizing the P2P layer by fixing several critical bugs in the wire protocol serialization, leading to more reliable peer handshakes and address discovery.
+---
 
-While the node can connect to the network and interact with miners, a persistent `EOF` error when deserializing `shares` messages from peers is still under investigation.
+### Current State: Alpha (Stable P2P + Functional Mining)
+
+The node is in a **functional alpha**. Recent work fixed the share‑chain resolver and the wire‑protocol edge cases, so a Go node can:
+
+* handshake with legacy Python peers and stay connected,
+* accept Verthash miners over Stratum (`9172`),
+* fully validate miner shares and broadcast them to the network.
+
+Shares from some legacy peers still fail a PoW test (target too easy) – investigation is ongoing – but the core loop is now solid.
+
+---
 
 ## Prerequisites
 
-1.  A running and fully synced `vertcoind` instance with RPC enabled in `vertcoin.conf`.
-2.  The `verthash.dat` file. The pool will generate this on first run, but it's much faster to copy it from your `~/.vertcoin/` directory.
-3.  An installation of the [Go language](https://go.dev/doc/install) (version 1.18 or newer).
-4.  An open P2P port (default `9171` or `9346` depending on the p2pool network) on your router/firewall, forwarded to the machine running the node.
+1. A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
+2. The **`verthash.dat`** dataset (≈ 6 GB). Copy it from `~/.vertcoin/` or let the node download on first start.
+3. **Go 1.18+** (Go 1.22 recommended).
+4. An **open P2P port** on your router/​firewall – this fork defaults to **`19172`** – forwarded to the machine running the node.
+
+---
 
 ## Installation & Running
 
@@ -46,27 +58,25 @@ While the node can connect to the network and interact with miners, a persistent
 Here is a more detailed breakdown of the project's current status:
 
 -   **P2P Layer**
-    -   [x] Wire protocol implementation for P2P messages
-    -   [x] Peer manager for connecting to and listening for peers
-    -   [x] **Successful P2P Handshake with Live Nodes**
-    -   [x] **Handles `ping`/`pong` and `addrs` messages to discover new peers**
-    -   [x] Implement serialization for outgoing `shares` messages.
-    -   [ ] Fully process incoming `shares` messages from peers (Work in progress; a persistent `EOF` error in the deserialization logic is under investigation).
+    -   [x] Wire-protocol (version, ping, addrs, shares, get_shares)
+    -   [x] Peer manager (dial, listen :19172, discovery)
+    -   [x] Stable handshakes & keep‑alive
+    -   [x] Outgoing and incoming shares (deserialization bug fixed)
+    -   [ ] Some legacy shares fail PoW check (target mismatch).
 -   **RPC Client**
-    -   [x] Connecting to a fullnode over RPC
-    -   [x] Retrieve block template from fullnode
+    -   [x] Connect / auth to vertcoind
+    -   [x] Fetch block templates & network stats
 -   **Stratum Server & Share Logic**
-    -   [x] Listen for and accept miner connections
-    -   [x] Handle `mining.subscribe` and `mining.authorize` handshake
-    -   [x] Send jobs (`mining.notify`) to authorized miners and broadcast new jobs
-    -   [x] Implement Variable Difficulty (Vardiff) engine
-    -   [x] **Full cryptographic validation of submitted shares**
-    -   [x] **Create and broadcast valid shares to the P2P network**
+    -   [x] subscribe / authorize handshake
+    -   [x] Vardiff engine
+    -   [x] Verthash PoW, target test & share creation
+    -   [x] Broadcast miner shares to P2P
+-   **Persistence**
+    -   [x] On‑disk sharechain (shares.dat) with periodic autosave
 -   **Next Steps**
-    -   [ ] Resolve the `shares` message deserialization bug.
-    -   [ ] Fully process received shares and build the sharechain.
-    -   [ ] Compose and submit a block to `vertcoind` when a block-finding share is found.
-    -   [ ] Web frontend for statistics
+    -   [ ] Investigate / filter “easy” legacy shares
+    -   [ ] Implement payout splitter and block‑submission
+    -   [ ] Add web dashboard for stats
 
 ## Contributing
 
