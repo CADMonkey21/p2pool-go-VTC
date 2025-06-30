@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/gertjaap/p2pool-go/config"
-	// "github.com/gertjaap/p2pool-go/logging" // This line has been removed
 )
 
 // RPCRequest represents a JSON-RPC request.
@@ -42,6 +41,25 @@ type Client struct {
 	endpoint   string
 	username   string
 	password   string
+}
+
+// New BlockHeaderInfo struct for the getblockheader RPC response
+type BlockHeaderInfo struct {
+	Hash          string  `json:"hash"`
+	Confirmations int     `json:"confirmations"`
+	Height        int     `json:"height"`
+	Version       int     `json:"version"`
+	VersionHex    string  `json:"versionHex"`
+	MerkleRoot    string  `json:"merkleroot"`
+	Time          int64   `json:"time"`
+	MedianTime    int64   `json:"mediantime"`
+	Nonce         uint32  `json:"nonce"`
+	Bits          string  `json:"bits"`
+	Difficulty    float64 `json:"difficulty"`
+	ChainWork     string  `json:"chainwork"`
+	NTx           int     `json:"nTx"`
+	PreviousHash  string  `json:"previousblockhash"`
+	NextHash      string  `json:"nextblockhash"`
 }
 
 // NewClient creates a new RPC client from the loaded configuration.

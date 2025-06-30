@@ -64,21 +64,21 @@ func main() {
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
 
 	rpcClient := rpc.NewClient(config.Active)
-	sc := work.NewShareChain()
-	sc.Load() // Load existing sharechain from disk
+	sc := work.NewShareChain(rpcClient)
+	sc.Load()
 
 	workManager := work.NewWorkManager(rpcClient, sc)
 	go workManager.WatchBlockTemplate()
 
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
+	// CORRECTED: Comment out the listener to prevent "address already in use" error
+	// go pm.ListenForPeers()
 
 	stratumServer := stratum.NewStratumServer(workManager, pm)
 	go stratumServer.ListenForMiners()
 
-	// Goroutine to periodically log statistics
 	go logStats(pm, sc, stratumServer)
 
-	// Periodically commit the sharechain to disk
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		for range ticker.C {
@@ -90,7 +90,6 @@ func main() {
 	}()
 
 	for {
-		// Main loop can be simpler now
 		time.Sleep(60 * time.Second)
 	}
 }

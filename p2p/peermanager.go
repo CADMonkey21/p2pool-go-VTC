@@ -33,23 +33,44 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 		pm.AddPossiblePeer(h)
 	}
 	go pm.peerConnectorLoop()
-	go pm.shareRequester() // Goroutine to handle requesting needed shares
+	go pm.shareRequester()
 	return pm
 }
 
-// shareRequester listens on the NeedShareChannel and broadcasts requests to peers.
+// ListenForPeers starts a listener to accept incoming P2P connections.
+func (pm *PeerManager) ListenForPeers() {
+	addr := fmt.Sprintf(":%d", pm.activeNetwork.P2PPort)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		logging.Fatalf("P2P: Failed to start listener on %s: %v", addr, err)
+		return
+	}
+	defer listener.Close()
+	logging.Infof("P2P: Listening for incoming peers on port %s", addr)
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			logging.Warnf("P2P: Failed to accept new connection: %v", err)
+			continue
+		}
+
+		logging.Infof("P2P: New INCOMING connection from %s", conn.RemoteAddr().String())
+		go pm.handleNewPeer(conn)
+	}
+}
+
 func (pm *PeerManager) shareRequester() {
 	for neededHash := range pm.shareChain.NeedShareChannel {
 		logging.Debugf("Broadcasting request for needed share %s", neededHash.String()[:12])
 		msg := &wire.MsgGetShares{
 			Hashes: []*chainhash.Hash{neededHash},
-			Stops:  &chainhash.Hash{}, // Empty hash for 'stops'
+			Stops:  &chainhash.Hash{},
 		}
 		pm.Broadcast(msg)
 	}
 }
 
-// ... (AddPossiblePeer and Broadcast are unchanged)
 func (pm *PeerManager) AddPossiblePeer(addr string) {
 	pm.peersMutex.Lock()
 	defer pm.peersMutex.Unlock()
@@ -74,7 +95,6 @@ func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
 		}
 	}
 }
-
 
 func (pm *PeerManager) peerConnectorLoop() {
 	ticker := time.NewTicker(10 * time.Second)
@@ -150,7 +170,7 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	pm.peers[peerKey] = peer
 	pm.peersMutex.Unlock()
 
-	pm.handlePeerMessages(peer) // Start message handling for this peer
+	pm.handlePeerMessages(peer)
 
 	pm.peersMutex.Lock()
 	delete(pm.peers, peerKey)

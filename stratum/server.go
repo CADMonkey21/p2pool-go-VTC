@@ -20,14 +20,17 @@ import (
 	"github.com/gertjaap/p2pool-go/wire"
 )
 
-// copyRaw creates a safe copy of a json.RawMessage to prevent buffer reuse issues.
-func copyRaw(v *json.RawMessage) *json.RawMessage {
-	if v == nil {
+// extractID safely unmarshals the request ID to preserve its type (number or string).
+func extractID(raw *json.RawMessage) interface{} {
+	if raw == nil {
+		return nil // Client sent "null" or omitted it.
+	}
+	var v interface{}
+	// Unmarshal into an empty interface to keep the original type.
+	if err := json.Unmarshal(*raw, &v); err != nil {
 		return nil
 	}
-	tmp := make(json.RawMessage, len(*v))
-	copy(tmp, *v)
-	return &tmp
+	return v
 }
 
 type StratumServer struct {
@@ -58,7 +61,6 @@ func (s *StratumServer) GetLocalHashrate() float64 {
 	totalHashrate := 0.0
 	for _, client := range s.clients {
 		client.Mutex.Lock()
-		// Use a 10-minute lookback for hashrate calculation
 		datums, actualDuration := client.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
 
 		if len(datums) < 1 || actualDuration.Seconds() < 1 {
@@ -71,14 +73,13 @@ func (s *StratumServer) GetLocalHashrate() float64 {
 			totalWork += datum.Work
 		}
 
-		// Hashrate = (Total Difficulty Submitted * 2^32) / Time Period
-		// The "Work" unit in RateMonitor is equivalent to difficulty.
 		hashrate := (totalWork * math.Pow(2, 32)) / actualDuration.Seconds()
 		totalHashrate += hashrate
 		client.Mutex.Unlock()
 	}
 	return totalHashrate
 }
+
 
 func (s *StratumServer) dropClient(c *Client) {
 	c.closed.Store(true)
@@ -147,7 +148,7 @@ func (s *StratumServer) jobBroadcaster() {
 			currentClients = append(currentClients, c)
 		}
 		s.clientsMutex.RUnlock()
-
+		
 		if len(currentClients) > 0 {
 			logging.Infof("Stratum: Broadcasting new job for height %d to %d miners", template.Height, len(currentClients))
 			for _, client := range currentClients {
@@ -214,6 +215,8 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 }
 
 func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
+	id := extractID(req.ID)
+
 	var params []string
 	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
 		logging.Warnf("Stratum: Malformed submit params from %s", c.Conn.RemoteAddr())
@@ -266,15 +269,10 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
 	}
 
-	// This section is refactored to be more explicit for the compiler.
-	var response JSONRPCResponse
-	if req.ID == nil || string(*req.ID) == "null" {
-		// Per legacy behavior, respond with an ID of 0.
-		// We must create a valid json.RawMessage containing "0".
-		rawID := json.RawMessage("0")
-		response = JSONRPCResponse{ID: &rawID, Result: shareAccepted, Error: nil}
-	} else {
-		response = JSONRPCResponse{ID: copyRaw(req.ID), Result: shareAccepted, Error: nil}
+	response := JSONRPCResponse{
+		ID:     id, // Use the extracted, correctly-typed ID
+		Result: shareAccepted,
+		Error:  nil,
 	}
 
 	if err := c.send(response); err != nil {
@@ -284,6 +282,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 }
 
 func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
+	id := extractID(req.ID)
 	logging.Infof("Stratum: Received mining.subscribe from %s", c.Conn.RemoteAddr())
 	c.Mutex.Lock()
 	c.SubscriptionID = c.ExtraNonce1
@@ -293,7 +292,7 @@ func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 
 	subscriptionDetails := []interface{}{"mining.notify", c.SubscriptionID}
 	result := []interface{}{subscriptionDetails, extraNonce1, nonce2Size}
-	response := JSONRPCResponse{ID: copyRaw(req.ID), Result: result, Error: nil}
+	response := JSONRPCResponse{ID: id, Result: result, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: Failed to send subscribe response to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)
@@ -301,6 +300,7 @@ func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 }
 
 func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
+	id := extractID(req.ID)
 	var params []string
 	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 1 {
 		logging.Warnf("Stratum: Failed to parse authorize params from %s", c.Conn.RemoteAddr())
@@ -314,7 +314,7 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 
 	logging.Infof("Stratum: Miner %s successfully authorized for worker %s", c.Conn.RemoteAddr(), c.WorkerName)
 
-	response := JSONRPCResponse{ID: copyRaw(req.ID), Result: true, Error: nil}
+	response := JSONRPCResponse{ID: id, Result: true, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: Failed to send authorize response to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)

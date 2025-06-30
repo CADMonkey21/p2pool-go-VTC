@@ -25,7 +25,6 @@ func peekVarInt(r *bytes.Reader) (val uint64, size int, err error) {
 	return val, size, nil
 }
 
-
 // readVarIntLoose decodes the CompactSize format but *does not*
 // enforce that the shortest possible prefix was used.
 func readVarIntLoose(r io.Reader) (uint64, error) {
@@ -162,17 +161,31 @@ type MsgShares struct {
 	Shares []Share
 }
 
+// CORRECTED: This now properly handles little-endian hash comparison.
 func (s *Share) IsValid() bool {
 	if s.POWHash == nil || s.ShareInfo.Bits == 0 {
 		return false
 	}
-	target := blockchain.CompactToBig(s.ShareInfo.Bits)
 
-	if target.Sign() < 0 {
-		target.Abs(target)
+	// 1. Target from compact bits -> *big.Int
+	target := blockchain.CompactToBig(s.ShareInfo.Bits)
+	if target.Sign() <= 0 {
+		return false
 	}
 
-	return blockchain.HashToBig(s.POWHash).Cmp(target) <= 0
+	// 2. Hash -> little-endian bytes -> *big.Int
+	// The POWHash from the Verthash library is already in the correct byte order
+	// to be interpreted as a little-endian integer by big.Int.
+	// We just need to reverse it for the comparison.
+	hashBytes := s.POWHash.CloneBytes()
+	// Reverse the bytes for little-endian comparison
+	for i, j := 0, len(hashBytes)-1; i < j; i, j = i+1, j-1 {
+		hashBytes[i], hashBytes[j] = hashBytes[j], hashBytes[i]
+	}
+	hashInt := new(big.Int).SetBytes(hashBytes)
+
+	// 3. Valid if hash <= target
+	return hashInt.Cmp(target) <= 0
 }
 
 func (s *Share) ToBytes() ([]byte, error) {
