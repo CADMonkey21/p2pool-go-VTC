@@ -9,7 +9,10 @@ require (
 	github.com/gertjaap/verthash-go v0.0.0-20210205201258-234a3a9698d1
 )
 
-require gopkg.in/yaml.v3 v3.0.1
+require (
+	github.com/soheilhy/cmux v0.1.5
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/btcsuite/btcd/btcec/v2 v2.1.3 // indirect
@@ -19,5 +22,7 @@ require (
 	github.com/decred/dcrd/crypto/blake256 v1.0.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	golang.org/x/crypto v0.17.0 // indirect
+	golang.org/x/net v0.10.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
 )

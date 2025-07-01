@@ -2,10 +2,14 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/soheilhy/cmux"
 
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
@@ -15,6 +19,10 @@ import (
 	"github.com/gertjaap/p2pool-go/stratum"
 	"github.com/gertjaap/p2pool-go/work"
 )
+
+/* -------------------------------------------------------------------- */
+/*  Helpers                                                             */
+/* -------------------------------------------------------------------- */
 
 func formatHashrate(hr float64) string {
 	switch {
@@ -48,7 +56,6 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 		stats := sc.GetStats()
 		localHashrate := ss.GetLocalHashrate()
 
-		// MODIFIED: Calculate local time to share based on actual share rate
 		localSPS := ss.GetLocalSharesPerSecond()
 		var localTimeToShare float64
 		if localSPS > 0 {
@@ -66,61 +73,82 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 	}
 }
 
+/* -------------------------------------------------------------------- */
+/*  main                                                                */
+/* -------------------------------------------------------------------- */
+
 func main() {
-	logging.Infof("🚀  p2pool-go (alt-port build) starting up")
+	/* ----- start‑up & logging ---------------------------------------- */
+	logging.Infof("🚀  p2pool-go (single‑port build) starting up")
 	logging.SetLogLevel(int(logging.LogLevelDebug))
 
-	logFile, _ := os.OpenFile("p2pool.log",
-		os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
+	logFile, _ := os.OpenFile("p2pool.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
 	defer logFile.Close()
 	logging.SetLogFile(logFile)
 
-	logging.Debugf("MAIN: Loading configuration...")
+	/* ----- configuration -------------------------------------------- */
 	config.LoadConfig()
-	logging.Debugf("MAIN: Setting network parameters for '%s'...", config.Active.Network)
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
-	logging.Debugf("MAIN: Verthash initialized and network set.")
 
+	// Optional: override default P2P port
 	p2pnet.ActiveNetwork.P2PPort = 19172
-	logging.Debugf("MAIN: P2P listen port override set to %d.", p2pnet.ActiveNetwork.P2PPort)
 
-	logging.Debugf("MAIN: Initializing RPC client...")
+	/* ----- RPC, share chain, work manager --------------------------- */
 	rpcClient := rpc.NewClient(config.Active)
 
-	logging.Debugf("MAIN: Initializing ShareChain...")
 	sc := work.NewShareChain(rpcClient)
-	logging.Debugf("MAIN: Loading sharechain from shares.dat...")
-	err := sc.Load()
-	if err != nil {
+	if err := sc.Load(); err != nil {
 		logging.Fatalf("MAIN: Failed to load sharechain: %v", err)
 	}
-	logging.Debugf("MAIN: Sharechain loading complete.")
 
-	logging.Debugf("MAIN: Initializing WorkManager...")
 	workManager := work.NewWorkManager(rpcClient, sc)
 	go workManager.WatchBlockTemplate()
 	go workManager.WatchMaturedBlocks()
-	logging.Debugf("MAIN: WorkManager is watching for new block templates and matured blocks.")
 
-	logging.Debugf("MAIN: Initializing PeerManager...")
+	/* ----- peer network --------------------------------------------- */
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
 	go pm.ListenForPeers()
-	logging.Debugf("MAIN: PeerManager is listening for peers.")
 
-	logging.Debugf("MAIN: Initializing StratumServer...")
+	/* ----- Stratum server instance ---------------------------------- */
 	stratumSrv := stratum.NewStratumServer(workManager, pm)
-	go stratumSrv.ListenForMiners()
-	logging.Debugf("MAIN: StratumServer is listening for miners.")
 
+	/* =================================================================
+	   Single TCP listener on :9172, multiplexed via cmux
+	   ================================================================= */
+	addr := fmt.Sprintf(":%d", config.Active.StratumPort) // 9172
+	baseListener, err := net.Listen("tcp", addr)
+	if err != nil {
+		logging.Fatalf("MAIN: Unable to listen on %s: %v", addr, err)
+	}
+
+	m := cmux.New(baseListener)
+	httpL := m.Match(cmux.HTTP1Fast()) // Web dashboard
+	stratumL := m.Match(cmux.Any())    // Everything else → miners
+
+	/* ----- tiny placeholder dashboard ------------------------------- */
+	httpSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintln(w, "p2pool‑go dashboard – coming soon!")
+		}),
+	}
+
+	go func() { _ = httpSrv.Serve(httpL) }()
+	go func() { _ = stratumSrv.Serve(stratumL) }()
+	go func() {
+		if err := m.Serve(); err != nil {
+			logging.Fatalf("MAIN: cmux error: %v", err)
+		}
+	}()
+
+	/* ----- misc goroutines & shutdown handler ----------------------- */
 	go logStats(pm, sc, stratumSrv)
 
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
-	logging.Infof("MAIN: Startup complete. Press Ctrl+C to shut down.")
+	logging.Infof("MAIN: Startup complete – Stratum + Web UI on %s. Press Ctrl+C to exit.", addr)
 
 	<-shutdownChan
-
-	logging.Warnf("\nShutdown signal received. Saving share chain and exiting.")
+	logging.Warnf("\nShutdown signal received. Saving share chain and exiting…")
 
 	if err := sc.Commit(); err != nil {
 		logging.Errorf("Could not commit sharechain on shutdown: %v", err)
@@ -128,3 +156,4 @@ func main() {
 		logging.Infof("Sharechain committed successfully.")
 	}
 }
+
