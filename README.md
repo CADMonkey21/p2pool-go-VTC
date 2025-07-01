@@ -32,7 +32,7 @@ The node is in a **fully functional and stable state**. The core logic has been 
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/CADMonkey21/p2pool-go-VTC.git](https://github.com/CADMonkey21/p2pool-go-VTC.git)
+    git clone https://github.com/CADMonkey21/p2pool-go-VTC.git
     cd p2pool-go-VTC
     ```
 
