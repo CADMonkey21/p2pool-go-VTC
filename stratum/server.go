@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
@@ -22,13 +23,22 @@ import (
 	"github.com/gertjaap/p2pool-go/wire"
 )
 
-// extractID safely unmarshals the request ID to preserve its type (number or string).
+func isValidVtcAddress(addr string) bool {
+	hrp, _, err := bech32.Decode(addr)
+	if err != nil {
+		return false
+	}
+	if hrp != "vtc" && hrp != "tvtc" {
+		return false
+	}
+	return true
+}
+
 func extractID(raw *json.RawMessage) interface{} {
 	if raw == nil {
-		return nil // Client sent "null" or omitted it.
+		return nil
 	}
 	var v interface{}
-	// Unmarshal into an empty interface to keep the original type.
 	if err := json.Unmarshal(*raw, &v); err != nil {
 		return nil
 	}
@@ -55,33 +65,43 @@ func NewStratumServer(wm *work.WorkManager, pm *p2p.PeerManager) *StratumServer 
 	return s
 }
 
-// GetLocalHashrate calculates the total hashrate of all connected miners.
-func (s *StratumServer) GetLocalHashrate() float64 {
+func (s *StratumServer) GetLocalSharesPerSecond() float64 {
 	s.clientsMutex.RLock()
 	defer s.clientsMutex.RUnlock()
 
+	totalSharesPerSec := 0.0
+	for _, client := range s.clients {
+		client.Mutex.Lock()
+		datums, actualDuration := client.LocalRateMonitor.GetDatumsInLast(5 * time.Minute)
+		if len(datums) > 0 && actualDuration.Seconds() > 1 {
+			totalSharesPerSec += float64(len(datums)) / actualDuration.Seconds()
+		}
+		client.Mutex.Unlock()
+	}
+	return totalSharesPerSec
+}
+
+func (s *StratumServer) GetLocalHashrate() float64 {
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
 	totalHashrate := 0.0
 	for _, client := range s.clients {
 		client.Mutex.Lock()
 		datums, actualDuration := client.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
-
 		if len(datums) < 1 || actualDuration.Seconds() < 1 {
 			client.Mutex.Unlock()
 			continue
 		}
-
 		totalWork := 0.0
 		for _, datum := range datums {
 			totalWork += datum.Work
 		}
-
 		hashrate := (totalWork * math.Pow(2, 32)) / actualDuration.Seconds()
 		totalHashrate += hashrate
 		client.Mutex.Unlock()
 	}
 	return totalHashrate
 }
-
 
 func (s *StratumServer) dropClient(c *Client) {
 	c.closed.Store(true)
@@ -104,23 +124,19 @@ func (s *StratumServer) isClientActive(id uint64) bool {
 func (s *StratumServer) keepAliveLoop() {
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
-
 	for range ticker.C {
 		s.lastJobMutex.RLock()
 		job := s.lastJob
 		s.lastJobMutex.RUnlock()
-
 		if job == nil {
 			continue
 		}
-
 		s.clientsMutex.RLock()
 		currentClients := make([]*Client, 0, len(s.clients))
 		for _, client := range s.clients {
 			currentClients = append(currentClients, client)
 		}
 		s.clientsMutex.RUnlock()
-
 		if len(currentClients) > 0 {
 			logging.Debugf("Stratum: Sending keep-alive job to %d miners", len(currentClients))
 			for _, client := range currentClients {
@@ -135,7 +151,6 @@ func (s *StratumServer) keepAliveLoop() {
 func (s *StratumServer) jobBroadcaster() {
 	for {
 		template := <-s.workManager.NewBlockChan
-
 		newJob := &Job{
 			ID:            fmt.Sprintf("job%d", rand.Intn(10000)),
 			BlockTemplate: template,
@@ -143,14 +158,12 @@ func (s *StratumServer) jobBroadcaster() {
 		s.lastJobMutex.Lock()
 		s.lastJob = newJob
 		s.lastJobMutex.Unlock()
-
 		s.clientsMutex.RLock()
 		currentClients := make([]*Client, 0, len(s.clients))
 		for _, c := range s.clients {
 			currentClients = append(currentClients, c)
 		}
 		s.clientsMutex.RUnlock()
-
 		if len(currentClients) > 0 {
 			logging.Infof("Stratum: Broadcasting new job for height %d to %d miners", template.Height, len(currentClients))
 			for _, client := range currentClients {
@@ -187,9 +200,7 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 	s.clientsMutex.Lock()
 	s.clients[client.ID] = client
 	s.clientsMutex.Unlock()
-
 	defer s.dropClient(client)
-
 	go s.vardiffLoop(client)
 	decoder := json.NewDecoder(client.Reader)
 	for {
@@ -218,18 +229,17 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 
 func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	id := extractID(req.ID)
-
 	var params []string
 	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
 		logging.Warnf("Stratum: Malformed submit params from %s", c.Conn.RemoteAddr())
 		return
 	}
-
 	workerName, jobID, extraNonce2, nTime, nonceHex := params[0], params[1], params[2], params[3], params[4]
 	logging.Infof("Stratum: Received mining.submit from %s for job %s", workerName, jobID)
-
 	c.Mutex.Lock()
 	job, jobExists := c.ActiveJobs[jobID]
+	payoutAddr := c.WorkerName
+	currentDiff := c.CurrentDifficulty
 	c.Mutex.Unlock()
 
 	if !jobExists {
@@ -237,39 +247,33 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	headerBytes, _, err := work.CreateHeader(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress)
+	headerBytes, _, err := work.CreateHeader(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr)
 	if err != nil {
 		logging.Errorf("Stratum: Failed to create block header for validation: %v", err)
 		return
 	}
-
 	powHash := p2pnet.ActiveNetwork.POWHash(headerBytes)
 	logging.Debugf("PoW hash for submission: %s", hex.EncodeToString(work.ReverseBytes(powHash)))
-
-	shareTargetBigInt := work.DiffToTarget(c.CurrentDifficulty)
+	shareTargetBigInt := work.DiffToTarget(currentDiff)
 	powHashInt := new(big.Int)
 	powHashInt.SetBytes(work.ReverseBytes(powHash))
-
 	shareAccepted := false
 	if powHashInt.Cmp(shareTargetBigInt) <= 0 {
 		logging.Infof("Stratum: SHARE ACCEPTED! Valid work from %s", c.WorkerName)
 		shareAccepted = true
 		c.LocalRateMonitor.AddDatum(ShareDatum{
-			Work:        targetToAverageAttempts(shareTargetBigInt),
+			Work:        currentDiff,
 			IsDead:      false,
 			WorkerName:  c.WorkerName,
 			ShareTarget: shareTargetBigInt,
 		})
 
-		newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, config.Active.PoolAddress, s.workManager.ShareChain, c.CurrentDifficulty)
+		newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
 		if err != nil {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
 		} else {
-			// A share from our own miner has already been validated and can be trusted.
 			s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
 			s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
-
-			// Check if the share is also a block
 			bits, err := hex.DecodeString(job.BlockTemplate.Bits)
 			if err != nil {
 				logging.Errorf("Could not decode bits from template: %v", err)
@@ -285,13 +289,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	} else {
 		logging.Warnf("Stratum: Share rejected. Hash does not meet target.")
 	}
-
-	response := JSONRPCResponse{
-		ID:     id,
-		Result: shareAccepted,
-		Error:  nil,
-	}
-
+	response := JSONRPCResponse{ID: id, Result: shareAccepted, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: failed to send submit response to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)
@@ -306,7 +304,6 @@ func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 	extraNonce1 := c.ExtraNonce1
 	nonce2Size := c.Nonce2Size
 	c.Mutex.Unlock()
-
 	subscriptionDetails := []interface{}{"mining.notify", c.SubscriptionID}
 	result := []interface{}{subscriptionDetails, extraNonce1, nonce2Size}
 	response := JSONRPCResponse{ID: id, Result: result, Error: nil}
@@ -324,25 +321,31 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
+	workerAddr := params[0]
+	if !isValidVtcAddress(workerAddr) {
+		logging.Warnf("Stratum: Miner %s attempted to authorize with invalid address: %s", c.Conn.RemoteAddr(), workerAddr)
+		response := JSONRPCResponse{ID: id, Result: false, Error: []interface{}{24, "Invalid VTC address", nil}}
+		if err := c.send(response); err != nil {
+			logging.Warnf("Stratum: Failed to send auth error response to %s: %v", c.Conn.RemoteAddr(), err)
+		}
+		s.dropClient(c)
+		return
+	}
+
 	c.Mutex.Lock()
-	c.WorkerName = params[0]
+	c.WorkerName = workerAddr
 	c.Authorized = true
 	c.Mutex.Unlock()
-
 	logging.Infof("Stratum: Miner %s successfully authorized for worker %s", c.Conn.RemoteAddr(), c.WorkerName)
-
 	response := JSONRPCResponse{ID: id, Result: true, Error: nil}
 	if err := c.send(response); err != nil {
 		logging.Warnf("Stratum: Failed to send authorize response to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)
 	}
-
 	s.sendDifficulty(c, config.Active.Vardiff.MinDiff)
-
 	s.lastJobMutex.RLock()
 	latestJob := s.lastJob
 	s.lastJobMutex.RUnlock()
-
 	if latestJob != nil {
 		go s.sendMiningJob(c, latestJob.BlockTemplate, true)
 	}
@@ -355,7 +358,6 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	c.Mutex.Lock()
 	c.CurrentDifficulty = diff
 	c.Mutex.Unlock()
-
 	params := []interface{}{diff}
 	diffResponse := JSONRPCResponse{Method: "mining.set_difficulty", Params: params}
 	if err := c.send(diffResponse); err != nil {
@@ -366,96 +368,63 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	logging.Infof("Stratum: Difficulty set to %.6f for miner %s", diff, c.Conn.RemoteAddr())
 }
 
+// MODIFIED: This loop now uses a standard, time-based vardiff algorithm.
 func (s *StratumServer) vardiffLoop(c *Client) {
 	ticker := time.NewTicker(time.Duration(config.Active.Vardiff.RetargetTime) * time.Second)
 	defer ticker.Stop()
+
 	for {
 		<-ticker.C
 		if c.closed.Load() {
 			return
 		}
+
 		c.Mutex.Lock()
 		if !c.Authorized {
 			c.Mutex.Unlock()
-			return
+			continue
 		}
 
-		datums, actualDuration := c.LocalRateMonitor.GetDatumsInLast(c.LocalRateMonitor.maxLookbackTime)
+		// Use the whole lookback window for a stable average
+		datums, totalTimeSpan := c.LocalRateMonitor.GetDatumsInLast(c.LocalRateMonitor.maxLookbackTime)
 
-		if len(datums) < 4 {
+		// Need a minimum number of shares to get a reliable average
+		if len(datums) < 5 {
 			c.Mutex.Unlock()
 			continue
 		}
 
-		totalTimeSpan := actualDuration.Seconds()
-		if totalTimeSpan <= 0 {
+		actualTimePerShare := totalTimeSpan.Seconds() / float64(len(datums))
+		if actualTimePerShare <= 0 {
 			c.Mutex.Unlock()
 			continue
 		}
 
-		totalWork := 0.0
-		for _, datum := range datums {
-			totalWork += datum.Work
+		var summedDifficulty float64
+		for _, d := range datums {
+			summedDifficulty += d.Work
 		}
+		avgDifficulty := summedDifficulty / float64(len(datums))
 
-		avgSharesPerSec := totalWork / totalTimeSpan
-		targetSharesPerSec := 1.0 / config.Active.Vardiff.TargetTime
-		newDiff := c.CurrentDifficulty * (avgSharesPerSec / targetSharesPerSec)
+		// Proportional adjustment: new_diff = current_diff * (target_time / actual_time)
+		targetTime := config.Active.Vardiff.TargetTime
+		newDiff := avgDifficulty * (targetTime / actualTimePerShare)
+
 		if newDiff < config.Active.Vardiff.MinDiff {
 			newDiff = config.Active.Vardiff.MinDiff
 		}
-		roundedDiff := roundDifficultyToPowerOfTwo(newDiff)
+
 		currentDiff := c.CurrentDifficulty
 		workerName := c.WorkerName
 		c.Mutex.Unlock()
 
-		if math.Abs(roundedDiff-currentDiff) > 0.0001 {
-			logging.Infof("Stratum: Retargeting miner %s from diff %f to %f (avg shares/sec: %.2f, total time span: %.2fs)", workerName, currentDiff, roundedDiff, avgSharesPerSec, totalTimeSpan)
-			s.sendDifficulty(c, roundedDiff)
+		// MODIFIED: Use the config variance to decide whether to send an update.
+		// This is the standard p2pool method and allows for smoother adjustments.
+		if (newDiff / currentDiff) > (1.0 + config.Active.Vardiff.Variance) || (newDiff / currentDiff) < (1.0 - config.Active.Vardiff.Variance) {
+			logging.Infof("Stratum: Retargeting miner %s from diff %.4f to %.4f (avg share time: %.2fs, target: %.2fs)", workerName, currentDiff, newDiff, actualTimePerShare, targetTime)
+			s.sendDifficulty(c, newDiff)
 		}
 	}
-}
-
-func targetToAverageAttempts(target *big.Int) float64 {
-	if target == nil || target.Sign() <= 0 {
-		return 0
-	}
-	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-	maxTargetFloat := new(big.Float).SetInt(maxTarget)
-	targetFloat := new(big.Float).SetInt(target)
-	if targetFloat.Cmp(big.NewFloat(0)) == 0 {
-		return 0
-	}
-	f, _ := new(big.Float).Quo(maxTargetFloat, targetFloat).Float64()
-	return f
-}
-
-func roundDifficultyToPowerOfTwo(difficulty float64) float64 {
-	dumbScryptDiff := 16.0
-	scaledDifficulty := difficulty / dumbScryptDiff
-	roundedDifficulty := 1.0
-
-	if scaledDifficulty >= 1.0 {
-		for i := 0; i < 32; i++ {
-			nextRoundedDifficulty := roundedDifficulty * 2
-			if (1.5 * roundedDifficulty) < scaledDifficulty {
-				roundedDifficulty = nextRoundedDifficulty
-			} else {
-				break
-			}
-		}
-	} else {
-		for i := 0; i < 32; i++ {
-			nextRoundedDifficulty := roundedDifficulty / 2
-			if (0.75 * roundedDifficulty) >= scaledDifficulty && nextRoundedDifficulty > 0 {
-				roundedDifficulty = nextRoundedDifficulty
-			} else {
-				break
-			}
-		}
-	}
-
-	return roundedDifficulty * dumbScryptDiff
 }
 
 func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, cleanJobs bool) {
@@ -466,7 +435,6 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		logging.Warnf("Stratum: No block template available, cannot send job to miner %s", c.Conn.RemoteAddr())
 		return
 	}
-
 	c.Mutex.Lock()
 	jobID := fmt.Sprintf("job%d", rand.Intn(10000))
 	newJob := &Job{
@@ -480,7 +448,6 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	c.ActiveJobs[jobID] = newJob
 	workerName := c.WorkerName
 	c.Mutex.Unlock()
-
 	prevhash := tmpl.PreviousBlockHash
 	coinb1 := "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704"
 	coinb2 := "000000000000000000000000000000"
@@ -489,9 +456,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	nbits := tmpl.Bits
 	ntime := fmt.Sprintf("%x", tmpl.CurTime)
 	params := []interface{}{jobID, prevhash, coinb1, coinb2, merkleBranch, blockVersion, nbits, ntime, cleanJobs}
-
 	jobResponse := JSONRPCResponse{Method: "mining.notify", Params: params}
-
 	if err := c.send(jobResponse); err != nil {
 		logging.Debugf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)

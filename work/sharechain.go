@@ -68,14 +68,12 @@ func NewShareChain(client *rpc.Client) *ShareChain {
 		NeedShareChannel:      make(chan *chainhash.Hash, 10),
 		rpcClient:             client,
 	}
-	// This channel appears to be unused, but we'll leave the logic for now.
 	go sc.ReadShareChan()
 	return sc
 }
 
 func (sc *ShareChain) ReadShareChan() {
 	for s := range sc.SharesChannel {
-		// Shares from the network are not trusted and must be validated.
 		sc.AddShares(s, false)
 	}
 }
@@ -116,8 +114,6 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 			continue
 		}
 
-		// For trusted shares (from disk), skip the expensive PoW check.
-		// For untrusted shares (from network), they MUST be validated.
 		if !trusted && !share.IsValid() {
 			if share.POWHash != nil {
 				target := blockchain.CompactToBig(share.ShareInfo.Bits)
@@ -132,7 +128,6 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 			continue
 		}
 
-		// Share is either trusted or has passed validation
 		hashStr := share.Hash.String()
 		sc.allSharesLock.Lock()
 		_, inAllShares := sc.AllShares[hashStr]
@@ -151,6 +146,27 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 		}
 	}
 	sc.Resolve(false)
+}
+
+// GetSharesForPayout retrieves a slice of shares from the chain for PPLNS calculation.
+// It traverses backwards from the block-finding share up to the window size.
+func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*wire.Share, error) {
+	sc.allSharesLock.Lock()
+	defer sc.allSharesLock.Unlock()
+
+	startShare, ok := sc.AllShares[blockFindShareHash.String()]
+	if !ok {
+		return nil, fmt.Errorf("block-finding share %s not found in chain", blockFindShareHash.String())
+	}
+
+	payoutShares := make([]*wire.Share, 0, windowSize)
+	current := startShare
+	for i := 0; i < windowSize && current != nil; i++ {
+		payoutShares = append(payoutShares, current.Share)
+		current = current.Previous
+	}
+
+	return payoutShares, nil
 }
 
 func (sc *ShareChain) GetShare(hashStr string) *wire.Share {
@@ -194,22 +210,17 @@ func (sc *ShareChain) GetStats() ChainStats {
 			deadShares++
 		}
 
-		maxTarget := new(big.Int)
-		maxTarget.SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-
+		maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 		shareTarget := blockchain.CompactToBig(current.Share.ShareInfo.Bits)
 		if shareTarget.Sign() <= 0 {
 			shareTarget.SetInt64(1)
 		}
-
 		difficulty := new(big.Int).Div(maxTarget, shareTarget)
 		totalWork.Add(totalWork, difficulty)
-
 		current = current.Previous
 	}
 
 	stats.SharesDead = deadShares
-
 	if sharesInWindow > 0 {
 		stats.Efficiency = 100 * (1 - (float64(stats.SharesDead) / float64(sharesInWindow)))
 	} else if stats.SharesOrphan == 0 && stats.SharesTotal > 0 {
@@ -230,10 +241,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 		if netTarget.Sign() > 0 {
 			maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 			netDiff := new(big.Int).Div(maxTarget, netTarget)
-
 			netDiffFloat := new(big.Float).SetInt(netDiff)
 			netWorkTerm := new(big.Float).Mul(netDiffFloat, pow32)
-
 			if stats.PoolHashrate > 0 {
 				timeToBlock, _ := new(big.Float).Quo(netWorkTerm, new(big.Float).SetFloat64(stats.PoolHashrate)).Float64()
 				stats.TimeToBlock = timeToBlock
@@ -242,7 +251,6 @@ func (sc *ShareChain) GetStats() ChainStats {
 	}
 
 	stats.CurrentPayout = 0.0
-
 	return stats
 }
 
@@ -268,16 +276,15 @@ func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
 				parentCS.Next = cs
 				sc.AllShares[kHash] = cs
 				delete(sc.disconnectedShares, kHash)
-				sc.attachChildren(kHash, cs) // Recurse to attach grandchildren
+				sc.attachChildren(kHash, cs)
 			}
 		}
-		delete(sc.AllSharesByPrev, parentHash) // we’re done with this slot
+		delete(sc.AllSharesByPrev, parentHash)
 	}
 }
 
 func (sc *ShareChain) Resolve(skipCommit bool) {
 	logging.Debugf("Resolving sharechain with %d disconnected shares", len(sc.disconnectedShares))
-
 	sc.allSharesLock.Lock()
 	if sc.Tip == nil && len(sc.disconnectedShares) > 0 {
 		h, o := sc.bestOrphan()
@@ -287,9 +294,9 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 			sc.Tip, sc.Tail = cs, cs
 			delete(sc.disconnectedShares, h)
 			logging.Warnf("Forcing genesis from orphan %s at height %d", h[:12], o.share.ShareInfo.AbsHeight)
-			sc.allSharesLock.Unlock() // Unlock before recursive call
+			sc.allSharesLock.Unlock()
 			sc.attachChildren(h, cs)
-			sc.allSharesLock.Lock() // Re-lock
+			sc.allSharesLock.Lock()
 		}
 	}
 	sc.allSharesLock.Unlock()
@@ -301,46 +308,35 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 			logging.Warnf("Resolve loop exceeded max passes, breaking to prevent hang.")
 			break
 		}
-
 		changedInLoop = false
-
 		for hashStr, orphan := range sc.disconnectedShares {
 			if orphan.share.ShareInfo.ShareData.PreviousShareHash == nil {
 				continue
 			}
 			prevHashStr := orphan.share.ShareInfo.ShareData.PreviousShareHash.String()
-
 			sc.allSharesLock.Lock()
 			parent, exists := sc.AllShares[prevHashStr]
 			sc.allSharesLock.Unlock()
-
 			if exists {
 				logging.Infof("Linking share %s to parent %s", hashStr[:12], prevHashStr[:12])
 				newChainShare := &ChainShare{Share: orphan.share, Previous: parent}
-
 				sc.allSharesLock.Lock()
 				if parent.Next != nil {
 					logging.Warnf("Parent share %s already has a next share. Ignoring link for %s.", parent.Share.Hash.String()[:12], newChainShare.Share.Hash.String()[:12])
 				} else {
 					parent.Next = newChainShare
 				}
-
 				sc.AllShares[hashStr] = newChainShare
-
 				if sc.Tip == parent {
 					sc.Tip = newChainShare
-					logging.Infof("Accepted share %s becomes new tip. Height: %d",
-						hashStr[:12], orphan.share.ShareInfo.AbsHeight)
+					logging.Infof("Accepted share %s becomes new tip. Height: %d", hashStr[:12], orphan.share.ShareInfo.AbsHeight)
 				}
-
-				sc.allSharesLock.Unlock() // Unlock before recursive call
+				sc.allSharesLock.Unlock()
 				sc.attachChildren(hashStr, newChainShare)
-
 				delete(sc.disconnectedShares, hashStr)
 				changedInLoop = true
 			}
 		}
-
 		if !changedInLoop {
 			for hashStr, orphan := range sc.disconnectedShares {
 				orphan.age++
@@ -355,7 +351,6 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 								logging.Debugf("Requesting missing parent %s for share %s", hashStr[:12], orphan.share.ShareInfo.ShareData.PreviousShareHash.String()[:12])
 								sc.requestedParents[hashStr] = time.Now()
 							default:
-								// channel full
 							}
 						}
 					}
@@ -371,7 +366,6 @@ func (sc *ShareChain) Commit() error {
 		return err
 	}
 	defer f.Close()
-
 	shares := make([]wire.Share, 0)
 	sc.allSharesLock.Lock()
 	current := sc.Tail
@@ -380,7 +374,6 @@ func (sc *ShareChain) Commit() error {
 		current = current.Next
 	}
 	sc.allSharesLock.Unlock()
-
 	return wire.WriteShares(f, shares)
 }
 
@@ -395,20 +388,16 @@ func (sc *ShareChain) Load() error {
 		return err
 	}
 	defer f.Close()
-
 	logging.Debugf("SHARECHAIN/LOAD: Reading shares from file...")
 	shares, err := wire.ReadShares(f)
 	if err != nil && err.Error() != "EOF" {
 		return fmt.Errorf("error reading shares: %v", err)
 	}
 	logging.Debugf("SHARECHAIN/LOAD: Read %d shares from shares.dat.", len(shares))
-
 	logging.Debugf("SHARECHAIN/LOAD: Adding loaded shares to the chain as trusted...")
-	// Shares from disk are trusted and don't need re-validation.
 	sc.AddShares(shares, true)
 	logging.Debugf("SHARECHAIN/LOAD: Resolving loaded share chain...")
 	sc.Resolve(true)
 	logging.Debugf("SHARECHAIN/LOAD: Finished resolving.")
-
 	return nil
 }

@@ -1,8 +1,4 @@
-# p2pool-go-VTC Example Configuration
-#
-# How to use:
-# 1. Copy this file to 'config.yaml' (`cp config.example.yaml config.yaml`)
-# 2. Edit your personal 'config.yaml' with your settings below.
+# p2pool-go-VTC Personal Configuration
 
 # The network to run on. For Vertcoin mainnet, this must be "vertcoin".
 network: "vertcoin"
@@ -11,40 +7,63 @@ network: "vertcoin"
 testnet: false
 
 # --- P2P Network Peers ---
-# List of initial peers to connect to on the p2pool network.
+# List of initial peers to connect to. The more the better.
 peers:
   - "p2p-usa.xyz"
   - "p2p-spb.xyz"
   - "mindcraftblocks.com"
   - "boofpool.ddns.net"
   - "vtc-fl.javerity.com"
-  # You can add your local node for testing if you wish
-  # - "127.0.0.1"
+  - "127.0.0.1"
 
 
 # --- RPC Connection Settings ---
 # These must match the settings in your vertcoin.conf file.
 rpcHost: "127.0.0.1"
 rpcPort: 5888
-rpcUser: "YOUR_RPC_USER"
-rpcPass: "YOUR_RPC_PASSWORD"
+rpcUser: "your_rpc_user"
+rpcPass: "your_rpc_password"
 
 
 # --- Pool Settings ---
 # Your personal Vertcoin address for receiving pool fee payouts.
-poolAddress: "YOUR_VTC_PAYOUT_ADDRESS"
+poolAddress: "vtc1..."
+# The fee (in percent) that the pool will take.
 fee: 1.0
+# How many shares are considered for payouts when a block is found (Pay-Per-Last-N-Shares).
+# 4320 shares is equivalent to a 24-hour window on the Vertcoin network.
+pplns_window: 4320
 
 
 # --- Port Settings ---
 # The port your miners will connect to.
 stratumPort: 9172
 
+# The port that other p2pool nodes will connect to.
+p2pPort: 9346
+
 
 # --- Variable Difficulty Settings ---
+# A stable configuration for smooth, automatic difficulty adjustments.
 vardiff:
-  targetTime: 15.0
-  retargetTime: 120.0
-  variance: 0.30
-  minDiff: 0.1
+  # The ideal time in seconds between shares submitted by a miner.
+  # The pool will adjust difficulty to try and meet this target.
+  # 30 seconds is a good, stable starting point.
+  targetTime: 1.0
 
+  # How often (in seconds) the pool will check a miner's performance
+  # and adjust their difficulty. This should be several times longer
+  # than targetTime to get a good average.
+  # This MUST be longer than the targetTime. 2-5x
+  retargetTime: 3.0
+
+  # The allowed variance from targetTime before difficulty is adjusted.
+  # (e.g., 0.30 means the share time must be 30% faster or slower than
+  # the target to trigger a difficulty change). This prevents tiny,
+  # frequent adjustments. 0.30 is a standard value.
+  variance: 0.30
+
+  # The absolute minimum difficulty that will be assigned to a miner.
+  # This prevents difficulty from dropping too low for very slow miners.
+  # 0.01 is a reasonable floor for most hardware.
+  minDiff: 0.0625

@@ -1,24 +1,21 @@
 # p2pool-go-VTC
 
+This is a modern, from-scratch implementation of a peer-to-peer (p2pool) mining pool for Vertcoin, written entirely in Go. It is designed for performance, stability, and ease of use, and is fully compatible with the existing Vertcoin p2pool network.
 
-This is a **Go‑based** implementation of the P2Pool protocol with first‑class support for **Vertcoin (VTC)**.  
-The aim is a modern, high‑performance, cross‑platform node that is simple to deploy on anything from a Raspberry Pi to a full server.
+This project was built to be a learning tool as well as a functional replacement for older, Python-based p2pool implementations.
 
 ---
 
-### Current State: Functional Alpha (Core Logic Stable)
+### Features
 
-The node is in a **functional alpha state**. The core logic is now stable, and the node is fully interoperable with the live p2pool network. The latest updates have resolved critical performance and validation bugs.
+The node is in a **fully functional and stable state**. The core logic has been built and tested, resolving critical performance and validation bugs. The node is fully interoperable with the live p2pool network.
 
-The node can now:
-
-* Connect to legacy Python peers and maintain stable connections.
-* Accept Verthash miners over the Stratum protocol (port `9172`).
-* Correctly validate shares from its own miners **and from network peers**.
-* Build and manage a share chain that is in sync with the global p2pool network.
-* Load the existing share chain from disk quickly on startup.
-
-With the core functionality now stable and proven, the primary remaining task is to implement the payout and block submission logic.
+* **Full Stratum Server:** Allows any standard Verthash mining software to connect.
+* **P2P Networking:** Connects to legacy Python peers and other nodes to form a decentralized mining network.
+* **Automatic PPLNS Payouts:** Automatically calculates and distributes block rewards based on the Pay-Per-Last-N-Shares model.
+* **Robust Variable Difficulty (Vardiff):** A stable and highly configurable vardiff engine automatically adjusts difficulty for miners of all sizes.
+* **Daemon Integration:** Communicates directly with your Vertcoin daemon (`vtcd`) for block templates, transaction submissions, and maturity checks.
+* **Persistent Share Chain:** Remembers the share chain across restarts by saving to `shares.dat`, allowing the pool to resume where it left off.
 
 ---
 
@@ -26,8 +23,8 @@ With the core functionality now stable and proven, the primary remaining task is
 
 1.  A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
 2.  The **`verthash.dat`** dataset. Copy it from `~/.vertcoin/` or let the node download on first start.
-3.  **Go 1.18+** (Go 1.22 recommended).
-4.  An **open P2P port** on your router/​firewall – this fork defaults to **`19172`** – forwarded to the machine running the node.
+3.  **Go 1.18+** (Go 1.22 recommended).
+4.  An **open P2P port** on your router/firewall (default is `9346`) forwarded to the machine running the node.
 
 ---
 
@@ -57,32 +54,44 @@ With the core functionality now stable and proven, the primary remaining task is
     ```
     Point your Verthash-compatible miner to your pool's IP address on the Stratum port you configured (default is `9172`).
 
+---
+
+## Configuration
+
+The `config.yaml` file allows you to configure all aspects of the pool.
+
+* **RPC Connection:** These settings must match your `vertcoin.conf`.
+* **Pool Settings:** `poolAddress` is the **most important setting**. This is your personal VTC address that will receive fee payouts and your own mining rewards. The `pplns_window` determines how many past shares are included in a payout calculation.
+* **Vardiff Settings:** These allow you to fine-tune the automatic difficulty adjustment. The defaults are a stable starting point.
+    * `targetTime`: The ideal time in seconds for a miner to find one share.
+    * `retargetTime`: How often the algorithm checks the miner's performance. For stability, this should be 3-5x longer than `targetTime`.
+
 ## Status
 
 Here is a more detailed breakdown of the project's current status:
 
 -   **P2P Layer**
     -   [x] Wire-protocol (version, ping, addrs, shares, get_shares)
-    -   [x] Peer manager (dial, listen :19172, discovery)
-    -   [x] Stable handshakes & keep‑alive
+    -   [x] Peer manager (dial, listen, discovery)
+    -   [x] Stable handshakes & keep-alive
 -   **RPC Client**
     -   [x] Connect / auth to vertcoind
     -   [x] Fetch block templates & network stats
     -   [x] Block submission
 -   **Stratum Server & Share Logic**
     -   [x] `subscribe` / `authorize` handshake
-    -   [x] Vardiff engine
+    -   [x] Vardiff engine (stable and configurable)
     -   [x] Verthash PoW, target validation & share creation
     -   [x] Block finding detection
     -   [x] Broadcast miner shares to P2P
--   **Share Chain**
+-   **Share Chain & Payouts**
     -   [x] Correctly validate shares from local miners and network peers
     -   [x] Stable share chain management (linking, orphan handling)
+    -   [x] **PPLNS payout logic implemented**
 -   **Persistence**
-    -   [x] On‑disk sharechain (`shares.dat`) with periodic autosave
+    -   [x] On-disk sharechain (`shares.dat`)
     -   [x] Fast loading of persisted share chain
 -   **Next Steps**
-    -   [ ] **Implement PPLNS payout logic**
     -   [ ] Add web dashboard for stats and monitoring
     -   [ ] General code cleanup and further hardening
 

@@ -118,3 +118,29 @@ func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error)
 
 	return &rpcResp, nil
 }
+
+// SendMany sends a transaction with multiple outputs to the RPC server.
+// This is the core function for distributing PPLNS payouts.
+func (c *Client) SendMany(amounts map[string]float64) (string, error) {
+	// Using a minimal set of parameters for broader compatibility.
+	// Parameters: fromaccount (dummy), amounts, minconf, comment
+	params := []interface{}{
+		"",
+		amounts,
+		1,
+		"p2pool-go-vtc payout",
+	}
+
+	resp, err := c.Call("sendmany", params)
+	if err != nil {
+		return "", err
+	}
+
+	var txid string
+	err = json.Unmarshal(resp.Result, &txid)
+	if err != nil {
+		return "", fmt.Errorf("failed to unmarshal txid from sendmany response: %w", err)
+	}
+
+	return txid, nil
+}

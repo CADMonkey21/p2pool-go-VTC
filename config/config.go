@@ -24,9 +24,10 @@ type Config struct {
 	RPCHost     string        `yaml:"rpcHost"`
 	RPCPort     int           `yaml:"rpcPort"`
 	PoolAddress string        `yaml:"poolAddress"`
-	P2PPort     int           `yaml:"p2pPort"` // <-- Re-added this line
+	P2PPort     int           `yaml:"p2pPort"`
 	StratumPort int           `yaml:"stratumPort"`
 	Fee         float64       `yaml:"fee"`
+	PPLNSWindow int           `yaml:"pplns_window"` // <-- ADDED: For PPLNS payout logic
 	Vardiff     VardiffConfig `yaml:"vardiff"`
 }
 
@@ -45,7 +46,7 @@ func LoadConfig() {
 			logging.Errorf("Failed to decode config.yaml: %v", err)
 		}
 	}
-	
+
 	net := flag.String("n", "", "Network")
 	testnet := flag.Bool("testnet", false, "Testnet")
 	user := flag.String("u", "", "RPC Username")

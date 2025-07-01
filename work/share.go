@@ -4,20 +4,21 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"math/big"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
 	p2pnet "github.com/gertjaap/p2pool-go/net"
-	p2pwire "github.com/gertjaap/p2pool-go/wire" // Use alias to distinguish from btcsuite wire
+	p2pwire "github.com/gertjaap/p2pool-go/wire"
 )
 
 // CreateHeader reconstructs the block header from template and miner data.
 func CreateHeader(tmpl *BlockTemplate, extraNonce1, extraNonce2, nTime, nonceHex, payoutAddress string) ([]byte, []byte, error) {
-	// Calculate the witness commitment hash for the coinbase transaction.
 	_, witnessCommitment, err := CalculateWitnessCommitment(tmpl)
 	if err != nil {
 		return nil, nil, err
@@ -63,7 +64,7 @@ func CreateHeader(tmpl *BlockTemplate, extraNonce1, extraNonce2, nTime, nonceHex
 	header.Write(versionBytes)
 	header.Write(ReverseBytes(prevHashBytes))
 	header.Write(ReverseBytes(merkleRootBytes))
-	header.Write(nTimeBytes)
+	header.Write(ReverseBytes(nTimeBytes)) // Timestamps in headers are little-endian
 	header.Write(nBitsBytes)
 	header.Write(ReverseBytes(nonceBytes))
 
@@ -105,6 +106,18 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	if err != nil {
 		return nil, err
 	}
+	// The nTime from stratum is big-endian, so we read it that way to get the correct unix time.
+	nTimeUint32 := binary.BigEndian.Uint32(nTimeBytes)
+
+	hrp, decoded, err := bech32.Decode(payoutAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode bech32 payout address '%s': %v", payoutAddress, err)
+	}
+	if hrp != "vtc" && hrp != "tvtc" {
+		return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
+	}
+	pkhVersion := decoded[0]
+	pkh := decoded[1:]
 
 	shareTarget := DiffToTarget(stratumDifficulty)
 	shareBits := blockchain.BigToCompact(shareTarget)
@@ -112,7 +125,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
 	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
 
-	// --- Segwit Calculation Start ---
 	wtxidMerkleRoot, witnessCommitment, err := CalculateWitnessCommitment(job)
 	if err != nil {
 		return nil, err
@@ -141,9 +153,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		wtxid := msgTx.WitnessHash()
 		wtxids = append(wtxids, &wtxid)
 	}
-
 	txidMerkleLinkBranches := CalculateMerkleLinkFromHashes(wtxids, 0)
-	// --- Segwit Calculation End ---
 
 	coinbaseTxHash := DblSha256(coinbaseTxBytes)
 	txHashesForLink := [][]byte{coinbaseTxHash}
@@ -159,14 +169,12 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		newTxHashesForShareInfo = append(newTxHashesForShareInfo, h)
 	}
 
-	// This now initializes the new "flattened" p2pwire.Share struct,
-	// without the nested "Contents" field.
 	share := &p2pwire.Share{
 		Type: 17,
 		MinHeader: p2pwire.SmallBlockHeader{
 			Version:       int32(job.Version),
 			PreviousBlock: prevBlockHash,
-			Timestamp:     binary.LittleEndian.Uint32(nTimeBytes),
+			Timestamp:     nTimeUint32, // Use corrected timestamp
 			Bits:          shareBits,
 			Nonce:         nonceUint32,
 		},
@@ -175,8 +183,8 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 				PreviousShareHash: shareChain.GetTipHash(),
 				CoinBase:          coinbaseTxBytes,
 				Nonce:             nonceUint32,
-				PubKeyHash:        make([]byte, 20),
-				PubKeyHashVersion: 0,
+				PubKeyHash:        pkh,
+				PubKeyHashVersion: pkhVersion,
 				Subsidy:           uint64(job.CoinbaseValue),
 				Donation:          uint16(config.Active.Fee * 100),
 			},
@@ -192,7 +200,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 			FarShareHash:         nil,
 			MaxBits:              shareBits,
 			Bits:                 shareBits,
-			Timestamp:            int32(binary.LittleEndian.Uint32(nTimeBytes)),
+			Timestamp:            int32(nTimeUint32), // Use corrected timestamp
 			AbsHeight:            int32(job.Height),
 			AbsWork:              new(big.Int),
 		},
