@@ -223,7 +223,7 @@ func (s *Share) IsValid() bool {
 	if s.ShareInfo.Bits == 0 {
 		return false
 	}
-	
+
 	target := blockchain.CompactToBig(s.ShareInfo.Bits)
 	if target.Sign() <= 0 {
 		return false
@@ -381,16 +381,14 @@ func (s *Share) FromBytes(r io.Reader) error {
 	s.MerkleLink.Index = uint64(mIndex)
 
 finalize:
+	// The share hash is a hash of its serialized content. This is fast and always needed.
 	bytesRead := initialLen - lr.Len()
 	finalPayload := payloadBytes[:bytesRead]
-
-	// The share hash is a hash of its serialized content. This is fast and always needed.
 	shareHashBytes := util.Sha256d(finalPayload)
 	s.Hash, _ = chainhash.NewHash(shareHashBytes)
-	
+
 	// When loading from disk or the network, we don't calculate the PoW hash immediately
 	// to ensure fast processing. It will be calculated on-demand by IsValid().
-
 	return nil
 }
 
