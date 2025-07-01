@@ -100,7 +100,8 @@ func main() {
 	logging.Debugf("MAIN: Initializing WorkManager...")
 	workManager := work.NewWorkManager(rpcClient, sc)
 	go workManager.WatchBlockTemplate()
-	logging.Debugf("MAIN: WorkManager is watching for new block templates.")
+	go workManager.WatchMaturedBlocks() // Start watching for matured blocks
+	logging.Debugf("MAIN: WorkManager is watching for new block templates and matured blocks.")
 
 	logging.Debugf("MAIN: Initializing PeerManager...")
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)

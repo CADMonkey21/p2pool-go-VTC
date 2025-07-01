@@ -7,26 +7,38 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/gertjaap/p2pool-go/logging"
 	"github.com/gertjaap/p2pool-go/rpc"
 	p2pwire "github.com/gertjaap/p2pool-go/wire"
 )
 
+// PayoutBlock represents a block found by the pool that is awaiting maturity for payout.
+type PayoutBlock struct {
+	BlockHash   *chainhash.Hash
+	BlockHeight int32
+	IsMature    bool
+	IsPaid      bool
+}
+
 type WorkManager struct {
-	rpcClient    *rpc.Client
-	ShareChain   *ShareChain
-	Templates    map[string]*BlockTemplate
-	TemplateMutex sync.RWMutex
-	NewBlockChan chan *BlockTemplate
+	rpcClient      *rpc.Client
+	ShareChain     *ShareChain
+	Templates      map[string]*BlockTemplate
+	PendingBlocks  []*PayoutBlock
+	TemplateMutex  sync.RWMutex
+	PendingMutex   sync.Mutex
+	NewBlockChan   chan *BlockTemplate
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 	return &WorkManager{
-		rpcClient:    rpcClient,
-		ShareChain:   sc,
-		Templates:    make(map[string]*BlockTemplate),
-		NewBlockChan: make(chan *BlockTemplate, 10),
+		rpcClient:     rpcClient,
+		ShareChain:    sc,
+		Templates:     make(map[string]*BlockTemplate),
+		PendingBlocks: make([]*PayoutBlock, 0),
+		NewBlockChan:  make(chan *BlockTemplate, 10),
 	}
 }
 
@@ -78,6 +90,44 @@ func (wm *WorkManager) WatchBlockTemplate() {
 	}
 }
 
+// WatchMaturedBlocks periodically checks for submitted blocks that have reached
+// the required number of confirmations to be considered mature.
+func (wm *WorkManager) WatchMaturedBlocks() {
+	// Check every 1 minute for matured blocks.
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+		wm.PendingMutex.Lock()
+		logging.Debugf("Checking for matured blocks... (%d pending)", len(wm.PendingBlocks))
+
+		for _, pb := range wm.PendingBlocks {
+			if pb.IsMature {
+				continue // Already processed
+			}
+
+			blockInfo, err := wm.rpcClient.GetBlock(pb.BlockHash)
+			if err != nil {
+				logging.Warnf("Could not get block info for %s: %v. It may have been orphaned.", pb.BlockHash.String(), err)
+				// Consider removing it from the list after several failed attempts.
+				continue
+			}
+
+			// Check for maturity (e.g., 100 confirmations)
+			if blockInfo.Confirmations >= 100 {
+				logging.Infof("✅ Block %s at height %d is now MATURE with %d confirmations!", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
+				pb.IsMature = true
+				// In the next step, we will trigger the payout logic from here.
+			} else {
+				logging.Debugf("Block %s at height %d is still pending maturity (%d confirmations)", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
+			}
+		}
+
+		wm.PendingMutex.Unlock()
+	}
+}
+
 // SubmitBlock constructs and submits a full block to the network based on a winning share.
 func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate) error {
 	// Reconstruct the full block header from the winning share.
@@ -120,8 +170,16 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 		return err
 	}
 
-	logging.Infof("SUCCESS! Block %s accepted by the network!", block.BlockHash().String())
-	// In the future, payout logic would be triggered from here.
+	logging.Infof("SUCCESS! Block %s accepted by the network! Awaiting maturity.", block.BlockHash().String())
+
+	// Add to pending list to watch for confirmations.
+	wm.PendingMutex.Lock()
+	blockHash := block.BlockHash() // Get the hash value
+	wm.PendingBlocks = append(wm.PendingBlocks, &PayoutBlock{
+		BlockHash:   &blockHash,             // Pass a pointer to the hash
+		BlockHeight: int32(template.Height), // Cast the height to int32
+	})
+	wm.PendingMutex.Unlock()
 
 	return nil
 }
