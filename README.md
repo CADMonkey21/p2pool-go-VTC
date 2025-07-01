@@ -25,7 +25,7 @@ With the core functionality now stable and proven, the primary remaining task is
 ## Prerequisites
 
 1.  A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
-2.  The **`verthash.dat`** dataset (≈ 6 GB). Copy it from `~/.vertcoin/` or let the node download on first start.
+2.  The **`verthash.dat`** dataset. Copy it from `~/.vertcoin/` or let the node download on first start.
 3.  **Go 1.18+** (Go 1.22 recommended).
 4.  An **open P2P port** on your router/​firewall – this fork defaults to **`19172`** – forwarded to the machine running the node.
 
