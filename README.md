@@ -28,6 +28,18 @@ The node is in a **fully functional and stable state**. The core logic has been 
 
 ---
 
+## Configuration & Ports
+
+The pool is configured using a single `config.yaml` file. You can create your own by copying the provided `config.example.yaml`. Before running, you must correctly configure your ports and firewall.
+
+| Port | Setting in `config.yaml` | Default | Purpose | Firewall / Port Forwarding Action |
+| :--- | :--- | :--- | :--- | :--- |
+| **P2P Port** | `p2pPort` | `9346` | For your node to talk to other p2pool nodes. | **Required:** Must be **port-forwarded** from your internet router to the machine running the node. |
+| **Stratum Port** | `stratumPort` | `9172` | For your miners to connect to your node. | **Allow on local firewall.** Only forward from your router if you want to run a public pool. |
+| **RPC Port** | `rpcPort` | `5888` | For your node to talk to your local Vertcoin daemon. | **No action needed.** This is a local connection and should **not** be exposed to the internet. |
+
+---
+
 ## Installation & Running
 
 1.  **Clone the repository:**
