@@ -27,13 +27,15 @@ type orphanInfo struct {
 }
 
 type ChainStats struct {
-	SharesTotal   int
-	SharesOrphan  int
-	SharesDead    int
-	Efficiency    float64
-	PoolHashrate  float64
-	TimeToBlock   float64
-	CurrentPayout float64
+	SharesTotal       int
+	SharesOrphan      int
+	SharesDead        int
+	Efficiency        float64
+	PoolHashrate      float64
+	NetworkHashrate   float64
+	NetworkDifficulty float64
+	TimeToBlock       float64
+	CurrentPayout     float64
 }
 
 type ShareChain struct {
@@ -196,10 +198,22 @@ func (sc *ShareChain) GetStats() ChainStats {
 	stats.SharesTotal = len(sc.AllShares)
 	stats.SharesOrphan = len(sc.disconnectedShares)
 
+	// Get network stats from the daemon
+	netInfo, err := sc.rpcClient.GetMiningInfo()
+	if err != nil {
+		logging.Warnf("Could not get network info from daemon: %v", err)
+	} else {
+		stats.NetworkHashrate = netInfo.NetworkHashPS
+		stats.NetworkDifficulty = netInfo.Difficulty
+	}
+
 	lookbackDuration := 30 * time.Minute
 	startTime := time.Now().Add(-lookbackDuration)
 
-	var totalWork = new(big.Int)
+	var totalWork = new(big.Float).SetFloat64(0.0)
+	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	maxTargetFloat := new(big.Float).SetInt(maxTarget)
+	
 	var deadShares = 0
 	var sharesInWindow = 0
 
@@ -210,13 +224,17 @@ func (sc *ShareChain) GetStats() ChainStats {
 			deadShares++
 		}
 
-		maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-		shareTarget := blockchain.CompactToBig(current.Share.ShareInfo.Bits)
-		if shareTarget.Sign() <= 0 {
-			shareTarget.SetInt64(1)
+		shareTargetInt := blockchain.CompactToBig(current.Share.ShareInfo.Bits)
+		if shareTargetInt.Sign() <= 0 {
+			current = current.Previous
+			continue
 		}
-		difficulty := new(big.Int).Div(maxTarget, shareTarget)
-		totalWork.Add(totalWork, difficulty)
+		shareTargetFloat := new(big.Float).SetInt(shareTargetInt)
+
+		// work = maxTarget / shareTarget. Use floating point math.
+		workOfShare := new(big.Float).Quo(maxTargetFloat, shareTargetFloat)
+		totalWork.Add(totalWork, workOfShare)
+		
 		current = current.Previous
 	}
 
@@ -227,27 +245,20 @@ func (sc *ShareChain) GetStats() ChainStats {
 		stats.Efficiency = 100.0
 	}
 
-	totalWorkFloat := new(big.Float).SetInt(totalWork)
-	pow32 := new(big.Float).SetFloat64(math.Pow(2, 32))
-	workTerm := new(big.Float).Mul(totalWorkFloat, pow32)
-
-	if lookbackDuration.Seconds() > 0 {
-		poolRateFloat := new(big.Float).Quo(workTerm, new(big.Float).SetFloat64(lookbackDuration.Seconds()))
-		stats.PoolHashrate, _ = poolRateFloat.Float64()
+	totalWorkFloat, _ := totalWork.Float64()
+	if lookbackDuration.Seconds() > 0 && totalWorkFloat > 0 {
+		// Hashrate = (TotalWork * 2^32) / TimeInSeconds
+		pow32 := math.Pow(2, 32)
+		stats.PoolHashrate = (totalWorkFloat * pow32) / lookbackDuration.Seconds()
 	}
 
-	if sc.Tip != nil && sc.Tip.Share.MinHeader.Bits > 0 {
-		netTarget := blockchain.CompactToBig(sc.Tip.Share.MinHeader.Bits)
-		if netTarget.Sign() > 0 {
-			maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-			netDiff := new(big.Int).Div(maxTarget, netTarget)
-			netDiffFloat := new(big.Float).SetInt(netDiff)
-			netWorkTerm := new(big.Float).Mul(netDiffFloat, pow32)
-			if stats.PoolHashrate > 0 {
-				timeToBlock, _ := new(big.Float).Quo(netWorkTerm, new(big.Float).SetFloat64(stats.PoolHashrate)).Float64()
-				stats.TimeToBlock = timeToBlock
-			}
-		}
+
+	// Calculate Time to Block based on pool's hashrate and network difficulty
+	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
+		// Time To Block (in seconds) = (Network Difficulty * 2^32) / Pool Hashrate
+		pow32 := math.Pow(2, 32)
+		netWorkTerm := stats.NetworkDifficulty * pow32
+		stats.TimeToBlock = netWorkTerm / stats.PoolHashrate
 	}
 
 	stats.CurrentPayout = 0.0

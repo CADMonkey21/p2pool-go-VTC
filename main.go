@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -17,15 +18,18 @@ import (
 	"github.com/gertjaap/p2pool-go/p2p"
 	"github.com/gertjaap/p2pool-go/rpc"
 	"github.com/gertjaap/p2pool-go/stratum"
+	"github.com/gertjaap/p2pool-go/web"
 	"github.com/gertjaap/p2pool-go/work"
 )
 
 /* -------------------------------------------------------------------- */
-/*  Helpers                                                             */
+/* Helpers                                                             */
 /* -------------------------------------------------------------------- */
 
 func formatHashrate(hr float64) string {
 	switch {
+	case hr > 1e12:
+		return fmt.Sprintf("%.2f TH/s", hr/1e12)
 	case hr > 1e9:
 		return fmt.Sprintf("%.2f GH/s", hr/1e9)
 	case hr > 1e6:
@@ -38,6 +42,9 @@ func formatHashrate(hr float64) string {
 }
 
 func formatDuration(sec float64) string {
+	if sec <= 0 {
+		return "N/A"
+	}
 	switch {
 	case sec > 86400:
 		return fmt.Sprintf("%.2f days", sec/86400)
@@ -56,25 +63,21 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 		stats := sc.GetStats()
 		localHashrate := ss.GetLocalHashrate()
 
-		localSPS := ss.GetLocalSharesPerSecond()
-		var localTimeToShare float64
-		if localSPS > 0 {
-			localTimeToShare = 1.0 / localSPS
-		}
-
-		logging.Infof("P2Pool: %d shares in chain (%d verified/%d total)  |  Peers: %d",
-			stats.SharesTotal, stats.SharesTotal, stats.SharesTotal, pm.GetPeerCount())
-		logging.Infof(" Local: %s   Expected share ≈ %s",
-			formatHashrate(localHashrate), formatDuration(localTimeToShare))
-		logging.Infof(" Shares: %d (%d orphan, %d dead)  Efficiency: %.2f%%  |  Payout: %.4f VTC",
-			stats.SharesTotal, stats.SharesOrphan, stats.SharesDead, stats.Efficiency, stats.CurrentPayout)
-		logging.Infof("  Pool: %s   Expected block ≈ %s",
-			formatHashrate(stats.PoolHashrate), formatDuration(stats.TimeToBlock))
+		logging.Infof("================================= Stats Update =================================")
+		logging.Infof("Peers: %d  |  GoRoutines: %d", pm.GetPeerCount(), runtime.NumGoroutine())
+		logging.Infof("--------------------------------------------------------------------------------")
+		logging.Infof("Pool Hashrate: %s (%.2f%% efficient)", formatHashrate(stats.PoolHashrate), stats.Efficiency)
+		logging.Infof("Your Hashrate: %s", formatHashrate(localHashrate))
+		logging.Infof("Network Hashrate: %s", formatHashrate(stats.NetworkHashrate))
+		logging.Infof("--------------------------------------------------------------------------------")
+		logging.Infof("Share Chain: %d total, %d orphan, %d dead", stats.SharesTotal, stats.SharesOrphan, stats.SharesDead)
+		logging.Infof("Est. Time to Block: %s", formatDuration(stats.TimeToBlock))
+		logging.Infof("================================================================================")
 	}
 }
 
 /* -------------------------------------------------------------------- */
-/*  main                                                                */
+/* main                                                                */
 /* -------------------------------------------------------------------- */
 
 func main() {
@@ -127,9 +130,7 @@ func main() {
 
 	/* ----- tiny placeholder dashboard ------------------------------- */
 	httpSrv := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintln(w, "p2pool‑go dashboard – coming soon!")
-		}),
+		Handler: web.NewDashboard(workManager, pm, stratumSrv),
 	}
 
 	go func() { _ = httpSrv.Serve(httpL) }()
@@ -156,4 +157,3 @@ func main() {
 		logging.Infof("Sharechain committed successfully.")
 	}
 }
-

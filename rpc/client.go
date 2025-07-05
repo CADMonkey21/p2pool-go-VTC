@@ -62,6 +62,12 @@ type BlockHeaderInfo struct {
 	NextHash      string  `json:"nextblockhash"`
 }
 
+// MiningInfo defines the structure for the data returned by the getmininginfo RPC.
+type MiningInfo struct {
+	NetworkHashPS float64 `json:"networkhashps"`
+	Difficulty    float64 `json:"difficulty"`
+}
+
 // NewClient creates a new RPC client from the loaded configuration.
 func NewClient(cfg config.Config) *Client {
 	endpoint := fmt.Sprintf("http://%s:%d", cfg.RPCHost, cfg.RPCPort)
@@ -117,6 +123,22 @@ func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error)
 	}
 
 	return &rpcResp, nil
+}
+
+// GetMiningInfo retrieves network statistics from the daemon.
+func (c *Client) GetMiningInfo() (*MiningInfo, error) {
+	resp, err := c.Call("getmininginfo", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var info MiningInfo
+	err = json.Unmarshal(resp.Result, &info)
+	if err != nil {
+		return nil, err
+	}
+
+	return &info, nil
 }
 
 // SendMany sends a transaction with multiple outputs to the RPC server.
