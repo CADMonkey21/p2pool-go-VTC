@@ -2,13 +2,14 @@ package work
 
 import (
 	"bytes"
-	"encoding/binary" // ADDED
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sort"
 	"sync"
-	"time" // ADDED
+	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/bech32"
@@ -17,7 +18,7 @@ import (
 	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
 	"github.com/gertjaap/p2pool-go/rpc"
-	"github.com/gertjaap/p2pool-go/util" // ADDED
+	"github.com/gertjaap/p2pool-go/util"
 	p2pwire "github.com/gertjaap/p2pool-go/wire"
 )
 
@@ -27,7 +28,8 @@ type PayoutBlock struct {
 	BlockFindShareHash *chainhash.Hash // Hash of the share that found the block
 	BlockHeight        int32
 	IsMature           bool
-	IsPaid             bool // Flag to prevent double payouts
+	IsPaid             bool      // Flag to prevent double payouts
+	FoundTime          time.Time // NEW: Track when the block was found
 }
 
 type WorkManager struct {
@@ -233,9 +235,6 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 
 // SubmitBlock constructs and submits a full block to the network based on a winning share.
 func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate) error {
-	// --- START OF FIX ---
-	// Manually reconstruct the full block header from the winning share, but crucially,
-	// use the high-difficulty NETWORK BITS from the template, not the low-difficulty share bits.
 	coinbaseTxHashBytes := DblSha256(share.ShareInfo.ShareData.CoinBase)
 	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
 	merkleRoot := util.ComputeMerkleRootFromLink(coinbaseTxHash, share.MerkleLink.Branch, share.MerkleLink.Index)
@@ -246,16 +245,14 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 	}
 	nBits := binary.LittleEndian.Uint32(nBitsBytes)
 
-	// Assemble the header with the correct network bits.
 	header := &wire.BlockHeader{
 		Version:    share.MinHeader.Version,
 		PrevBlock:  *share.MinHeader.PreviousBlock,
 		MerkleRoot: *merkleRoot,
 		Timestamp:  time.Unix(int64(share.MinHeader.Timestamp), 0),
-		Bits:       nBits, // Use network bits, not share.MinHeader.Bits
+		Bits:       nBits,
 		Nonce:      share.MinHeader.Nonce,
 	}
-	// --- END OF FIX ---
 
 	var coinbaseTx wire.MsgTx
 	err = coinbaseTx.Deserialize(bytes.NewReader(share.ShareInfo.ShareData.CoinBase))
@@ -294,8 +291,58 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 		BlockHash:          &blockHash,
 		BlockFindShareHash: share.Hash,
 		BlockHeight:        int32(template.Height),
+		FoundTime:          time.Now(),
 	})
 	wm.PendingMutex.Unlock()
 
 	return nil
+}
+
+// GetRecentBlocks returns a slice of recently found PayoutBlocks.
+func (wm *WorkManager) GetRecentBlocks(count int) ([]PayoutBlock, error) {
+	wm.PendingMutex.Lock()
+	defer wm.PendingMutex.Unlock()
+
+	sort.Slice(wm.PendingBlocks, func(i, j int) bool {
+		return wm.PendingBlocks[i].BlockHeight > wm.PendingBlocks[j].BlockHeight
+	})
+
+	if count > len(wm.PendingBlocks) {
+		count = len(wm.PendingBlocks)
+	}
+
+	// CORRECTED: Create a slice of values and manually copy by dereferencing.
+	result := make([]PayoutBlock, count)
+	for i := 0; i < count; i++ {
+		result[i] = *wm.PendingBlocks[i]
+	}
+
+	return result, nil
+}
+
+// GetLastBlockFoundTime returns the time the last block was found by the pool.
+func (wm *WorkManager) GetLastBlockFoundTime() time.Time {
+	wm.PendingMutex.Lock()
+	defer wm.PendingMutex.Unlock()
+	var lastTime time.Time
+	for _, b := range wm.PendingBlocks {
+		if b.FoundTime.After(lastTime) {
+			lastTime = b.FoundTime
+		}
+	}
+	return lastTime
+}
+
+// GetBlocksFoundInLast counts how many blocks were found within a given duration.
+func (wm *WorkManager) GetBlocksFoundInLast(d time.Duration) int {
+	wm.PendingMutex.Lock()
+	defer wm.PendingMutex.Unlock()
+	count := 0
+	since := time.Now().Add(-d)
+	for _, b := range wm.PendingBlocks {
+		if b.FoundTime.After(since) {
+			count++
+		}
+	}
+	return count
 }

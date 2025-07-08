@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gertjaap/p2pool-go/logging" // Corrected import path
+	"github.com/gertjaap/p2pool-go/logging"
 )
 
 // ShareDatum represents a single data point for rate monitoring.
@@ -135,6 +135,9 @@ type Client struct {
 	LocalRateMonitor     *RateMonitor
 	LocalAddrRateMonitor *RateMonitor
 	closed               atomic.Bool
+	// NEW: Fields for tracking rejected shares
+	AcceptedShares uint64
+	RejectedShares uint64
 }
 
 // send encodes and sends a JSON-RPC message, then flushes the writer.
@@ -146,15 +149,12 @@ func (c *Client) send(v interface{}) error {
 		return errors.New("connection is closed")
 	}
 
-	// ---- START OF NEW DEBUGGING CODE ----
-	// Marshal the data to a JSON string for logging
 	jsonData, err := json.Marshal(v)
 	if err != nil {
 		logging.Errorf("Stratum: FAILED TO MARSHAL JSON FOR DEBUG LOG: %v", err)
 	} else {
 		logging.Debugf("Stratum: SENDING RAW JSON -> %s", string(jsonData))
 	}
-	// ---- END OF NEW DEBUGGING CODE ----
 
 	if err := c.Encoder.Encode(v); err != nil {
 		return err
@@ -190,4 +190,26 @@ func NewClient(conn net.Conn) *Client {
 	client.closed.Store(false)
 
 	return client
+}
+
+// NEW: GetRejectedRate calculates the percentage of rejected shares.
+func (c *Client) GetRejectedRate() float64 {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+	totalShares := c.AcceptedShares + c.RejectedShares
+	if totalShares == 0 {
+		return 0.0
+	}
+	return float64(c.RejectedShares) / float64(totalShares)
+}
+
+// NEW: GetAverageShareTime calculates the average time it takes for a miner to find a share.
+func (c *Client) GetAverageShareTime() time.Duration {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+	datums, span := c.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
+	if len(datums) == 0 || span.Seconds() <= 0 {
+		return 0
+	}
+	return time.Duration(span.Seconds()/float64(len(datums))) * time.Second
 }

@@ -81,6 +81,9 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 /* -------------------------------------------------------------------- */
 
 func main() {
+	// CAPTURE START TIME
+	startTime := time.Now()
+
 	/* ----- start‑up & logging ---------------------------------------- */
 	logging.Infof("🚀  p2pool-go (single‑port build) starting up")
 	logging.SetLogLevel(int(logging.LogLevelDebug))
@@ -130,7 +133,8 @@ func main() {
 
 	/* ----- tiny placeholder dashboard ------------------------------- */
 	httpSrv := &http.Server{
-		Handler: web.NewDashboard(workManager, pm, stratumSrv),
+		// PASS START TIME TO DASHBOARD
+		Handler: web.NewDashboard(workManager, pm, stratumSrv, startTime),
 	}
 
 	go func() { _ = httpSrv.Serve(httpL) }()

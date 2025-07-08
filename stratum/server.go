@@ -24,7 +24,7 @@ import (
 )
 
 /* -------------------------------------------------------------------- */
-/*  Helpers                                                             */
+/* Helpers                                                             */
 /* -------------------------------------------------------------------- */
 
 func isValidVtcAddress(addr string) bool {
@@ -47,7 +47,7 @@ func extractID(raw *json.RawMessage) interface{} {
 }
 
 /* -------------------------------------------------------------------- */
-/*  StratumServer struct                                                */
+/* StratumServer struct                                                */
 /* -------------------------------------------------------------------- */
 
 type StratumServer struct {
@@ -71,7 +71,7 @@ func NewStratumServer(wm *work.WorkManager, pm *p2p.PeerManager) *StratumServer 
 }
 
 /* -------------------------------------------------------------------- */
-/*  Public server entry point                                           */
+/* Public server entry point                                           */
 /* -------------------------------------------------------------------- */
 
 // Serve replaces the old ListenForMiners and works with cmux.
@@ -91,7 +91,7 @@ func (s *StratumServer) Serve(listener net.Listener) error {
 }
 
 /* -------------------------------------------------------------------- */
-/*  Share‑rate helpers                                                  */
+/* Share‑rate helpers                                                  */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) GetLocalSharesPerSecond() float64 {
@@ -133,7 +133,7 @@ func (s *StratumServer) GetLocalHashrate() float64 {
 }
 
 /* -------------------------------------------------------------------- */
-/*  Client management                                                   */
+/* Client management                                                   */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) dropClient(c *Client) {
@@ -155,7 +155,7 @@ func (s *StratumServer) isClientActive(id uint64) bool {
 }
 
 /* -------------------------------------------------------------------- */
-/*  Keep‑alive & job broadcast loops                                    */
+/* Keep‑alive & job broadcast loops                                    */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) keepAliveLoop() {
@@ -209,7 +209,7 @@ func (s *StratumServer) jobBroadcaster() {
 }
 
 /* -------------------------------------------------------------------- */
-/*  Connection handler                                                  */
+/* Connection handler                                                  */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) handleMinerConnection(conn net.Conn) {
@@ -249,7 +249,7 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 }
 
 /* -------------------------------------------------------------------- */
-/*  Submit / subscribe / authorize handlers                             */
+/* Submit / subscribe / authorize handlers                             */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
@@ -289,6 +289,10 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	if accepted {
 		logging.Infof("Stratum: SHARE ACCEPTED from %s", c.WorkerName)
+		c.Mutex.Lock()
+		c.AcceptedShares++
+		c.Mutex.Unlock()
+
 		c.LocalRateMonitor.AddDatum(ShareDatum{
 			Work:        currentDiff,
 			IsDead:      false,
@@ -313,6 +317,9 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		}
 	} else {
 		logging.Warnf("Stratum: Share rejected – hash above target")
+		c.Mutex.Lock()
+		c.RejectedShares++
+		c.Mutex.Unlock()
 	}
 
 	resp := JSONRPCResponse{ID: id, Result: accepted, Error: nil}
@@ -378,7 +385,7 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 }
 
 /* -------------------------------------------------------------------- */
-/*  Difficulty & vardiff                                                */
+/* Difficulty & vardiff                                                */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
@@ -443,7 +450,7 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 }
 
 /* -------------------------------------------------------------------- */
-/*  Job sender                                                          */
+/* Job sender                                                          */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean bool) {
@@ -485,3 +492,37 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	}
 }
 
+// NEW: GetClients returns a copy of the current clients map.
+func (s *StratumServer) GetClients() []*Client {
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+	clients := make([]*Client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	return clients
+}
+
+// NEW: GetHashrateForClient calculates the hashrate for a specific client.
+func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
+	s.clientsMutex.RLock()
+	client, ok := s.clients[id]
+	s.clientsMutex.RUnlock()
+
+	if !ok {
+		return 0.0
+	}
+
+	client.Mutex.Lock()
+	defer client.Mutex.Unlock()
+
+	datums, span := client.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
+	if len(datums) < 1 || span.Seconds() < 1 {
+		return 0.0
+	}
+	workTotal := 0.0
+	for _, d := range datums {
+		workTotal += d.Work
+	}
+	return (workTotal * math.Pow(2, 32)) / span.Seconds()
+}

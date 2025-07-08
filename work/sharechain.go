@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/gertjaap/p2pool-go/config"
 	"github.com/gertjaap/p2pool-go/logging"
 	"github.com/gertjaap/p2pool-go/rpc"
 	"github.com/gertjaap/p2pool-go/wire"
@@ -213,7 +215,7 @@ func (sc *ShareChain) GetStats() ChainStats {
 	var totalWork = new(big.Float).SetFloat64(0.0)
 	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 	maxTargetFloat := new(big.Float).SetInt(maxTarget)
-	
+
 	var deadShares = 0
 	var sharesInWindow = 0
 
@@ -231,10 +233,9 @@ func (sc *ShareChain) GetStats() ChainStats {
 		}
 		shareTargetFloat := new(big.Float).SetInt(shareTargetInt)
 
-		// work = maxTarget / shareTarget. Use floating point math.
 		workOfShare := new(big.Float).Quo(maxTargetFloat, shareTargetFloat)
 		totalWork.Add(totalWork, workOfShare)
-		
+
 		current = current.Previous
 	}
 
@@ -247,15 +248,11 @@ func (sc *ShareChain) GetStats() ChainStats {
 
 	totalWorkFloat, _ := totalWork.Float64()
 	if lookbackDuration.Seconds() > 0 && totalWorkFloat > 0 {
-		// Hashrate = (TotalWork * 2^32) / TimeInSeconds
 		pow32 := math.Pow(2, 32)
 		stats.PoolHashrate = (totalWorkFloat * pow32) / lookbackDuration.Seconds()
 	}
 
-
-	// Calculate Time to Block based on pool's hashrate and network difficulty
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		// Time To Block (in seconds) = (Network Difficulty * 2^32) / Pool Hashrate
 		pow32 := math.Pow(2, 32)
 		netWorkTerm := stats.NetworkDifficulty * pow32
 		stats.TimeToBlock = netWorkTerm / stats.PoolHashrate
@@ -411,4 +408,92 @@ func (sc *ShareChain) Load() error {
 	sc.Resolve(true)
 	logging.Debugf("SHARECHAIN/LOAD: Finished resolving.")
 	return nil
+}
+
+// NEW: GetProjectedPayouts calculates the projected payout for all addresses in the current PPLNS window.
+func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error) {
+	sc.allSharesLock.Lock()
+	defer sc.allSharesLock.Unlock()
+
+	tip := sc.Tip
+	if tip == nil {
+		return nil, fmt.Errorf("sharechain has no tip, cannot calculate payouts")
+	}
+
+	// Assume a standard block reward if we don't have a live one.
+	totalPayout := uint64(12.5 * 1e8) // 12.5 VTC in satoshis
+	if tip.Share != nil && tip.Share.ShareInfo.ShareData.Subsidy > 0 {
+		totalPayout = tip.Share.ShareInfo.ShareData.Subsidy
+	}
+
+	feePercentage := config.Active.Fee / 100.0
+	amountToDistribute := totalPayout - uint64(float64(totalPayout)*feePercentage)
+
+	windowSize := config.Active.PPLNSWindow
+	if windowSize <= 0 {
+		return nil, fmt.Errorf("PPLNS window size is not configured or is invalid")
+	}
+
+	payoutShares := make([]*wire.Share, 0, windowSize)
+	current := tip
+	for i := 0; i < windowSize && current != nil; i++ {
+		payoutShares = append(payoutShares, current.Share)
+		current = current.Previous
+	}
+
+	payouts := make(map[string]uint64)
+	totalWorkInWindow := new(big.Int)
+	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+
+	for _, share := range payoutShares {
+		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
+		if shareTarget.Sign() <= 0 {
+			continue
+		}
+		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
+		totalWorkInWindow.Add(totalWorkInWindow, difficulty)
+	}
+
+	if totalWorkInWindow.Sign() <= 0 {
+		return nil, fmt.Errorf("total work in PPLNS window is zero, cannot project payment")
+	}
+
+	for _, share := range payoutShares {
+		if share.ShareInfo.ShareData.PubKeyHash == nil || len(share.ShareInfo.ShareData.PubKeyHash) == 0 {
+			continue
+		}
+
+		address, err := bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, share.ShareInfo.ShareData.PubKeyHash...))
+		if err != nil {
+			continue
+		}
+
+		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
+		if shareTarget.Sign() <= 0 {
+			continue
+		}
+		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
+
+		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), difficulty)
+		payoutAmount.Div(payoutAmount, totalWorkInWindow)
+
+		payouts[address] += payoutAmount.Uint64()
+	}
+
+	// Convert to VTC float
+	finalPayouts := make(map[string]float64)
+	for addr, amountSatoshis := range payouts {
+		finalPayouts[addr] = float64(amountSatoshis) / 100000000.0
+	}
+
+	return finalPayouts, nil
+}
+
+// NEW: GetProjectedPayoutForAddress calculates the projected payout for a single address.
+func (sc *ShareChain) GetProjectedPayoutForAddress(address string) (float64, error) {
+	allPayouts, err := sc.GetProjectedPayouts(0) // 0 for no limit
+	if err != nil {
+		return 0, err
+	}
+	return allPayouts[address], nil
 }
