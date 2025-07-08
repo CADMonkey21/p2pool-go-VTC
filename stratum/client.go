@@ -80,13 +80,18 @@ func (rm *RateMonitor) GetDatumsInLast(dt time.Duration) ([]ShareDatum, time.Dur
 		}
 	}
 
-	actualDuration := dt
+	var actualDuration time.Duration
 	if rm.firstTimestamp != 0 && (now-rm.firstTimestamp) < dt.Seconds() {
 		actualDuration = time.Duration((now - rm.firstTimestamp) * float64(time.Second))
-	} else if len(rm.datums) > 0 && (rm.datums[len(rm.datums)-1].Timestamp-rm.datums[0].Timestamp) > 0 {
+	} else if len(rm.datums) > 1 && (rm.datums[len(rm.datums)-1].Timestamp-rm.datums[0].Timestamp) > 0 {
 		actualDuration = time.Duration((rm.datums[len(rm.datums)-1].Timestamp - rm.datums[0].Timestamp) * float64(time.Second))
 	} else if len(rm.datums) > 0 {
-		actualDuration = time.Duration(1 * float64(time.Second))
+		// CORRECTED: Use wall-clock distance to the only share we have
+		actualDuration = time.Duration(
+			(now - rm.datums[0].Timestamp) * float64(time.Second))
+		if actualDuration <= 0 {
+			actualDuration = time.Second // final safety belt
+		}
 	} else {
 		actualDuration = time.Duration(0)
 	}

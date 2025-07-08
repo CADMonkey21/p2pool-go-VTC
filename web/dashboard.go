@@ -44,7 +44,6 @@ func formatHashrate(hr float64) string {
 
 // DashboardStats is the main structure for the API response, containing all stats.
 type DashboardStats struct {
-	// CORRECTED: Renamed fields for clarity
 	GlobalNetworkHashrate string  `json:"global_network_hashrate"`
 	P2PoolNetworkHashrate string  `json:"p2pool_network_hashrate"`
 	NetworkDifficulty     float64 `json:"network_difficulty"`
@@ -57,7 +56,7 @@ type DashboardStats struct {
 	PoolSharesOrphan  int    `json:"pool_shares_orphan"`
 	PoolSharesDead    int    `json:"pool_shares_dead"`
 	BlocksFound24h    int    `json:"pool_blocks_found_24h"`
-	
+
 	NodeUptime         string  `json:"node_uptime"`
 	LocalNodeHashrate  string  `json:"local_node_hashrate"`
 	ConnectedMiners    int     `json:"connected_miners"`
@@ -89,6 +88,7 @@ type PayoutStats struct {
 }
 
 func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.StratumServer, startTime time.Time) http.Handler {
+	_ = pm // Acknowledge unused variable to satisfy compiler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -145,11 +145,17 @@ func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.Stratum
 			lastBlockAgo = formatDuration(time.Since(lastBlock))
 		}
 
+		tmpl := wm.GetLatestTemplate()
+		reward := 0.0
+		if tmpl != nil {
+			reward = float64(tmpl.CoinbaseValue) / 1e8
+		}
+
 		s := DashboardStats{
 			GlobalNetworkHashrate: formatHashrate(chainStats.NetworkHashrate),
 			P2PoolNetworkHashrate: formatHashrate(chainStats.PoolHashrate),
 			NetworkDifficulty:     chainStats.NetworkDifficulty,
-			BlockReward:           float64(wm.GetLatestTemplate().CoinbaseValue) / 1e8,
+			BlockReward:           reward,
 			LastBlockFoundAgo:     lastBlockAgo,
 
 			PoolEfficiency:   fmt.Sprintf("%.2f%%", chainStats.Efficiency),

@@ -22,8 +22,8 @@ import (
 	"github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
-// Each unit of difficulty represents 2^32 hashes.
-const hashrateConstant = 4294967296 // 2^32
+// Each unit of VertHash difficulty represents 2^24 hashes.
+const hashrateConstant = 16777216 // 2^24
 
 /* -------------------------------------------------------------------- */
 /* Helpers                                                             */
@@ -103,6 +103,11 @@ func (s *StratumServer) GetLocalSharesPerSecond() float64 {
 	for _, c := range s.clients {
 		c.Mutex.Lock()
 		datums, span := c.LocalRateMonitor.GetDatumsInLast(5 * time.Minute)
+		// Implement guard-rail: need a minimum amount of data to calculate rate.
+		if len(datums) < 5 || span < 30*time.Second {
+			c.Mutex.Unlock()
+			continue
+		}
 		if len(datums) > 0 && span.Seconds() > 1 {
 			total += float64(len(datums)) / span.Seconds()
 		}
@@ -505,9 +510,17 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 	defer client.Mutex.Unlock()
 
 	datums, span := client.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
-	if len(datums) < 1 || span.Seconds() < 1 {
+
+	// Guard-rail 1: need at least 5 shares to calculate a hashrate
+	if len(datums) < 5 {
 		return 0.0
 	}
+
+	// Guard-rail 2: span must cover at least 30 seconds
+	if span < 30*time.Second {
+		return 0.0
+	}
+
 	workTotal := 0.0
 	for _, d := range datums {
 		workTotal += d.Work

@@ -1,11 +1,12 @@
 package work
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"math/big"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -18,8 +19,8 @@ import (
 	"github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
-// Each unit of difficulty represents 2^32 hashes.
-const hashrateConstant = 4294967296 // 2^32
+// Each unit of VertHash difficulty represents 2^24 hashes.
+const hashrateConstant = 16777216 // 2^24
 
 const (
 	maxOrphanAge     = 40
@@ -46,7 +47,7 @@ type ChainStats struct {
 type ShareChain struct {
 	SharesChannel         chan []wire.Share
 	NeedShareChannel      chan *chainhash.Hash
-	FoundBlockChan        chan *wire.Share // NEW: Channel for found blocks
+	FoundBlockChan        chan *wire.Share
 	Tip                   *ChainShare
 	Tail                  *ChainShare
 	AllShares             map[string]*ChainShare
@@ -74,7 +75,7 @@ func NewShareChain(client *rpc.Client) *ShareChain {
 		disconnectedShareLock: sync.Mutex{},
 		SharesChannel:         make(chan []wire.Share, 10),
 		NeedShareChannel:      make(chan *chainhash.Hash, 10),
-		FoundBlockChan:        make(chan *wire.Share, 10), // NEW: Initialize channel
+		FoundBlockChan:        make(chan *wire.Share, 10),
 		rpcClient:             client,
 	}
 	go sc.ReadShareChan()
@@ -92,15 +93,13 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 	defer sc.disconnectedShareLock.Unlock()
 
 	for i := range s {
-		share := s[i]
+		share := &s[i]
 
 		if share.Hash == nil {
 			logging.Warnf("ShareChain: Ignoring share with nil hash.")
 			continue
 		}
 
-		// The validation is now handled entirely by IsValid(), which checks all
-		// possible difficulty fields. This check is no longer needed.
 		if !trusted && !share.IsValid() {
 			if share.POWHash != nil {
 				target := blockchain.CompactToBig(share.ShareInfo.Bits)
@@ -119,14 +118,21 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 		if share.MinHeader.PreviousBlock != nil {
 			headerInfo, err := sc.rpcClient.GetBlockHeader(share.MinHeader.PreviousBlock)
 			if err == nil {
-				networkBits, _ := strconv.ParseUint(headerInfo.Bits, 16, 32)
-				networkTarget := blockchain.CompactToBig(uint32(networkBits))
+				// CORRECTED: Handle endianness properly when parsing bits from hex
+				bitsBytes, err := hex.DecodeString(headerInfo.Bits)
+				if err != nil || len(bitsBytes) != 4 {
+					logging.Warnf("Bad bits from daemon: %v", headerInfo.Bits)
+					continue
+				}
+				networkBits := binary.LittleEndian.Uint32(bitsBytes)
+				networkTarget := blockchain.CompactToBig(networkBits)
+
 				if share.POWHash != nil {
 					sharePOWInt := new(big.Int).SetBytes(share.POWHash.CloneBytes())
 					if sharePOWInt.Cmp(networkTarget) <= 0 {
 						logging.Infof("!!!! PEER BLOCK DETECTED !!!! Share %s is a valid block!", share.Hash.String()[:12])
 						select {
-						case sc.FoundBlockChan <- &share:
+						case sc.FoundBlockChan <- share:
 						default:
 							logging.Warnf("FoundBlockChan is full, dropping block notification.")
 						}
@@ -144,11 +150,11 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 
 		if !inAllShares && !inDisconnected {
 			logging.Debugf("ShareChain: Adding share candidate %s to disconnected list", hashStr[:12])
-			sc.disconnectedShares[hashStr] = &orphanInfo{share: &share, age: 0}
+			sc.disconnectedShares[hashStr] = &orphanInfo{share: share, age: 0}
 
 			if prev := share.ShareInfo.ShareData.PreviousShareHash; prev != nil {
 				prevStr := prev.String()
-				sc.AllSharesByPrev[prevStr] = append(sc.AllSharesByPrev[prevStr], &share)
+				sc.AllSharesByPrev[prevStr] = append(sc.AllSharesByPrev[prevStr], share)
 			}
 		}
 	}
