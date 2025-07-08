@@ -66,4 +66,4 @@ vardiff:
   # The absolute minimum difficulty that will be assigned to a miner.
   # This prevents difficulty from dropping too low for very slow miners.
   # 0.01 is a reasonable floor for most hardware.
-  minDiff: 0.0625
+  minDiff: 0.01
