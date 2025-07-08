@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"math/big"
 	"math/rand"
 	"net"
@@ -22,6 +21,9 @@ import (
 	"github.com/gertjaap/p2pool-go/work"
 	"github.com/gertjaap/p2pool-go/wire"
 )
+
+// CORRECTED: Use the right constant for Verthash hashrate calculation (2^24)
+const hashrateConstant = 16777216 // 2^24
 
 /* -------------------------------------------------------------------- */
 /* Helpers                                                             */
@@ -74,7 +76,6 @@ func NewStratumServer(wm *work.WorkManager, pm *p2p.PeerManager) *StratumServer 
 /* Public server entry point                                           */
 /* -------------------------------------------------------------------- */
 
-// Serve replaces the old ListenForMiners and works with cmux.
 func (s *StratumServer) Serve(listener net.Listener) error {
 	logging.Infof("Stratum: Listening for miners on %s", listener.Addr())
 	for {
@@ -116,18 +117,7 @@ func (s *StratumServer) GetLocalHashrate() float64 {
 
 	total := 0.0
 	for _, c := range s.clients {
-		c.Mutex.Lock()
-		datums, span := c.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
-		if len(datums) < 1 || span.Seconds() < 1 {
-			c.Mutex.Unlock()
-			continue
-		}
-		workTotal := 0.0
-		for _, d := range datums {
-			workTotal += d.Work
-		}
-		total += (workTotal * math.Pow(2, 32)) / span.Seconds()
-		c.Mutex.Unlock()
+		total += s.GetHashrateForClient(c.ID)
 	}
 	return total
 }
@@ -492,7 +482,6 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	}
 }
 
-// NEW: GetClients returns a copy of the current clients map.
 func (s *StratumServer) GetClients() []*Client {
 	s.clientsMutex.RLock()
 	defer s.clientsMutex.RUnlock()
@@ -503,7 +492,6 @@ func (s *StratumServer) GetClients() []*Client {
 	return clients
 }
 
-// NEW: GetHashrateForClient calculates the hashrate for a specific client.
 func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 	s.clientsMutex.RLock()
 	client, ok := s.clients[id]
@@ -524,5 +512,6 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 	for _, d := range datums {
 		workTotal += d.Work
 	}
-	return (workTotal * math.Pow(2, 32)) / span.Seconds()
+	// CORRECTED: Use the right constant
+	return (workTotal * hashrateConstant) / span.Seconds()
 }

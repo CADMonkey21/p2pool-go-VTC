@@ -31,11 +31,11 @@ func formatDuration(d time.Duration) string {
 // formatHashrate is a helper to make hashrate values human-readable.
 func formatHashrate(hr float64) string {
 	switch {
-	case hr > 1e9:
+	case hr >= 1e9:
 		return fmt.Sprintf("%.2f GH/s", hr/1e9)
-	case hr > 1e6:
+	case hr >= 1e6:
 		return fmt.Sprintf("%.2f MH/s", hr/1e6)
-	case hr > 1e3:
+	case hr >= 1e3:
 		return fmt.Sprintf("%.2f kH/s", hr/1e3)
 	default:
 		return fmt.Sprintf("%.2f H/s", hr)
@@ -44,36 +44,31 @@ func formatHashrate(hr float64) string {
 
 // DashboardStats is the main structure for the API response, containing all stats.
 type DashboardStats struct {
-	// Network-wide stats
-	GlobalHashrate    string  `json:"global_hashrate"`
-	NetworkHashrate   string  `json:"network_hashrate"`
-	NetworkDifficulty float64 `json:"network_difficulty"`
-	BlockReward       float64 `json:"block_reward"`
-	LastBlockFoundAgo string  `json:"last_block_found_ago"`
+	// CORRECTED: Renamed fields for clarity
+	GlobalNetworkHashrate string  `json:"global_network_hashrate"`
+	P2PoolNetworkHashrate string  `json:"p2pool_network_hashrate"`
+	NetworkDifficulty     float64 `json:"network_difficulty"`
+	BlockReward           float64 `json:"block_reward"`
+	LastBlockFoundAgo     string  `json:"last_block_found_ago"`
 
-	// Pool-wide stats (across all p2pool nodes)
-	PoolHashrate     string `json:"pool_hashrate"`
-	PoolEfficiency   string `json:"pool_efficiency"`
-	TimeToBlock      string `json:"pool_time_to_block"`
-	PoolSharesTotal  int    `json:"pool_shares_total"`
-	PoolSharesOrphan int    `json:"pool_shares_orphan"`
-	PoolSharesDead   int    `json:"pool_shares_dead"`
-	BlocksFound24h   int    `json:"pool_blocks_found_24h"`
-
-	// Local node stats
+	PoolEfficiency    string `json:"pool_efficiency"`
+	TimeToBlock       string `json:"pool_time_to_block"`
+	PoolSharesTotal   int    `json:"pool_shares_total"`
+	PoolSharesOrphan  int    `json:"pool_shares_orphan"`
+	PoolSharesDead    int    `json:"pool_shares_dead"`
+	BlocksFound24h    int    `json:"pool_blocks_found_24h"`
+	
 	NodeUptime         string  `json:"node_uptime"`
 	LocalNodeHashrate  string  `json:"local_node_hashrate"`
 	ConnectedMiners    int     `json:"connected_miners"`
 	MinShareDifficulty float64 `json:"min_share_difficulty"`
 	GoRoutines         int     `json:"go_routines"`
 
-	// Detailed lists
 	ActiveMiners []MinerStats      `json:"active_miners"`
 	BlocksFound  []BlockFoundStats `json:"blocks_found_list"`
 	Payouts      []PayoutStats     `json:"payouts_list"`
 }
 
-// MinerStats holds statistics for a single connected miner.
 type MinerStats struct {
 	Address            string  `json:"address"`
 	Hashrate           string  `json:"hashrate"`
@@ -83,20 +78,16 @@ type MinerStats struct {
 	Est24HourPayout    float64 `json:"est_24_hour_payout_vtc"`
 }
 
-// BlockFoundStats holds information about a recently found block.
 type BlockFoundStats struct {
 	BlockNumber int64  `json:"block_number"`
 	FoundAgo    string `json:"found_ago"`
 }
 
-// PayoutStats holds the projected payout for a specific address.
 type PayoutStats struct {
 	Address string  `json:"address"`
 	Payout  float64 `json:"payout_vtc"`
 }
 
-// NewDashboard returns a handler that serves the comprehensive JSON status page.
-// It now takes the application's start time to calculate uptime.
 func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.StratumServer, startTime time.Time) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -104,7 +95,6 @@ func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.Stratum
 		chainStats := wm.ShareChain.GetStats()
 		stratumClients := ss.GetClients()
 
-		// --- Populate Miner Stats ---
 		activeMiners := make([]MinerStats, 0, len(stratumClients))
 		for _, client := range stratumClients {
 			if !client.Authorized {
@@ -131,7 +121,6 @@ func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.Stratum
 			})
 		}
 
-		// --- Populate Block History ---
 		recentBlocks, _ := wm.GetRecentBlocks(20)
 		blocksFound := make([]BlockFoundStats, len(recentBlocks))
 		for i, block := range recentBlocks {
@@ -141,31 +130,28 @@ func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.Stratum
 			}
 		}
 
-		// --- Populate Payout Projections ---
 		payoutProjections, _ := wm.ShareChain.GetProjectedPayouts(50)
 		payoutsList := make([]PayoutStats, 0, len(payoutProjections))
 		for addr, amount := range payoutProjections {
 			payoutsList = append(payoutsList, PayoutStats{Address: addr, Payout: amount})
 		}
-		// Sort by payout amount descending
 		sort.Slice(payoutsList, func(i, j int) bool {
 			return payoutsList[i].Payout > payoutsList[j].Payout
 		})
 
 		lastBlock := wm.GetLastBlockFoundTime()
+		lastBlockAgo := "Never"
+		if !lastBlock.IsZero() {
+			lastBlockAgo = formatDuration(time.Since(lastBlock))
+		}
 
-		// --- Assemble the final response ---
 		s := DashboardStats{
-			// Network
-			GlobalHashrate:    formatHashrate(chainStats.NetworkHashrate),
-			NetworkHashrate:   formatHashrate(chainStats.NetworkHashrate),
-			NetworkDifficulty: chainStats.NetworkDifficulty,
-			// CORRECTED: Cast CoinbaseValue to float64
-			BlockReward:       float64(wm.GetLatestTemplate().CoinbaseValue) / 1e8,
-			LastBlockFoundAgo: formatDuration(time.Since(lastBlock)),
+			GlobalNetworkHashrate: formatHashrate(chainStats.NetworkHashrate),
+			P2PoolNetworkHashrate: formatHashrate(chainStats.PoolHashrate),
+			NetworkDifficulty:     chainStats.NetworkDifficulty,
+			BlockReward:           float64(wm.GetLatestTemplate().CoinbaseValue) / 1e8,
+			LastBlockFoundAgo:     lastBlockAgo,
 
-			// Pool
-			PoolHashrate:     formatHashrate(chainStats.PoolHashrate),
 			PoolEfficiency:   fmt.Sprintf("%.2f%%", chainStats.Efficiency),
 			TimeToBlock:      formatDuration(time.Duration(chainStats.TimeToBlock) * time.Second),
 			PoolSharesTotal:  chainStats.SharesTotal,
@@ -173,14 +159,12 @@ func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.Stratum
 			PoolSharesDead:   chainStats.SharesDead,
 			BlocksFound24h:   wm.GetBlocksFoundInLast(24 * time.Hour),
 
-			// Node
 			NodeUptime:         formatDuration(time.Since(startTime)),
 			LocalNodeHashrate:  formatHashrate(ss.GetLocalHashrate()),
 			ConnectedMiners:    len(stratumClients),
 			MinShareDifficulty: config.Active.Vardiff.MinDiff,
 			GoRoutines:         runtime.NumGoroutine(),
 
-			// Lists
 			ActiveMiners: activeMiners,
 			BlocksFound:  blocksFound,
 			Payouts:      payoutsList,

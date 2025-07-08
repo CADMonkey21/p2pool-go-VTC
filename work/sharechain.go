@@ -18,6 +18,9 @@ import (
 	"github.com/gertjaap/p2pool-go/wire"
 )
 
+// CORRECTED: Use the right constant for Verthash hashrate calculation (2^24)
+const hashrateConstant = 16777216 // 2^24
+
 const (
 	maxOrphanAge     = 40
 	maxResolvePasses = 100
@@ -152,8 +155,6 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 	sc.Resolve(false)
 }
 
-// GetSharesForPayout retrieves a slice of shares from the chain for PPLNS calculation.
-// It traverses backwards from the block-finding share up to the window size.
 func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*wire.Share, error) {
 	sc.allSharesLock.Lock()
 	defer sc.allSharesLock.Unlock()
@@ -200,7 +201,6 @@ func (sc *ShareChain) GetStats() ChainStats {
 	stats.SharesTotal = len(sc.AllShares)
 	stats.SharesOrphan = len(sc.disconnectedShares)
 
-	// Get network stats from the daemon
 	netInfo, err := sc.rpcClient.GetMiningInfo()
 	if err != nil {
 		logging.Warnf("Could not get network info from daemon: %v", err)
@@ -232,7 +232,6 @@ func (sc *ShareChain) GetStats() ChainStats {
 			continue
 		}
 		shareTargetFloat := new(big.Float).SetInt(shareTargetInt)
-
 		workOfShare := new(big.Float).Quo(maxTargetFloat, shareTargetFloat)
 		totalWork.Add(totalWork, workOfShare)
 
@@ -248,11 +247,14 @@ func (sc *ShareChain) GetStats() ChainStats {
 
 	totalWorkFloat, _ := totalWork.Float64()
 	if lookbackDuration.Seconds() > 0 && totalWorkFloat > 0 {
-		pow32 := math.Pow(2, 32)
-		stats.PoolHashrate = (totalWorkFloat * pow32) / lookbackDuration.Seconds()
+		// CORRECTED: Use the right constant
+		stats.PoolHashrate = (totalWorkFloat * hashrateConstant) / lookbackDuration.Seconds()
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
+		// Time To Block (in seconds) = (Network Difficulty * 2^32) / Pool Hashrate
+		// Note: 2^32 is still correct here as it relates difficulty to hashrate,
+		// it's not the same as the share-based hashrate calculation constant.
 		pow32 := math.Pow(2, 32)
 		netWorkTerm := stats.NetworkDifficulty * pow32
 		stats.TimeToBlock = netWorkTerm / stats.PoolHashrate
@@ -410,7 +412,6 @@ func (sc *ShareChain) Load() error {
 	return nil
 }
 
-// NEW: GetProjectedPayouts calculates the projected payout for all addresses in the current PPLNS window.
 func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error) {
 	sc.allSharesLock.Lock()
 	defer sc.allSharesLock.Unlock()
@@ -420,7 +421,6 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		return nil, fmt.Errorf("sharechain has no tip, cannot calculate payouts")
 	}
 
-	// Assume a standard block reward if we don't have a live one.
 	totalPayout := uint64(12.5 * 1e8) // 12.5 VTC in satoshis
 	if tip.Share != nil && tip.Share.ShareInfo.ShareData.Subsidy > 0 {
 		totalPayout = tip.Share.ShareInfo.ShareData.Subsidy
@@ -480,7 +480,6 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		payouts[address] += payoutAmount.Uint64()
 	}
 
-	// Convert to VTC float
 	finalPayouts := make(map[string]float64)
 	for addr, amountSatoshis := range payouts {
 		finalPayouts[addr] = float64(amountSatoshis) / 100000000.0
@@ -489,9 +488,8 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 	return finalPayouts, nil
 }
 
-// NEW: GetProjectedPayoutForAddress calculates the projected payout for a single address.
 func (sc *ShareChain) GetProjectedPayoutForAddress(address string) (float64, error) {
-	allPayouts, err := sc.GetProjectedPayouts(0) // 0 for no limit
+	allPayouts, err := sc.GetProjectedPayouts(0)
 	if err != nil {
 		return 0, err
 	}
