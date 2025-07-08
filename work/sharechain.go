@@ -46,6 +46,7 @@ type ChainStats struct {
 type ShareChain struct {
 	SharesChannel         chan []wire.Share
 	NeedShareChannel      chan *chainhash.Hash
+	FoundBlockChan        chan *wire.Share // NEW: Channel for found blocks
 	Tip                   *ChainShare
 	Tail                  *ChainShare
 	AllShares             map[string]*ChainShare
@@ -73,6 +74,7 @@ func NewShareChain(client *rpc.Client) *ShareChain {
 		disconnectedShareLock: sync.Mutex{},
 		SharesChannel:         make(chan []wire.Share, 10),
 		NeedShareChannel:      make(chan *chainhash.Hash, 10),
+		FoundBlockChan:        make(chan *wire.Share, 10), // NEW: Initialize channel
 		rpcClient:             client,
 	}
 	go sc.ReadShareChan()
@@ -133,6 +135,26 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 				logging.Warnf("ShareChain: Ignoring invalid share (nil PoWHash).")
 			}
 			continue
+		}
+
+		// NEW: Check if this share is a block
+		if share.MinHeader.PreviousBlock != nil {
+			headerInfo, err := sc.rpcClient.GetBlockHeader(share.MinHeader.PreviousBlock)
+			if err == nil {
+				networkBits, _ := strconv.ParseUint(headerInfo.Bits, 16, 32)
+				networkTarget := blockchain.CompactToBig(uint32(networkBits))
+				if share.POWHash != nil {
+					sharePOWInt := new(big.Int).SetBytes(share.POWHash.CloneBytes())
+					if sharePOWInt.Cmp(networkTarget) <= 0 {
+						logging.Infof("!!!! PEER BLOCK DETECTED !!!! Share %s is a valid block!", share.Hash.String()[:12])
+						select {
+						case sc.FoundBlockChan <- &share:
+						default:
+							logging.Warnf("FoundBlockChan is full, dropping block notification.")
+						}
+					}
+				}
+			}
 		}
 
 		hashStr := share.Hash.String()
@@ -247,14 +269,10 @@ func (sc *ShareChain) GetStats() ChainStats {
 
 	totalWorkFloat, _ := totalWork.Float64()
 	if lookbackDuration.Seconds() > 0 && totalWorkFloat > 0 {
-		// CORRECTED: Use the right constant
 		stats.PoolHashrate = (totalWorkFloat * hashrateConstant) / lookbackDuration.Seconds()
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		// Time To Block (in seconds) = (Network Difficulty * 2^32) / Pool Hashrate
-		// Note: 2^32 is still correct here as it relates difficulty to hashrate,
-		// it's not the same as the share-based hashrate calculation constant.
 		pow32 := math.Pow(2, 32)
 		netWorkTerm := stats.NetworkDifficulty * pow32
 		stats.TimeToBlock = netWorkTerm / stats.PoolHashrate

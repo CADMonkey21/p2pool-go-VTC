@@ -114,8 +114,9 @@ func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
 		PrevBlock:  *s.MinHeader.PreviousBlock,
 		MerkleRoot: *merkleRoot,
 		Timestamp:  time.Unix(int64(s.MinHeader.Timestamp), 0),
-		Bits:       s.MinHeader.Bits,
-		Nonce:      s.MinHeader.Nonce,
+		// CORRECTED: Use ShareInfo.Bits for consistency with validation logic
+		Bits:  s.ShareInfo.Bits,
+		Nonce: s.MinHeader.Nonce,
 	}
 
 	return header, nil
@@ -381,14 +382,11 @@ func (s *Share) FromBytes(r io.Reader) error {
 	s.MerkleLink.Index = uint64(mIndex)
 
 finalize:
-	// The share hash is a hash of its serialized content. This is fast and always needed.
 	bytesRead := initialLen - lr.Len()
 	finalPayload := payloadBytes[:bytesRead]
 	shareHashBytes := util.Sha256d(finalPayload)
 	s.Hash, _ = chainhash.NewHash(shareHashBytes)
 
-	// When loading from disk or the network, we don't calculate the PoW hash immediately
-	// to ensure fast processing. It will be calculated on-demand by IsValid().
 	return nil
 }
 
@@ -397,8 +395,6 @@ func (m *MsgShares) FromBytes(b []byte) error {
 	var err error
 	m.Shares, err = ReadShares(r)
 	if err != nil {
-		// This error is now expected if a peer sends a malformed share.
-		// We will log it at a lower level to avoid alarm.
 		logging.Debugf("Error deserializing shares message: %v", err)
 		return err
 	}

@@ -22,14 +22,13 @@ import (
 	p2pwire "github.com/gertjaap/p2pool-go/wire"
 )
 
-// PayoutBlock represents a block found by the pool that is awaiting maturity for payout.
 type PayoutBlock struct {
 	BlockHash          *chainhash.Hash
-	BlockFindShareHash *chainhash.Hash // Hash of the share that found the block
+	BlockFindShareHash *chainhash.Hash
 	BlockHeight        int32
 	IsMature           bool
-	IsPaid             bool      // Flag to prevent double payouts
-	FoundTime          time.Time // NEW: Track when the block was found
+	IsPaid             bool
+	FoundTime          time.Time
 }
 
 type WorkManager struct {
@@ -52,7 +51,40 @@ func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 	}
 }
 
-// GetLatestTemplate returns the most recent block template available.
+// NEW: This goroutine listens for blocks found by peers.
+func (wm *WorkManager) WatchFoundBlocks() {
+	for share := range wm.ShareChain.FoundBlockChan {
+		wm.PendingMutex.Lock()
+		// Check if we already know about this block
+		isKnown := false
+		for _, pb := range wm.PendingBlocks {
+			if pb.BlockFindShareHash.IsEqual(share.Hash) {
+				isKnown = true
+				break
+			}
+		}
+
+		if !isKnown {
+			header, err := share.FullBlockHeader()
+			if err != nil {
+				logging.Warnf("Could not get header from block-finding share %s", share.Hash)
+				wm.PendingMutex.Unlock()
+				continue
+			}
+			blockHash := header.BlockHash()
+
+			logging.Infof("Adding block found by peer to pending list. Share: %s, Block: %s", share.Hash, blockHash)
+			wm.PendingBlocks = append(wm.PendingBlocks, &PayoutBlock{
+				BlockHash:          &blockHash,
+				BlockFindShareHash: share.Hash,
+				BlockHeight:        share.ShareInfo.AbsHeight,
+				FoundTime:          time.Unix(int64(share.ShareInfo.Timestamp), 0),
+			})
+		}
+		wm.PendingMutex.Unlock()
+	}
+}
+
 func (wm *WorkManager) GetLatestTemplate() *BlockTemplate {
 	wm.TemplateMutex.RLock()
 	defer wm.TemplateMutex.RUnlock()
@@ -100,8 +132,6 @@ func (wm *WorkManager) WatchBlockTemplate() {
 	}
 }
 
-// WatchMaturedBlocks periodically checks for submitted blocks that have reached
-// the required number of confirmations to be considered mature and triggers payouts.
 func (wm *WorkManager) WatchMaturedBlocks() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -115,7 +145,7 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 
 		for _, pb := range wm.PendingBlocks {
 			if pb.IsMature && pb.IsPaid {
-				continue // Already processed and paid
+				continue
 			}
 
 			if !pb.IsMature {
@@ -144,12 +174,10 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 				}
 			}
 		}
-
 		wm.PendingMutex.Unlock()
 	}
 }
 
-// ProcessPayout calculates and distributes rewards for a mature block.
 func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 	blockFindShare := wm.ShareChain.GetShare(pb.BlockFindShareHash.String())
 	if blockFindShare == nil {
@@ -233,7 +261,6 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 	return nil
 }
 
-// SubmitBlock constructs and submits a full block to the network based on a winning share.
 func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate) error {
 	coinbaseTxHashBytes := DblSha256(share.ShareInfo.ShareData.CoinBase)
 	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
@@ -298,7 +325,6 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 	return nil
 }
 
-// GetRecentBlocks returns a slice of recently found PayoutBlocks.
 func (wm *WorkManager) GetRecentBlocks(count int) ([]PayoutBlock, error) {
 	wm.PendingMutex.Lock()
 	defer wm.PendingMutex.Unlock()
@@ -311,7 +337,6 @@ func (wm *WorkManager) GetRecentBlocks(count int) ([]PayoutBlock, error) {
 		count = len(wm.PendingBlocks)
 	}
 
-	// CORRECTED: Create a slice of values and manually copy by dereferencing.
 	result := make([]PayoutBlock, count)
 	for i := 0; i < count; i++ {
 		result[i] = *wm.PendingBlocks[i]
@@ -320,7 +345,6 @@ func (wm *WorkManager) GetRecentBlocks(count int) ([]PayoutBlock, error) {
 	return result, nil
 }
 
-// GetLastBlockFoundTime returns the time the last block was found by the pool.
 func (wm *WorkManager) GetLastBlockFoundTime() time.Time {
 	wm.PendingMutex.Lock()
 	defer wm.PendingMutex.Unlock()
@@ -333,7 +357,6 @@ func (wm *WorkManager) GetLastBlockFoundTime() time.Time {
 	return lastTime
 }
 
-// GetBlocksFoundInLast counts how many blocks were found within a given duration.
 func (wm *WorkManager) GetBlocksFoundInLast(d time.Duration) int {
 	wm.PendingMutex.Lock()
 	defer wm.PendingMutex.Unlock()

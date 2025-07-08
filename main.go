@@ -63,12 +63,13 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 		stats := sc.GetStats()
 		localHashrate := ss.GetLocalHashrate()
 
+		// CORRECTED: Updated logging labels to match the new dashboard for consistency
 		logging.Infof("================================= Stats Update =================================")
 		logging.Infof("Peers: %d  |  GoRoutines: %d", pm.GetPeerCount(), runtime.NumGoroutine())
 		logging.Infof("--------------------------------------------------------------------------------")
-		logging.Infof("Pool Hashrate: %s (%.2f%% efficient)", formatHashrate(stats.PoolHashrate), stats.Efficiency)
-		logging.Infof("Your Hashrate: %s", formatHashrate(localHashrate))
-		logging.Infof("Network Hashrate: %s", formatHashrate(stats.NetworkHashrate))
+		logging.Infof("P2Pool Network Hashrate: %s (%.2f%% efficient)", formatHashrate(stats.PoolHashrate), stats.Efficiency)
+		logging.Infof("Your Node's Hashrate: %s", formatHashrate(localHashrate))
+		logging.Infof("Global VTC Hashrate: %s", formatHashrate(stats.NetworkHashrate))
 		logging.Infof("--------------------------------------------------------------------------------")
 		logging.Infof("Share Chain: %d total, %d orphan, %d dead", stats.SharesTotal, stats.SharesOrphan, stats.SharesDead)
 		logging.Infof("Est. Time to Block: %s", formatDuration(stats.TimeToBlock))
@@ -81,7 +82,6 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 /* -------------------------------------------------------------------- */
 
 func main() {
-	// CAPTURE START TIME
 	startTime := time.Now()
 
 	/* ----- start‑up & logging ---------------------------------------- */
@@ -96,7 +96,6 @@ func main() {
 	config.LoadConfig()
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
 
-	// Optional: override default P2P port
 	p2pnet.ActiveNetwork.P2PPort = 19172
 
 	/* ----- RPC, share chain, work manager --------------------------- */
@@ -110,6 +109,7 @@ func main() {
 	workManager := work.NewWorkManager(rpcClient, sc)
 	go workManager.WatchBlockTemplate()
 	go workManager.WatchMaturedBlocks()
+	go workManager.WatchFoundBlocks()
 
 	/* ----- peer network --------------------------------------------- */
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
@@ -121,19 +121,18 @@ func main() {
 	/* =================================================================
 	   Single TCP listener on :9172, multiplexed via cmux
 	   ================================================================= */
-	addr := fmt.Sprintf(":%d", config.Active.StratumPort) // 9172
+	addr := fmt.Sprintf(":%d", config.Active.StratumPort)
 	baseListener, err := net.Listen("tcp", addr)
 	if err != nil {
 		logging.Fatalf("MAIN: Unable to listen on %s: %v", addr, err)
 	}
 
 	m := cmux.New(baseListener)
-	httpL := m.Match(cmux.HTTP1Fast()) // Web dashboard
-	stratumL := m.Match(cmux.Any())    // Everything else → miners
+	httpL := m.Match(cmux.HTTP1Fast())
+	stratumL := m.Match(cmux.Any())
 
 	/* ----- tiny placeholder dashboard ------------------------------- */
 	httpSrv := &http.Server{
-		// PASS START TIME TO DASHBOARD
 		Handler: web.NewDashboard(workManager, pm, stratumSrv, startTime),
 	}
 
