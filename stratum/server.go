@@ -22,8 +22,8 @@ import (
 	"github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
-// CORRECTED: Use the right constant for Verthash hashrate calculation (2^24)
-const hashrateConstant = 16777216 // 2^24
+// Each unit of difficulty represents 2^32 hashes.
+const hashrateConstant = 4294967296 // 2^32
 
 /* -------------------------------------------------------------------- */
 /* Helpers                                                             */
@@ -512,6 +512,6 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 	for _, d := range datums {
 		workTotal += d.Work
 	}
-	// CORRECTED: Use the right constant
+
 	return (workTotal * hashrateConstant) / span.Seconds()
 }

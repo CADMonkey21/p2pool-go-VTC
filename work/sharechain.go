@@ -18,8 +18,8 @@ import (
 	"github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
-// CORRECTED: Use the right constant for Verthash hashrate calculation (2^24)
-const hashrateConstant = 16777216 // 2^24
+// Each unit of difficulty represents 2^32 hashes.
+const hashrateConstant = 4294967296 // 2^32
 
 const (
 	maxOrphanAge     = 40
@@ -99,30 +99,8 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 			continue
 		}
 
-		if share.ShareInfo.Bits == 0 {
-			if share.MinHeader.Bits != 0 {
-				logging.Debugf("Share %s is missing Bits, deriving from MinHeader.Bits", share.Hash.String()[:12])
-				share.ShareInfo.Bits = share.MinHeader.Bits
-			} else if share.MinHeader.PreviousBlock != nil {
-				logging.Debugf("Share %s is missing all Bits, querying daemon for block header %s", share.Hash.String()[:12], share.MinHeader.PreviousBlock.String())
-				headerInfo, err := sc.rpcClient.GetBlockHeader(share.MinHeader.PreviousBlock)
-				if err != nil {
-					logging.Warnf("Failed to get block header for share: %v", err)
-				} else {
-					bits, err := strconv.ParseUint(headerInfo.Bits, 16, 32)
-					if err == nil {
-						logging.Debugf("Derived bits %08x from RPC for share %s", uint32(bits), share.Hash.String()[:12])
-						share.ShareInfo.Bits = uint32(bits)
-					}
-				}
-			}
-		}
-
-		if share.ShareInfo.Bits == 0 {
-			logging.Warnf("Ignoring share %s with Bits == 0 after all fallbacks.", share.Hash.String()[:12])
-			continue
-		}
-
+		// The validation is now handled entirely by IsValid(), which checks all
+		// possible difficulty fields. This check is no longer needed.
 		if !trusted && !share.IsValid() {
 			if share.POWHash != nil {
 				target := blockchain.CompactToBig(share.ShareInfo.Bits)
@@ -137,7 +115,7 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 			continue
 		}
 
-		// NEW: Check if this share is a block
+		// Check if this share is a block
 		if share.MinHeader.PreviousBlock != nil {
 			headerInfo, err := sc.rpcClient.GetBlockHeader(share.MinHeader.PreviousBlock)
 			if err == nil {
