@@ -1,4 +1,4 @@
-module github.com/gertjaap/p2pool-go
+module github.com/CADMonkey21/p2pool-go-vtc
 
 go 1.19
 

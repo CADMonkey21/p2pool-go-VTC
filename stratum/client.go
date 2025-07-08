@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gertjaap/p2pool-go/logging"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
 )
 
 // ShareDatum represents a single data point for rate monitoring.

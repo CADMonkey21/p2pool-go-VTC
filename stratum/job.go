@@ -1,7 +1,7 @@
 package stratum
 
 import (
-	"github.com/gertjaap/p2pool-go/work"
+	"github.com/CADMonkey21/p2pool-go-vtc/work"
 )
 
 // Job represents a unit of work sent to a miner.

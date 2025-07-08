@@ -8,10 +8,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/gertjaap/p2pool-go/config"
-	"github.com/gertjaap/p2pool-go/p2p"
-	"github.com/gertjaap/p2pool-go/stratum"
-	"github.com/gertjaap/p2pool-go/work"
+	"github.com/CADMonkey21/p2pool-go-vtc/config"
+	"github.com/CADMonkey21/p2pool-go-vtc/p2p"
+	"github.com/CADMonkey21/p2pool-go-vtc/stratum"
+	"github.com/CADMonkey21/p2pool-go-vtc/work"
 )
 
 // formatDuration is a helper to make time intervals human-readable.

@@ -11,10 +11,10 @@ import (
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/gertjaap/p2pool-go/config"
-	"github.com/gertjaap/p2pool-go/logging"
-	p2pnet "github.com/gertjaap/p2pool-go/net"
-	p2pwire "github.com/gertjaap/p2pool-go/wire"
+	"github.com/CADMonkey21/p2pool-go-vtc/config"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
+	p2pwire "github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
 // CreateHeader reconstructs the block header from template and miner data.

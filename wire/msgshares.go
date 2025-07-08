@@ -11,9 +11,9 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/gertjaap/p2pool-go/logging"
-	p2pnet "github.com/gertjaap/p2pool-go/net"
-	"github.com/gertjaap/p2pool-go/util"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
+	"github.com/CADMonkey21/p2pool-go-vtc/util"
 )
 
 // Helper to peek at a varint from a reader without consuming it

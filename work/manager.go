@@ -15,11 +15,11 @@ import (
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/gertjaap/p2pool-go/config"
-	"github.com/gertjaap/p2pool-go/logging"
-	"github.com/gertjaap/p2pool-go/rpc"
-	"github.com/gertjaap/p2pool-go/util"
-	p2pwire "github.com/gertjaap/p2pool-go/wire"
+	"github.com/CADMonkey21/p2pool-go-vtc/config"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
+	"github.com/CADMonkey21/p2pool-go-vtc/rpc"
+	"github.com/CADMonkey21/p2pool-go-vtc/util"
+	p2pwire "github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
 type PayoutBlock struct {

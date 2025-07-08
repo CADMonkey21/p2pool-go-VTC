@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	p2pnet "github.com/gertjaap/p2pool-go/net"
+	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
 )
 
 func NewP2PoolClient(ip net.IP, port int, network p2pnet.Network) (*P2PoolConnection, error) {

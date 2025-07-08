@@ -7,7 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	"github.com/gertjaap/p2pool-go/config"
+	"github.com/CADMonkey21/p2pool-go-vtc/config"
 )
 
 // RPCRequest represents a JSON-RPC request.

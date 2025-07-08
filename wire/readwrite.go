@@ -9,7 +9,7 @@ import (
 	"net"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/gertjaap/p2pool-go/logging"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
 )
 
 var nullHash chainhash.Hash

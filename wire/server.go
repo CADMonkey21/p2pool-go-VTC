@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net"
 
-	p2pnet "github.com/gertjaap/p2pool-go/net"
+	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
 )
 
 type P2PoolListener struct {

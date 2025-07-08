@@ -4,7 +4,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/gertjaap/p2pool-go/logging"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
 	"gopkg.in/yaml.v3"
 )
 

@@ -3,8 +3,8 @@ package net
 import (
 	"encoding/hex"
 
-	"github.com/gertjaap/p2pool-go/config"
-	"github.com/gertjaap/p2pool-go/logging"
+	"github.com/CADMonkey21/p2pool-go-vtc/config"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
 	"github.com/gertjaap/verthash-go"
 )
 

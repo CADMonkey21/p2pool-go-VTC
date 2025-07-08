@@ -2,7 +2,7 @@ package net
 
 import (
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/gertjaap/p2pool-go/logging"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
 	// Import the verthash library here
 	"github.com/gertjaap/verthash-go"
 )

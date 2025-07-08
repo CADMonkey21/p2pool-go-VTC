@@ -14,12 +14,12 @@ import (
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/gertjaap/p2pool-go/config"
-	"github.com/gertjaap/p2pool-go/logging"
-	p2pnet "github.com/gertjaap/p2pool-go/net"
-	"github.com/gertjaap/p2pool-go/p2p"
-	"github.com/gertjaap/p2pool-go/work"
-	"github.com/gertjaap/p2pool-go/wire"
+	"github.com/CADMonkey21/p2pool-go-vtc/config"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
+	"github.com/CADMonkey21/p2pool-go-vtc/p2p"
+	"github.com/CADMonkey21/p2pool-go-vtc/work"
+	"github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
 // CORRECTED: Use the right constant for Verthash hashrate calculation (2^24)

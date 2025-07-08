@@ -11,8 +11,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/gertjaap/p2pool-go/logging"
-	p2pnet "github.com/gertjaap/p2pool-go/net"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
 )
 
 type P2PoolConnection struct {

@@ -12,14 +12,14 @@ import (
 
 	"github.com/soheilhy/cmux"
 
-	"github.com/gertjaap/p2pool-go/config"
-	"github.com/gertjaap/p2pool-go/logging"
-	p2pnet "github.com/gertjaap/p2pool-go/net"
-	"github.com/gertjaap/p2pool-go/p2p"
-	"github.com/gertjaap/p2pool-go/rpc"
-	"github.com/gertjaap/p2pool-go/stratum"
-	"github.com/gertjaap/p2pool-go/web"
-	"github.com/gertjaap/p2pool-go/work"
+	"github.com/CADMonkey21/p2pool-go-vtc/config"
+	"github.com/CADMonkey21/p2pool-go-vtc/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
+	"github.com/CADMonkey21/p2pool-go-vtc/p2p"
+	"github.com/CADMonkey21/p2pool-go-vtc/rpc"
+	"github.com/CADMonkey21/p2pool-go-vtc/stratum"
+	"github.com/CADMonkey21/p2pool-go-vtc/web"
+	"github.com/CADMonkey21/p2pool-go-vtc/work"
 )
 
 /* -------------------------------------------------------------------- */
