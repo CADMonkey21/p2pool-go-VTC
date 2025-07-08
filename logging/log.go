@@ -1,23 +1,21 @@
 package logging
 
-// Log Levels:
-// 3: DebugLevel prints Panics, Fatals, Errors, Warnings, Infos and Debugs
-// 2: InfoLevel  prints Panics, Fatals, Errors, Warnings and Info
-// 1: WarnLevel  prints Panics, Fatals, Errors and Warnings
-// 0: ErrorLevel prints Panics, Fatals and Errors
-// Default is level 0
-// Code for tagging logs:
-// Debug -> Useful debugging information
-// Info  -> Something noteworthy happened
-// Warn  -> You should probably take a look at this
-// Error -> Something failed but I'm not quitting
-// Fatal -> Bye
-
 import (
 	"fmt"
 	"io"
 	"log"
 	"os"
+)
+
+// ANSI Color Codes
+const (
+	Reset   = "\033[0m"
+	Red     = "\033[31m"
+	Green   = "\033[32m"
+	Yellow  = "\033[33m"
+	Cyan    = "\033[36m"
+	Magenta = "\033[35m"
+	White   = "\033[97m"
 )
 
 type LogLevel int
@@ -59,80 +57,86 @@ func Fatal(args ...interface{}) {
 
 func Debugf(format string, args ...interface{}) {
 	if logLevel >= LogLevelDebug {
-		log.Printf(fmt.Sprintf("%s %s", getPrefix("DEBUG"), format), args...)
+		log.Printf(Cyan+fmt.Sprintf("%s %s", getPrefix("DEBUG"), format)+Reset, args...)
 	}
 }
 
 func Infof(format string, args ...interface{}) {
 	if logLevel >= LogLevelInfo {
-		log.Printf(fmt.Sprintf("%s %s", getPrefix("INFO"), format), args...)
+		log.Printf(White+fmt.Sprintf("%s %s", getPrefix("INFO"), format)+Reset, args...)
+	}
+}
+
+// Successf prints in green, for successful events like finding a block.
+func Successf(format string, args ...interface{}) {
+	if logLevel >= LogLevelInfo {
+		log.Printf(Green+fmt.Sprintf("%s %s", getPrefix("SUCCESS"), format)+Reset, args...)
+	}
+}
+
+// Noticef prints in magenta, for noteworthy events like receiving new work.
+func Noticef(format string, args ...interface{}) {
+	if logLevel >= LogLevelInfo {
+		log.Printf(Magenta+fmt.Sprintf("%s %s", getPrefix("NOTICE"), format)+Reset, args...)
 	}
 }
 
 func Warnf(format string, args ...interface{}) {
 	if logLevel >= LogLevelWarning {
-		log.Printf(fmt.Sprintf("%s %s", getPrefix("WARN"), format), args...)
+		log.Printf(Yellow+fmt.Sprintf("%s %s", getPrefix("WARN"), format)+Reset, args...)
 	}
 }
 
 func Errorf(format string, args ...interface{}) {
 	if logLevel >= LogLevelError {
-		log.Printf(fmt.Sprintf("%s %s", getPrefix("ERROR"), format), args...)
+		log.Printf(Red+fmt.Sprintf("%s %s", getPrefix("ERROR"), format)+Reset, args...)
 	}
 }
 
 func Debugln(args ...interface{}) {
 	if logLevel >= LogLevelDebug {
-		args = append([]interface{}{getPrefix("DEBUG")}, args...)
-		log.Println(args...)
+		log.Println(append([]interface{}{Cyan + getPrefix("DEBUG")}, args...)...)
 	}
 }
 
 func Infoln(args ...interface{}) {
 	if logLevel >= LogLevelInfo {
-		args = append([]interface{}{getPrefix("INFO")}, args...)
-		log.Println(args...)
+		log.Println(append([]interface{}{White + getPrefix("INFO")}, args...)...)
 	}
 }
 
 func Warnln(args ...interface{}) {
 	if logLevel >= LogLevelWarning {
-		args = append([]interface{}{getPrefix("WARN")}, args...)
-		log.Println(args...)
+		log.Println(append([]interface{}{Yellow + getPrefix("WARN")}, args...)...)
 	}
 }
 
 func Errorln(args ...interface{}) {
 	if logLevel >= LogLevelError {
-		args = append([]interface{}{getPrefix("ERROR")}, args...)
-		log.Println(args...)
+		log.Println(append([]interface{}{Red + getPrefix("ERROR")}, args...)...)
 	}
 }
 
 func Debug(args ...interface{}) {
 	if logLevel >= LogLevelDebug {
-		args = append([]interface{}{getPrefix("DEBUG")}, args...)
-		log.Print(args...)
+		log.Print(append([]interface{}{Cyan + getPrefix("DEBUG")}, args...)...)
 	}
 }
 
 func Info(args ...interface{}) {
 	if logLevel >= LogLevelInfo {
-		args = append([]interface{}{getPrefix("INFO")}, args...)
-		log.Print(args...)
+		log.Print(append([]interface{}{White + getPrefix("INFO")}, args...)...)
 	}
 }
 
 func Warn(args ...interface{}) {
 	if logLevel >= LogLevelWarning {
-		args = append([]interface{}{getPrefix("WARN")}, args...)
-		log.Print(args...)
+		log.Print(append([]interface{}{Yellow + getPrefix("WARN")}, args...)...)
 	}
 }
 
 func Error(args ...interface{}) {
 	if logLevel >= LogLevelError {
-		args = append([]interface{}{getPrefix("ERROR")}, args...)
-		log.Print(args...)
+		log.Print(append([]interface{}{Red + getPrefix("ERROR")}, args...)...)
 	}
 }

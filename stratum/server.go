@@ -22,7 +22,6 @@ import (
 	"github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
-// Each unit of VertHash difficulty represents 2^24 hashes.
 const hashrateConstant = 16777216 // 2^24
 
 /* -------------------------------------------------------------------- */
@@ -103,7 +102,6 @@ func (s *StratumServer) GetLocalSharesPerSecond() float64 {
 	for _, c := range s.clients {
 		c.Mutex.Lock()
 		datums, span := c.LocalRateMonitor.GetDatumsInLast(5 * time.Minute)
-		// Implement guard-rail: need a minimum amount of data to calculate rate.
 		if len(datums) < 5 || span < 30*time.Second {
 			c.Mutex.Unlock()
 			continue
@@ -257,7 +255,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	}
 
 	workerName, jobID, extraNonce2, nTime, nonceHex := params[0], params[1], params[2], params[3], params[4]
-	logging.Infof("Stratum: Received mining.submit from %s for job %s", workerName, jobID)
+	logging.Debugf("Stratum: Received mining.submit from %s for job %s", workerName, jobID)
 
 	c.Mutex.Lock()
 	job, jobExists := c.ActiveJobs[jobID]
@@ -283,7 +281,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	accepted := powInt.Cmp(shareTarget) <= 0
 
 	if accepted {
-		logging.Infof("Stratum: SHARE ACCEPTED from %s", c.WorkerName)
+		logging.Successf("Stratum: SHARE ACCEPTED from %s", c.WorkerName)
 		c.Mutex.Lock()
 		c.AcceptedShares++
 		c.Mutex.Unlock()
@@ -306,7 +304,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			nBits := binary.LittleEndian.Uint32(bits)
 			netTarget := blockchain.CompactToBig(nBits)
 			if powInt.Cmp(netTarget) <= 0 {
-				logging.Infof("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
+				logging.Successf("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
 				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
 			}
 		}
@@ -483,7 +481,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		logging.Debugf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)
 	} else {
-		logging.Infof("Stratum: Sent job %s to worker %s", jobID, worker)
+		logging.Noticef("Stratum: Sent job %s to worker %s", jobID, worker)
 	}
 }
 
@@ -511,13 +509,7 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 
 	datums, span := client.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
 
-	// Guard-rail 1: need at least 5 shares to calculate a hashrate
-	if len(datums) < 5 {
-		return 0.0
-	}
-
-	// Guard-rail 2: span must cover at least 30 seconds
-	if span < 30*time.Second {
+	if len(datums) < 5 || span < 30*time.Second {
 		return 0.0
 	}
 

@@ -22,14 +22,13 @@ import (
 	p2pwire "github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
-// BlockState defines the status of a block in the payout processor.
 type BlockState int
 
 const (
-	StatePending BlockState = iota // Newly found, awaiting maturity
-	StateMature                     // 100+ confirmations, ready for payout
-	StatePaid                       // Payout transaction sent
-	StateOrphan                     // Confirmed to not be on the main chain
+	StatePending BlockState = iota
+	StateMature
+	StatePaid
+	StateOrphan
 )
 
 type PayoutBlock struct {
@@ -37,7 +36,7 @@ type PayoutBlock struct {
 	BlockFindShareHash *chainhash.Hash
 	BlockHeight        int32
 	FoundTime          time.Time
-	State              BlockState // New: State tracking for blocks
+	State              BlockState
 }
 
 type WorkManager struct {
@@ -86,7 +85,7 @@ func (wm *WorkManager) WatchFoundBlocks() {
 				BlockFindShareHash: share.Hash,
 				BlockHeight:        share.ShareInfo.AbsHeight,
 				FoundTime:          time.Unix(int64(share.ShareInfo.Timestamp), 0),
-				State:              StatePending, // Set initial state
+				State:              StatePending,
 			})
 		}
 		wm.PendingMutex.Unlock()
@@ -125,7 +124,7 @@ func (wm *WorkManager) WatchBlockTemplate() {
 
 		wm.TemplateMutex.Lock()
 		if _, exists := wm.Templates[tmpl.PreviousBlockHash]; !exists {
-			logging.Infof("New block template received for height %d", tmpl.Height)
+			logging.Noticef("New block template received for height %d", tmpl.Height)
 			wm.Templates[tmpl.PreviousBlockHash] = &tmpl
 
 			select {
@@ -146,7 +145,7 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 
 	for {
 		<-ticker.C
-		keptBlocks := make([]*PayoutBlock, 0) // Create a new slice to hold blocks we want to keep
+		keptBlocks := make([]*PayoutBlock, 0)
 
 		wm.PendingMutex.Lock()
 		if len(wm.PendingBlocks) > 0 {
@@ -154,51 +153,47 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 		}
 
 		for _, pb := range wm.PendingBlocks {
-			// Skip blocks that are already paid or known orphans
 			if pb.State == StatePaid || pb.State == StateOrphan {
 				continue
 			}
 
-			// Check for maturity if it's a new pending block
 			if pb.State == StatePending {
 				blockInfo, err := wm.rpcClient.GetBlock(pb.BlockHash)
 				if err != nil {
-					// Check if the error is "Block not found"
 					if rpcErr, ok := err.(*rpc.RPCError); ok && rpcErr.Code == -5 {
 						logging.Warnf("Block %s appears orphaned (not found), will not check again.", pb.BlockHash.String())
-						pb.State = StateOrphan // Mark as orphan and it will be removed
+						pb.State = StateOrphan
 					} else {
 						logging.Warnf("Could not get block info for %s: %v", pb.BlockHash.String(), err)
-						keptBlocks = append(keptBlocks, pb) // Keep for next check
+						keptBlocks = append(keptBlocks, pb)
 					}
 					continue
 				}
 
 				if blockInfo.Confirmations >= 100 {
-					logging.Infof("✅ Block %s at height %d is now MATURE with %d confirmations!", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
+					logging.Successf("✅ Block %s at height %d is now MATURE with %d confirmations!", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
 					pb.State = StateMature
 				} else {
 					logging.Debugf("Block %s at height %d is still pending maturity (%d confirmations)", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
 				}
 			}
 
-			// Process payment for mature blocks
 			if pb.State == StateMature {
 				logging.Infof("Triggering PPLNS payout for block %s", pb.BlockHash.String())
 				err := wm.ProcessPayout(pb)
 				if err != nil {
 					logging.Errorf("Payout for block %s FAILED: %v", pb.BlockHash.String(), err)
 				} else {
-					logging.Infof("Payout for block %s completed successfully.", pb.BlockHash.String())
-					pb.State = StatePaid // Mark as paid, will be removed on next cycle
+					logging.Successf("Payout for block %s completed successfully.", pb.BlockHash.String())
+					pb.State = StatePaid
 				}
 			}
 			
-			// If we haven't continued past this block, it means we want to keep it
-			keptBlocks = append(keptBlocks, pb)
+			if pb.State != StateOrphan && pb.State != StatePaid {
+				keptBlocks = append(keptBlocks, pb)
+			}
 		}
 		
-		// Replace the old slice with the new one that has orphans/paid blocks removed
 		wm.PendingBlocks = keptBlocks
 		wm.PendingMutex.Unlock()
 	}
@@ -283,7 +278,7 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 		return fmt.Errorf("sendmany RPC call failed: %w", err)
 	}
 
-	logging.Infof("Successfully sent payout transaction for block %s. TXID: %s", pb.BlockHash.String(), txid)
+	logging.Successf("Successfully sent payout transaction for block %s. TXID: %s", pb.BlockHash.String(), txid)
 	return nil
 }
 
@@ -336,7 +331,7 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 		return err
 	}
 
-	logging.Infof("SUCCESS! Block %s accepted by the network! Awaiting maturity.", block.BlockHash().String())
+	logging.Successf("SUCCESS! Block %s accepted by the network! Awaiting maturity.", block.BlockHash().String())
 
 	wm.PendingMutex.Lock()
 	blockHash := block.BlockHash()
@@ -345,7 +340,7 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 		BlockFindShareHash: share.Hash,
 		BlockHeight:        int32(template.Height),
 		FoundTime:          time.Now(),
-		State:              StatePending, // Set initial state
+		State:              StatePending,
 	})
 	wm.PendingMutex.Unlock()
 
