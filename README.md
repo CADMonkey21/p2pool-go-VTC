@@ -2,19 +2,21 @@
 
 This is a modern, from-scratch implementation of a peer-to-peer (p2pool) mining pool for Vertcoin, written entirely in Go. It is designed for performance, stability, and ease of use, and is fully compatible with the existing Vertcoin p2pool network.
 
-This project was built to be a learning tool as well as a functional replacement for older, Python-based p2pool implementations.
+This project was built to be a functional, feature-complete, and high-performance replacement for older, Python-based p2pool implementations.
 
 ---
 
 ### Features
 
-The node is in a **fully functional and stable state**. The core logic has been built and tested, resolving critical performance and validation bugs. The node is fully interoperable with the live p2pool network.
+The node is in a **fully functional, feature-complete, and stable state**. All core logic for P2P networking, share processing, and payouts has been implemented and tested.
 
 * **Full Stratum Server:** Allows any standard Verthash mining software to connect.
 * **P2P Networking:** Connects to legacy Python peers and other nodes to form a decentralized mining network.
+* **Live Web Dashboard:** A built-in web interface automatically refreshes every 5 seconds to display real-time pool and miner statistics in a clean, pretty-printed JSON format.
+* **Color-Coded Logging:** Important events like finding blocks, receiving new work, and warnings are color-coded in the console for easy monitoring at a glance.
 * **Automatic PPLNS Payouts:** Automatically calculates and distributes block rewards based on the Pay-Per-Last-N-Shares model.
 * **Robust Variable Difficulty (Vardiff):** A stable and highly configurable vardiff engine automatically adjusts difficulty for miners of all sizes.
-* **Daemon Integration:** Communicates directly with your Vertcoin daemon (`vtcd`) for block templates, transaction submissions, and maturity checks.
+* **Daemon Integration:** Communicates directly with your Vertcoin daemon (`vertcoind`) for block templates, transaction submissions, and maturity checks.
 * **Persistent Share Chain:** Remembers the share chain across restarts by saving to `shares.dat`, allowing the pool to resume where it left off.
 
 ---
@@ -32,11 +34,11 @@ The node is in a **fully functional and stable state**. The core logic has been 
 
 The pool is configured using a single `config.yaml` file. You can create your own by copying the provided `config.example.yaml`. Before running, you must correctly configure your ports and firewall.
 
-| Port | Setting in `config.yaml` | Default | Purpose | Firewall / Port Forwarding Action |
-| :--- | :--- | :--- | :--- | :--- |
-| **P2P Port** | `p2pPort` | `9346` | For your node to talk to other p2pool nodes. | **Required:** Must be **port-forwarded** from your internet router to the machine running the node. |
-| **Stratum Port** | `stratumPort` | `9172` | For your miners to connect to your node. | **Allow on local firewall.** Only forward from your router if you want to run a public pool. |
-| **RPC Port** | `rpcPort` | `5888` | For your node to talk to your local Vertcoin daemon. | **No action needed.** This is a local connection and should **not** be exposed to the internet. |
+| Port         | Setting in `config.yaml` | Default | Purpose                                                          | Firewall / Port Forwarding Action                                                              |
+| :----------- | :----------------------- | :------ | :--------------------------------------------------------------- | :--------------------------------------------------------------------------------------------- |
+| **P2P Port** | `p2pPort`                | `9346`  | For your node to talk to other p2pool nodes.                     | **Required:** Must be **port-forwarded** from your internet router to the machine running the node. |
+| **Stratum Port** | `stratumPort`            | `9172`  | For your miners to connect to your node. Also serves the web UI. | **Allow on local firewall.** Only forward from your router if you want to run a public pool. |
+| **RPC Port** | `rpcPort`                | `5888`  | For your node to talk to your local Vertcoin daemon.             | **No action needed.** This is a local connection and should **not** be exposed to the internet. |
 
 ---
 
@@ -44,7 +46,7 @@ The pool is configured using a single `config.yaml` file. You can create your ow
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/CADMonkey21/p2pool-go-VTC.git
+    git clone [https://github.com/CADMonkey21/p2pool-go-VTC.git](https://github.com/CADMonkey21/p2pool-go-VTC.git)
     cd p2pool-go-VTC
     ```
 
@@ -64,7 +66,7 @@ The pool is configured using a single `config.yaml` file. You can create your ow
     ```bash
     go run .
     ```
-    Point your Verthash-compatible miner to your pool's IP address on the Stratum port you configured (default is `9172`).
+    Point your Verthash-compatible miner to your pool's IP address on the Stratum port you configured (default is `9172`). The web dashboard will also be available at this address (e.g., `http://<your-ip>:9172`).
 
 ---
 
@@ -99,13 +101,17 @@ Here is a more detailed breakdown of the project's current status:
 -   **Share Chain & Payouts**
     -   [x] Correctly validate shares from local miners and network peers
     -   [x] Stable share chain management (linking, orphan handling)
-    -   [x] **PPLNS payout logic implemented**
+    -   [x] PPLNS payout logic implemented
+-   **UI & Monitoring**
+    -   [x] Live-updating web dashboard for stats
+    -   [x] Color-coded console logging for important events
 -   **Persistence**
     -   [x] On-disk sharechain (`shares.dat`)
     -   [x] Fast loading of persisted share chain
 -   **Next Steps**
-    -   [ ] Add web dashboard for stats and monitoring
     -   [ ] General code cleanup and further hardening
+    -   [ ] Expanded dashboard features (e.g., historical graphs)
+    -   [ ] Community-requested improvements
 
 ## Contributing
 
