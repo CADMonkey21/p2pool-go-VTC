@@ -96,8 +96,6 @@ func main() {
 	config.LoadConfig()
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
 
-	p2pnet.ActiveNetwork.P2PPort = 19172
-
 	/* ----- RPC, share chain, work manager --------------------------- */
 	rpcClient := rpc.NewClient(config.Active)
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -119,8 +118,13 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	pkhVersion := decoded[0]
 	pkh := decoded[1:]
 
-	shareTarget := DiffToTarget(stratumDifficulty)
-	shareBits := blockchain.BigToCompact(shareTarget)
+	// FIX: Use the network bits from the template for p2p compatibility,
+	// not the stratum-specific difficulty.
+	nBitsBytes, err := hex.DecodeString(job.Bits)
+	if err != nil {
+		return nil, fmt.Errorf("could not decode bits from template: %v", err)
+	}
+	shareBits := binary.LittleEndian.Uint32(nBitsBytes)
 
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
 	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)

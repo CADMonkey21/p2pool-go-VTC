@@ -1,14 +1,14 @@
-# p2pool-go-VTC
+# p2pool-go-VTC (Beta)
 
-This is a modern, from-scratch implementation of a peer-to-peer (p2pool) mining pool for Vertcoin, written entirely in Go. It is designed for performance, stability, and ease of use, and is fully compatible with the existing Vertcoin p2pool network.
+This is a modern, from-scratch implementation of a peer-to-peer (p2pool) mining pool for Vertcoin, written entirely in Go. It is designed for performance, stability, and ease of use.
 
-This project was built to be a functional, feature-complete, and high-performance replacement for older, Python-based p2pool implementations.
+This project is currently in a **beta testing phase**. It is functional, connects to the live p2pool network, and can accept shares from miners, but should be considered experimental until it has found its first block and successfully processed a payout.
 
 ---
 
 ### Features
 
-The node is in a **fully functional, feature-complete, and stable state**. All core logic for P2P networking, share processing, and payouts has been implemented and tested.
+The node is functional, with all core logic for P2P networking, share processing, and payouts implemented.
 
 * **Full Stratum Server:** Allows any standard Verthash mining software to connect.
 * **P2P Networking:** Connects to legacy Python peers and other nodes to form a decentralized mining network.
@@ -26,7 +26,7 @@ The node is in a **fully functional, feature-complete, and stable state**. All c
 1.  A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
 2.  The **`verthash.dat`** dataset. Copy it from `~/.vertcoin/` or let the node download on first start.
 3.  **Go 1.18+** (Go 1.22 recommended).
-4.  An **open P2P port** on your router/firewall (default is `9346`) forwarded to the machine running the node.
+4.  An **open P2P port** on your router/firewall forwarded to the machine running the node.
 
 ---
 
@@ -36,7 +36,7 @@ The pool is configured using a single `config.yaml` file. You can create your ow
 
 | Port         | Setting in `config.yaml` | Default | Purpose                                                          | Firewall / Port Forwarding Action                                                              |
 | :----------- | :----------------------- | :------ | :--------------------------------------------------------------- | :--------------------------------------------------------------------------------------------- |
-| **P2P Port** | `p2pPort`                | `9346`  | For your node to talk to other p2pool nodes.                     | **Required:** Must be **port-forwarded** from your internet router to the machine running the node. |
+| **P2P Port** | `p2pPort`                | `9346`  | For your node to talk to other p2pool nodes.                     | **Required:** Must be **port-forwarded**. The default is `9346`. If running multiple nodes on one machine, you must assign a unique port to each in your `config.yaml`. |
 | **Stratum Port** | `stratumPort`            | `9172`  | For your miners to connect to your node. Also serves the web UI. | **Allow on local firewall.** Only forward from your router if you want to run a public pool. |
 | **RPC Port** | `rpcPort`                | `5888`  | For your node to talk to your local Vertcoin daemon.             | **No action needed.** This is a local connection and should **not** be exposed to the internet. |
 
@@ -46,7 +46,7 @@ The pool is configured using a single `config.yaml` file. You can create your ow
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/CADMonkey21/p2pool-go-VTC.git
+    git clone [https://github.com/CADMonkey21/p2pool-go-VTC.git](https://github.com/CADMonkey21/p2pool-go-VTC.git)
     cd p2pool-go-VTC
     ```
 
@@ -70,19 +70,10 @@ The pool is configured using a single `config.yaml` file. You can create your ow
 
 ---
 
-## Configuration
-
-The `config.yaml` file allows you to configure all aspects of the pool.
-
-* **RPC Connection:** These settings must match your `vertcoin.conf`.
-* **Pool Settings:** `poolAddress` is the **most important setting**. This is your personal VTC address that will receive fee payouts and your own mining rewards. The `pplns_window` determines how many past shares are included in a payout calculation.
-* **Vardiff Settings:** These allow you to fine-tune the automatic difficulty adjustment. The defaults are a stable starting point.
-    * `targetTime`: The ideal time in seconds for a miner to find one share.
-    * `retargetTime`: How often the algorithm checks the miner's performance. For stability, this should be 3-5x longer than `targetTime`.
-
 ## Status
 
-Here is a more detailed breakdown of the project's current status:
+The project is in **beta**. The core logic is complete and tested, but end-to-end functionality (finding a block and processing a payout) is awaiting live confirmation.
+*Legend: `[x]` = Complete and Tested, `[~]` = Code Complete, Awaiting Live Confirmation*
 
 -   **P2P Layer**
     -   [x] Wire-protocol (version, ping, addrs, shares, get_shares)
@@ -96,12 +87,12 @@ Here is a more detailed breakdown of the project's current status:
     -   [x] `subscribe` / `authorize` handshake
     -   [x] Vardiff engine (stable and configurable)
     -   [x] Verthash PoW, target validation & share creation
-    -   [x] Block finding detection
     -   [x] Broadcast miner shares to P2P
 -   **Share Chain & Payouts**
     -   [x] Correctly validate shares from local miners and network peers
     -   [x] Stable share chain management (linking, orphan handling)
-    -   [x] PPLNS payout logic implemented
+    -   [~] Block finding detection (code complete, awaiting live confirmation)
+    -   [~] PPLNS payout logic implemented (code complete, awaiting live confirmation)
 -   **UI & Monitoring**
     -   [x] Live-updating web dashboard for stats
     -   [x] Color-coded console logging for important events

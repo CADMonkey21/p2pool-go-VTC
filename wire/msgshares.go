@@ -109,13 +109,31 @@ func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
 		return nil, fmt.Errorf("cannot construct header, previous block hash is nil")
 	}
 
+	// FIX: Use the same logic as IsValid() to determine the bits for the header.
+	// This ensures the hash is calculated using the same data as the target.
+	var effectiveBits uint32
+	switch {
+	case s.ShareInfo.Bits != 0:
+		effectiveBits = s.ShareInfo.Bits
+	case s.ShareInfo.ShareData.Bits != 0:
+		effectiveBits = s.ShareInfo.ShareData.Bits
+	case len(s.Target) == 32:
+		effectiveBits = blockchain.BigToCompact(new(big.Int).SetBytes(s.Target))
+	case s.ShareInfo.MaxBits != 0:
+		effectiveBits = s.ShareInfo.MaxBits
+	default:
+		// Cannot create a valid header without bits
+		return nil, fmt.Errorf("share %s has no difficulty fields", s.Hash.String()[:12])
+	}
+
+
 	// Assemble the header
 	header := &wire.BlockHeader{
 		Version:    s.MinHeader.Version,
 		PrevBlock:  *s.MinHeader.PreviousBlock,
 		MerkleRoot: *merkleRoot,
 		Timestamp:  time.Unix(int64(s.MinHeader.Timestamp), 0),
-		Bits:       s.ShareInfo.Bits, // Use the (now correct) ShareInfo.Bits
+		Bits:       effectiveBits, // Use the correctly determined bits
 		Nonce:      s.MinHeader.Nonce,
 	}
 
@@ -245,9 +263,12 @@ func (s *Share) IsValid() bool {
 		return false
 	}
 
-	hashInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
+	// FIX: Reverse the bytes of the PoW hash before converting to a big.Int
+	// This corrects the endianness mismatch.
+	hashInt := new(big.Int).SetBytes(util.ReverseBytes(s.POWHash.CloneBytes()))
 	return hashInt.Cmp(target) <= 0
 }
+
 
 // ToBytes serializes a Share into a byte slice for storage or network transmission.
 func (s *Share) ToBytes() ([]byte, error) {

@@ -1,3 +1,4 @@
+
 # p2pool-go-VTC Personal Configuration
 
 # The network to run on. For Vertcoin mainnet, this must be "vertcoin".
@@ -14,7 +15,8 @@ peers:
   - "mindcraftblocks.com"
   - "boofpool.ddns.net"
   - "vtc-fl.javerity.com"
-  - "127.0.0.1"
+  - "vtc-ut.myangelprints.com"
+#  - "127.0.0.1" This is if you run legacy node (python) on same machine.
 
 
 # --- RPC Connection Settings ---
@@ -36,7 +38,7 @@ pplns_window: 4320
 
 
 # --- Port Settings ---
-# The port your miners will connect to.
+# The port your miners will connect to. Rememeber to open ports firewall & router settings.
 stratumPort: 9172
 
 # The port that other p2pool nodes will connect to.
@@ -48,14 +50,13 @@ p2pPort: 9346
 vardiff:
   # The ideal time in seconds between shares submitted by a miner.
   # The pool will adjust difficulty to try and meet this target.
-  # 30 seconds is a good, stable starting point.
-  targetTime: 1.0
+  targetTime: 3.0
 
   # How often (in seconds) the pool will check a miner's performance
   # and adjust their difficulty. This should be several times longer
   # than targetTime to get a good average.
   # This MUST be longer than the targetTime. 2-5x
-  retargetTime: 3.0
+  retargetTime: 15.0
 
   # The allowed variance from targetTime before difficulty is adjusted.
   # (e.g., 0.30 means the share time must be 30% faster or slower than
