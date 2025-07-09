@@ -46,7 +46,7 @@ The pool is configured using a single `config.yaml` file. You can create your ow
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/CADMonkey21/p2pool-go-VTC.git](https://github.com/CADMonkey21/p2pool-go-VTC.git)
+    git clone https://github.com/CADMonkey21/p2pool-go-VTC.git
     cd p2pool-go-VTC
     ```
 
