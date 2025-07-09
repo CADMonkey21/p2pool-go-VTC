@@ -22,13 +22,14 @@ import (
 	p2pwire "github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
+// BlockState defines the status of a block in the payout processor.
 type BlockState int
 
 const (
-	StatePending BlockState = iota
-	StateMature
-	StatePaid
-	StateOrphan
+	StatePending BlockState = iota // Newly found, awaiting maturity
+	StateMature                     // 100+ confirmations, ready for payout
+	StatePaid                       // Payout transaction sent
+	StateOrphan                     // Confirmed to not be on the main chain
 )
 
 type PayoutBlock struct {
@@ -40,22 +41,24 @@ type PayoutBlock struct {
 }
 
 type WorkManager struct {
-	rpcClient     *rpc.Client
-	ShareChain    *ShareChain
-	Templates     map[string]*BlockTemplate
-	PendingBlocks []*PayoutBlock
-	TemplateMutex sync.RWMutex
-	PendingMutex  sync.Mutex
-	NewBlockChan  chan *BlockTemplate
+	rpcClient        *rpc.Client
+	ShareChain       *ShareChain
+	Templates        map[string]*BlockTemplate
+	PendingBlocks    []*PayoutBlock
+	TemplateMutex    sync.RWMutex
+	PendingMutex     sync.Mutex
+	NewBlockChan     chan *BlockTemplate
+	ForceNewTemplate chan bool
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 	return &WorkManager{
-		rpcClient:     rpcClient,
-		ShareChain:    sc,
-		Templates:     make(map[string]*BlockTemplate),
-		PendingBlocks: make([]*PayoutBlock, 0),
-		NewBlockChan:  make(chan *BlockTemplate, 10),
+		rpcClient:        rpcClient,
+		ShareChain:       sc,
+		Templates:        make(map[string]*BlockTemplate),
+		PendingBlocks:    make([]*PayoutBlock, 0),
+		NewBlockChan:     make(chan *BlockTemplate, 10),
+		ForceNewTemplate: make(chan bool, 1),
 	}
 }
 
@@ -105,37 +108,50 @@ func (wm *WorkManager) GetLatestTemplate() *BlockTemplate {
 	return latestTemplate
 }
 
+func (wm *WorkManager) fetchBlockTemplate() {
+	rawTemplate, err := wm.rpcClient.GetBlockTemplate()
+	if err != nil {
+		logging.Errorf("Error getting block template: %v", err)
+		return
+	}
+
+	var tmpl BlockTemplate
+	err = json.Unmarshal(rawTemplate, &tmpl)
+	if err != nil {
+		logging.Errorf("Error decoding block template: %v", err)
+		return
+	}
+
+	wm.TemplateMutex.Lock()
+	if _, exists := wm.Templates[tmpl.PreviousBlockHash]; !exists {
+		logging.Infof("New block template received for height %d", tmpl.Height)
+		wm.Templates = make(map[string]*BlockTemplate) // Clear old templates
+		wm.Templates[tmpl.PreviousBlockHash] = &tmpl
+
+		select {
+		case wm.NewBlockChan <- &tmpl:
+		default:
+			logging.Warnf("NewBlockChan is full, dropping new template notification.")
+		}
+	}
+	wm.TemplateMutex.Unlock()
+}
+
 func (wm *WorkManager) WatchBlockTemplate() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	wm.fetchBlockTemplate() // Initial fetch
+
 	for {
-		rawTemplate, err := wm.rpcClient.GetBlockTemplate()
-		if err != nil {
-			logging.Errorf("Error getting block template: %v", err)
-			time.Sleep(1 * time.Second)
-			continue
+		select {
+		case <-ticker.C:
+			wm.fetchBlockTemplate()
+		case <-wm.ForceNewTemplate:
+			logging.Debugf("Forcing immediate template refresh.")
+			time.Sleep(250 * time.Millisecond) // Give daemon a moment to process the new block
+			wm.fetchBlockTemplate()
 		}
-
-		var tmpl BlockTemplate
-		err = json.Unmarshal(rawTemplate, &tmpl)
-		if err != nil {
-			logging.Errorf("Error decoding block template: %v", err)
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		wm.TemplateMutex.Lock()
-		if _, exists := wm.Templates[tmpl.PreviousBlockHash]; !exists {
-			logging.Noticef("New block template received for height %d", tmpl.Height)
-			wm.Templates[tmpl.PreviousBlockHash] = &tmpl
-
-			select {
-			case wm.NewBlockChan <- &tmpl:
-			default:
-				logging.Warnf("NewBlockChan is full, dropping new template notification.")
-			}
-		}
-		wm.TemplateMutex.Unlock()
-
-		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -145,7 +161,7 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 
 	for {
 		<-ticker.C
-		keptBlocks := make([]*PayoutBlock, 0)
+		var keptBlocks []*PayoutBlock
 
 		wm.PendingMutex.Lock()
 		if len(wm.PendingBlocks) > 0 {
@@ -153,32 +169,28 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 		}
 
 		for _, pb := range wm.PendingBlocks {
-			if pb.State == StatePaid || pb.State == StateOrphan {
-				continue
-			}
-
-			if pb.State == StatePending {
+			keep := true
+			switch pb.State {
+			case StatePaid, StateOrphan:
+				keep = false
+			case StatePending:
 				blockInfo, err := wm.rpcClient.GetBlock(pb.BlockHash)
 				if err != nil {
 					if rpcErr, ok := err.(*rpc.RPCError); ok && rpcErr.Code == -5 {
 						logging.Warnf("Block %s appears orphaned (not found), will not check again.", pb.BlockHash.String())
 						pb.State = StateOrphan
+						keep = false
 					} else {
 						logging.Warnf("Could not get block info for %s: %v", pb.BlockHash.String(), err)
-						keptBlocks = append(keptBlocks, pb)
 					}
-					continue
-				}
-
-				if blockInfo.Confirmations >= 100 {
+				} else if blockInfo.Confirmations >= 100 {
 					logging.Successf("✅ Block %s at height %d is now MATURE with %d confirmations!", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
 					pb.State = StateMature
 				} else {
+					// CORRECTED: Added missing pb.BlockHash.String() argument
 					logging.Debugf("Block %s at height %d is still pending maturity (%d confirmations)", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
 				}
-			}
-
-			if pb.State == StateMature {
+			case StateMature:
 				logging.Infof("Triggering PPLNS payout for block %s", pb.BlockHash.String())
 				err := wm.ProcessPayout(pb)
 				if err != nil {
@@ -186,14 +198,15 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 				} else {
 					logging.Successf("Payout for block %s completed successfully.", pb.BlockHash.String())
 					pb.State = StatePaid
+					keep = false
 				}
 			}
-			
-			if pb.State != StateOrphan && pb.State != StatePaid {
+
+			if keep {
 				keptBlocks = append(keptBlocks, pb)
 			}
 		}
-		
+
 		wm.PendingBlocks = keptBlocks
 		wm.PendingMutex.Unlock()
 	}
@@ -343,6 +356,15 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 		State:              StatePending,
 	})
 	wm.PendingMutex.Unlock()
+	
+	wm.TemplateMutex.Lock()
+	delete(wm.Templates, template.PreviousBlockHash)
+	wm.TemplateMutex.Unlock()
+
+	select {
+	case wm.ForceNewTemplate <- true:
+	default:
+	}
 
 	return nil
 }

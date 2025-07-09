@@ -22,6 +22,7 @@ import (
 	"github.com/CADMonkey21/p2pool-go-vtc/wire"
 )
 
+// Each unit of VertHash difficulty represents 2^24 hashes.
 const hashrateConstant = 16777216 // 2^24
 
 /* -------------------------------------------------------------------- */
@@ -264,7 +265,9 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	c.Mutex.Unlock()
 
 	if !jobExists {
-		logging.Warnf("Stratum: Unknown jobID %s", jobID)
+		// This is normal after a rapid template refresh. The miner is submitting a share
+		// for a job that has already been cleared. Silently drop it.
+		logging.Debugf("Stratum: Dropping stale share for unknown jobID %s", jobID)
 		return
 	}
 
