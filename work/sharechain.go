@@ -91,74 +91,80 @@ func (sc *ShareChain) ReadShareChan() {
 func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 	sc.disconnectedShareLock.Lock()
 	defer sc.disconnectedShareLock.Unlock()
+	logging.Debugf("SHARECHAIN/AddShares: Attempting to add %d new shares.", len(s))
 
+	var newSharesAdded bool
 	for i := range s {
 		share := &s[i]
+		shareHashStr := share.Hash.String()
 
-		if share.Hash == nil {
-			logging.Warnf("ShareChain: Ignoring share with nil hash.")
+		logging.Debugf("SHARECHAIN/AddShares: Processing share %s.", shareHashStr[:12])
+
+		sc.allSharesLock.Lock()
+		_, existsInChain := sc.AllShares[shareHashStr]
+		sc.allSharesLock.Unlock()
+
+		if existsInChain {
+			logging.Debugf("SHARECHAIN/AddShares: Share %s already in the main chain. Ignoring.", shareHashStr[:12])
 			continue
 		}
 
-		if !trusted && !share.IsValid() {
-			if share.POWHash != nil {
-				target := blockchain.CompactToBig(share.ShareInfo.Bits)
-				if target.Sign() < 0 {
-					target.Abs(target)
-				}
-				logging.Debugf("share %s PoW is invalid – target %064x hash %064x",
-					share.Hash.String()[:12], target, blockchain.HashToBig(share.POWHash))
-			} else {
-				logging.Warnf("ShareChain: Ignoring invalid share (nil PoWHash).")
+		if _, existsAsOrphan := sc.disconnectedShares[shareHashStr]; existsAsOrphan {
+			logging.Debugf("SHARECHAIN/AddShares: Share %s already in the orphan list. Ignoring.", shareHashStr[:12])
+			continue
+		}
+
+		if !trusted {
+			if !share.IsValid() {
+				logging.Warnf("SHARECHAIN/AddShares: Discarding INVALID share %s.", shareHashStr[:12])
+				continue
 			}
-			continue
 		}
 
-		// Check if this share is a block
+		// Block checking logic
 		if share.MinHeader.PreviousBlock != nil {
 			headerInfo, err := sc.rpcClient.GetBlockHeader(share.MinHeader.PreviousBlock)
 			if err == nil {
-				// CORRECTED: Handle endianness properly when parsing bits from hex
 				bitsBytes, err := hex.DecodeString(headerInfo.Bits)
 				if err != nil || len(bitsBytes) != 4 {
 					logging.Warnf("Bad bits from daemon: %v", headerInfo.Bits)
-					continue
-				}
-				networkBits := binary.LittleEndian.Uint32(bitsBytes)
-				networkTarget := blockchain.CompactToBig(networkBits)
+				} else {
+					networkBits := binary.LittleEndian.Uint32(bitsBytes)
+					networkTarget := blockchain.CompactToBig(networkBits)
 
-				if share.POWHash != nil {
-					sharePOWInt := new(big.Int).SetBytes(share.POWHash.CloneBytes())
-					if sharePOWInt.Cmp(networkTarget) <= 0 {
-						logging.Infof("!!!! PEER BLOCK DETECTED !!!! Share %s is a valid block!", share.Hash.String()[:12])
-						select {
-						case sc.FoundBlockChan <- share:
-						default:
-							logging.Warnf("FoundBlockChan is full, dropping block notification.")
+					if share.POWHash != nil {
+						sharePOWInt := new(big.Int).SetBytes(share.POWHash.CloneBytes())
+						if sharePOWInt.Cmp(networkTarget) <= 0 {
+							logging.Infof("!!!! PEER BLOCK DETECTED !!!! Share %s is a valid block!", share.Hash.String()[:12])
+							select {
+							case sc.FoundBlockChan <- share:
+							default:
+								logging.Warnf("FoundBlockChan is full, dropping block notification.")
+							}
 						}
 					}
 				}
 			}
 		}
 
-		hashStr := share.Hash.String()
-		sc.allSharesLock.Lock()
-		_, inAllShares := sc.AllShares[hashStr]
-		sc.allSharesLock.Unlock()
+		logging.Debugf("SHARECHAIN/AddShares: Adding share %s to disconnected list (new orphan).", shareHashStr[:12])
+		sc.disconnectedShares[shareHashStr] = &orphanInfo{share: share, age: 0}
+		newSharesAdded = true
 
-		_, inDisconnected := sc.disconnectedShares[hashStr]
-
-		if !inAllShares && !inDisconnected {
-			logging.Debugf("ShareChain: Adding share candidate %s to disconnected list", hashStr[:12])
-			sc.disconnectedShares[hashStr] = &orphanInfo{share: share, age: 0}
-
-			if prev := share.ShareInfo.ShareData.PreviousShareHash; prev != nil {
-				prevStr := prev.String()
-				sc.AllSharesByPrev[prevStr] = append(sc.AllSharesByPrev[prevStr], share)
-			}
+		if prev := share.ShareInfo.ShareData.PreviousShareHash; prev != nil {
+			prevStr := prev.String()
+			logging.Debugf("SHARECHAIN/AddShares: Share %s lists previous share %s.", shareHashStr[:12], prevStr[:12])
+			sc.AllSharesByPrev[prevStr] = append(sc.AllSharesByPrev[prevStr], share)
+		} else {
+			logging.Warnf("SHARECHAIN/AddShares: Share %s has no previous share hash!", shareHashStr[:12])
 		}
 	}
-	sc.Resolve(false)
+
+	if newSharesAdded {
+		sc.Resolve(false)
+	} else {
+		logging.Debugf("SHARECHAIN/AddShares: No new shares were added to the orphan list in this batch.")
+	}
 }
 
 func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*wire.Share, error) {
@@ -278,6 +284,7 @@ func (sc *ShareChain) bestOrphan() (hash string, info *orphanInfo) {
 func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
 	sc.allSharesLock.Lock()
 	defer sc.allSharesLock.Unlock()
+	logging.Debugf("SHARECHAIN/attachChildren: Attaching children to %s", parentHash[:12])
 
 	if kids, ok := sc.AllSharesByPrev[parentHash]; ok {
 		for _, kidShare := range kids {
@@ -296,7 +303,7 @@ func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
 }
 
 func (sc *ShareChain) Resolve(skipCommit bool) {
-	logging.Debugf("Resolving sharechain with %d disconnected shares", len(sc.disconnectedShares))
+	logging.Debugf("SHARECHAIN/Resolve: Starting resolution with %d disconnected shares.", len(sc.disconnectedShares))
 	sc.allSharesLock.Lock()
 	if sc.Tip == nil && len(sc.disconnectedShares) > 0 {
 		h, o := sc.bestOrphan()
@@ -305,7 +312,7 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 			sc.AllShares[h] = cs
 			sc.Tip, sc.Tail = cs, cs
 			delete(sc.disconnectedShares, h)
-			logging.Warnf("Forcing genesis from orphan %s at height %d", h[:12], o.share.ShareInfo.AbsHeight)
+			logging.Warnf("SHARECHAIN/Resolve: No tip found. Forcing genesis from best orphan: %s at height %d.", h[:12], o.share.ShareInfo.AbsHeight)
 			sc.allSharesLock.Unlock()
 			sc.attachChildren(h, cs)
 			sc.allSharesLock.Lock()
@@ -317,59 +324,69 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 	for changedInLoop := true; changedInLoop; {
 		passCount++
 		if passCount > maxResolvePasses {
-			logging.Warnf("Resolve loop exceeded max passes, breaking to prevent hang.")
+			logging.Warnf("SHARECHAIN/Resolve: Exceeded max resolution passes (%d). Breaking loop to prevent getting stuck.", maxResolvePasses)
 			break
 		}
 		changedInLoop = false
 		for hashStr, orphan := range sc.disconnectedShares {
 			if orphan.share.ShareInfo.ShareData.PreviousShareHash == nil {
+				logging.Warnf("SHARECHAIN/Resolve: Orphan %s has no previous hash. Cannot link.", hashStr[:12])
 				continue
 			}
 			prevHashStr := orphan.share.ShareInfo.ShareData.PreviousShareHash.String()
 			sc.allSharesLock.Lock()
 			parent, exists := sc.AllShares[prevHashStr]
 			sc.allSharesLock.Unlock()
+
 			if exists {
-				logging.Infof("Linking share %s to parent %s", hashStr[:12], prevHashStr[:12])
+				logging.Infof("SHARECHAIN/Resolve: Found parent %s for orphan %s. Linking now.", prevHashStr[:12], hashStr[:12])
 				newChainShare := &ChainShare{Share: orphan.share, Previous: parent}
+
 				sc.allSharesLock.Lock()
 				if parent.Next != nil {
-					logging.Warnf("Parent share %s already has a next share. Ignoring link for %s.", parent.Share.Hash.String()[:12], newChainShare.Share.Hash.String()[:12])
+					logging.Warnf("SHARECHAIN/Resolve: Parent %s already has a 'next' share. This indicates a potential fork or duplicate share. Current orphan %s will not be linked to this parent.", parent.Share.Hash.String()[:12], hashStr[:12])
 				} else {
 					parent.Next = newChainShare
-				}
-				sc.AllShares[hashStr] = newChainShare
-				if sc.Tip == parent {
-					sc.Tip = newChainShare
-					logging.Infof("Accepted share %s becomes new tip. Height: %d", hashStr[:12], orphan.share.ShareInfo.AbsHeight)
+					sc.AllShares[hashStr] = newChainShare
+					if sc.Tip == parent {
+						sc.Tip = newChainShare
+						logging.Infof("SHARECHAIN/Resolve: Share %s is the new tip. New Tip Height: %d.", hashStr[:12], newChainShare.Share.ShareInfo.AbsHeight)
+					}
+					delete(sc.disconnectedShares, hashStr)
+					changedInLoop = true
 				}
 				sc.allSharesLock.Unlock()
-				sc.attachChildren(hashStr, newChainShare)
-				delete(sc.disconnectedShares, hashStr)
-				changedInLoop = true
+
+				if changedInLoop {
+					sc.attachChildren(hashStr, newChainShare)
+				}
+
+			} else {
+				logging.Debugf("SHARECHAIN/Resolve: Parent %s for orphan %s not found in main chain.", prevHashStr[:12], hashStr[:12])
 			}
 		}
+
 		if !changedInLoop {
+			logging.Debugf("SHARECHAIN/Resolve: No shares were linked in pass #%d. Checking for missing parents to request.", passCount)
 			for hashStr, orphan := range sc.disconnectedShares {
 				orphan.age++
 				if orphan.age > maxOrphanAge {
-					logging.Debugf("Purging stale orphan share %s", hashStr[:12])
+					logging.Warnf("SHARECHAIN/Resolve: Purging stale orphan %s after %d checks.", hashStr[:12], orphan.age)
 					delete(sc.disconnectedShares, hashStr)
 				} else {
-					if lastReq, ok := sc.requestedParents[hashStr]; !ok || time.Since(lastReq) > 30*time.Second {
-						if orphan.share.ShareInfo.ShareData.PreviousShareHash != nil {
-							select {
-							case sc.NeedShareChannel <- orphan.share.ShareInfo.ShareData.PreviousShareHash:
-								logging.Debugf("Requesting missing parent %s for share %s", hashStr[:12], orphan.share.ShareInfo.ShareData.PreviousShareHash.String()[:12])
-								sc.requestedParents[hashStr] = time.Now()
-							default:
-							}
+					prevHash := orphan.share.ShareInfo.ShareData.PreviousShareHash
+					if prevHash != nil {
+						if lastReq, ok := sc.requestedParents[prevHash.String()]; !ok || time.Since(lastReq) > 30*time.Second {
+							logging.Debugf("SHARECHAIN/Resolve: Requesting missing parent %s for orphan %s.", prevHash.String()[:12], hashStr[:12])
+							sc.NeedShareChannel <- prevHash
+							sc.requestedParents[prevHash.String()] = time.Now()
 						}
 					}
 				}
 			}
 		}
 	}
+	logging.Debugf("SHARECHAIN/Resolve: Finished resolution after %d passes. %d orphans remaining.", passCount, len(sc.disconnectedShares))
 }
 
 func (sc *ShareChain) Commit() error {
