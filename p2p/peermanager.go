@@ -1,6 +1,8 @@
 package p2p
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strconv"
@@ -60,12 +62,24 @@ func (pm *PeerManager) ListenForPeers() {
 	}
 }
 
+// ***** THIS IS THE MODIFIED FUNCTION *****
 func (pm *PeerManager) shareRequester() {
 	for neededHash := range pm.shareChain.NeedShareChannel {
+		// Generate a random ID for this request for legacy peer compatibility
+		var idBytes [4]byte
+		_, err := rand.Read(idBytes[:])
+		if err != nil {
+			logging.Warnf("Could not generate random ID for get_shares: %v", err)
+			continue // Skip this request if we can't make a proper ID
+		}
+		randomID := binary.LittleEndian.Uint32(idBytes[:])
+
 		logging.Debugf("Broadcasting request for needed share %s", neededHash.String()[:12])
 		msg := &wire.MsgGetShares{
-			Hashes: []*chainhash.Hash{neededHash},
-			Stops:  &chainhash.Hash{},
+			Hashes:  []*chainhash.Hash{neededHash},
+			Parents: 10, // Ask for parents to help resolve the share chain
+			ID:      randomID,
+			Stops:   &chainhash.Hash{},
 		}
 		pm.Broadcast(msg)
 	}
