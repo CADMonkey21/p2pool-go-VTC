@@ -62,7 +62,6 @@ func (pm *PeerManager) ListenForPeers() {
 	}
 }
 
-// ***** THIS IS THE MODIFIED FUNCTION *****
 func (pm *PeerManager) shareRequester() {
 	for neededHash := range pm.shareChain.NeedShareChannel {
 		// Generate a random ID for this request for legacy peer compatibility
@@ -74,7 +73,7 @@ func (pm *PeerManager) shareRequester() {
 		}
 		randomID := binary.LittleEndian.Uint32(idBytes[:])
 
-		logging.Debugf("Broadcasting request for needed share %s", neededHash.String()[:12])
+		logging.Debugf("Broadcasting request for needed share %s with ID %d", neededHash.String()[:12], randomID)
 		msg := &wire.MsgGetShares{
 			Hashes:  []*chainhash.Hash{neededHash},
 			Parents: 10, // Ask for parents to help resolve the share chain
