@@ -29,7 +29,8 @@ func CreateHeader(tmpl *BlockTemplate, extraNonce1, extraNonce2, nTime, nonceHex
 	}
 	coinbaseTxHashBytes := DblSha256(coinbaseTxBytes)
 
-	txHashesForMerkle := [][]byte{coinbaseTxHashBytes}
+	// CORRECTED LINE: The coinbase hash must also be reversed for the Merkle root calculation.
+	txHashesForMerkle := [][]byte{ReverseBytes(coinbaseTxHashBytes)}
 	for _, tx := range tmpl.Transactions {
 		txHashBytes, _ := hex.DecodeString(tx.Hash)
 		txHashesForMerkle = append(txHashesForMerkle, ReverseBytes(txHashBytes))
@@ -160,7 +161,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	txidMerkleLinkBranches := CalculateMerkleLinkFromHashes(wtxids, 0)
 
 	coinbaseTxHash := DblSha256(coinbaseTxBytes)
-	txHashesForLink := [][]byte{coinbaseTxHash}
+	txHashesForLink := [][]byte{ReverseBytes(coinbaseTxHash)} // Also apply fix here
 	for _, tx := range job.Transactions {
 		txHashBytes, _ := hex.DecodeString(tx.Hash)
 		txHashesForLink = append(txHashesForLink, ReverseBytes(txHashBytes))
