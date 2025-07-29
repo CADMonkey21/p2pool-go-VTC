@@ -26,7 +26,7 @@ import (
 const hashrateConstant = 16777216 // 2^24
 
 /* -------------------------------------------------------------------- */
-/* Helpers                                                             */
+/* Helpers                                                              */
 /* -------------------------------------------------------------------- */
 
 func isValidVtcAddress(addr string) bool {
@@ -48,8 +48,20 @@ func extractID(raw *json.RawMessage) interface{} {
 	return v
 }
 
+// TargetToDiff converts a target big.Int to a difficulty float64.
+func TargetToDiff(target *big.Int) float64 {
+	// The formula is: difficulty = 1 / (target / 2^256)
+	// Simplified: difficulty = 2^256 / target
+	maxTarget := new(big.Int).Lsh(big.NewInt(1), 256)
+	diff := new(big.Float).SetInt(maxTarget)
+	targetFloat := new(big.Float).SetInt(target)
+	resultFloat := new(big.Float).Quo(diff, targetFloat)
+	f64, _ := resultFloat.Float64()
+	return f64
+}
+
 /* -------------------------------------------------------------------- */
-/* StratumServer struct                                                */
+/* StratumServer struct                                                 */
 /* -------------------------------------------------------------------- */
 
 type StratumServer struct {
@@ -73,7 +85,7 @@ func NewStratumServer(wm *work.WorkManager, pm *p2p.PeerManager) *StratumServer 
 }
 
 /* -------------------------------------------------------------------- */
-/* Public server entry point                                           */
+/* Public server entry point                                            */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) Serve(listener net.Listener) error {
@@ -92,7 +104,7 @@ func (s *StratumServer) Serve(listener net.Listener) error {
 }
 
 /* -------------------------------------------------------------------- */
-/* Share‑rate helpers                                                  */
+/* Share‑rate helpers                                                   */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) GetLocalSharesPerSecond() float64 {
@@ -127,7 +139,7 @@ func (s *StratumServer) GetLocalHashrate() float64 {
 }
 
 /* -------------------------------------------------------------------- */
-/* Client management                                                   */
+/* Client management                                                    */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) dropClient(c *Client) {
@@ -149,7 +161,7 @@ func (s *StratumServer) isClientActive(id uint64) bool {
 }
 
 /* -------------------------------------------------------------------- */
-/* Keep‑alive & job broadcast loops                                    */
+/* Keep‑alive & job broadcast loops                                     */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) keepAliveLoop() {
@@ -203,7 +215,7 @@ func (s *StratumServer) jobBroadcaster() {
 }
 
 /* -------------------------------------------------------------------- */
-/* Connection handler                                                  */
+/* Connection handler                                                   */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) handleMinerConnection(conn net.Conn) {
@@ -243,7 +255,7 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 }
 
 /* -------------------------------------------------------------------- */
-/* Submit / subscribe / authorize handlers                             */
+/* Submit / subscribe / authorize handlers                              */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
@@ -284,7 +296,20 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	accepted := powInt.Cmp(shareTarget) <= 0
 
 	if accepted {
-		logging.Successf("Stratum: SHARE ACCEPTED from %s", c.WorkerName)
+		newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
+		if err != nil {
+			logging.Errorf("Stratum: Could not create share object: %v", err)
+			return // Return early as we can't process this share
+		}
+		
+		shareDiff := TargetToDiff(powInt)
+		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
+			c.WorkerName,
+			job.BlockTemplate.Height,
+			shareDiff,
+			newShare.Hash.String()[:12],
+		)
+		
 		c.Mutex.Lock()
 		c.AcceptedShares++
 		c.Mutex.Unlock()
@@ -296,20 +321,15 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			ShareTarget: shareTarget,
 		})
 
-		newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
-		if err != nil {
-			logging.Errorf("Stratum: Could not create share object: %v", err)
-		} else {
-			s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
-			s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
+		s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
+		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-			bits, _ := hex.DecodeString(job.BlockTemplate.Bits)
-			nBits := binary.LittleEndian.Uint32(bits)
-			netTarget := blockchain.CompactToBig(nBits)
-			if powInt.Cmp(netTarget) <= 0 {
-				logging.Successf("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
-				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
-			}
+		bits, _ := hex.DecodeString(job.BlockTemplate.Bits)
+		nBits := binary.LittleEndian.Uint32(bits)
+		netTarget := blockchain.CompactToBig(nBits)
+		if powInt.Cmp(netTarget) <= 0 {
+			logging.Successf("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
+			go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
 		}
 	} else {
 		logging.Warnf("Stratum: Share rejected – hash above target")
@@ -381,7 +401,7 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 }
 
 /* -------------------------------------------------------------------- */
-/* Difficulty & vardiff                                                */
+/* Difficulty & vardiff                                                 */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
@@ -446,7 +466,7 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 }
 
 /* -------------------------------------------------------------------- */
-/* Job sender                                                          */
+/* Job sender                                                           */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean bool) {
@@ -457,9 +477,10 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	c.Mutex.Lock()
 	jobID := fmt.Sprintf("job%d", rand.Intn(10000))
 	job := &Job{
-		ID:            jobID,
-		BlockTemplate: tmpl,
-		ExtraNonce1:   c.ExtraNonce1,
+		ID:              jobID,
+		BlockTemplate:   tmpl,
+		ExtraNonce1:     c.ExtraNonce1,
+		Difficulty:      c.CurrentDifficulty,
 	}
 	if clean {
 		c.ActiveJobs = make(map[string]*Job)
@@ -484,7 +505,22 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		logging.Debugf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)
 	} else {
-		logging.Noticef("Stratum: Sent job %s to worker %s", jobID, worker)
+		txCount := len(tmpl.Transactions)
+		txSize := 0
+		for _, tx := range tmpl.Transactions {
+			txSize += len(tx.Data)
+		}
+		blockValue := float64(tmpl.CoinbaseValue) / 100000000.0 // Assuming value is in satoshis
+
+		logging.Noticef("New job %s sent to %s (Height: %d, Block Value: %.2f VTC, Share Diff: %.2f, %d tx, %.1f kB)",
+			jobID,
+			worker,
+			tmpl.Height,
+			blockValue,
+			job.Difficulty,
+			txCount,
+			float64(txSize)/1024.0,
+		)
 	}
 }
 
