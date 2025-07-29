@@ -23,7 +23,7 @@ import (
 )
 
 /* -------------------------------------------------------------------- */
-/* Helpers                                                             */
+/* Helpers                                                              */
 /* -------------------------------------------------------------------- */
 
 func formatHashrate(hr float64) string {
@@ -78,7 +78,7 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 }
 
 /* -------------------------------------------------------------------- */
-/* main                                                                */
+/* main                                                                 */
 /* -------------------------------------------------------------------- */
 
 func main() {
@@ -98,8 +98,15 @@ func main() {
 
 	/* ----- RPC, share chain, work manager --------------------------- */
 	rpcClient := rpc.NewClient(config.Active)
-
 	sc := work.NewShareChain(rpcClient)
+
+	// **FIX:** The Peer Manager is now created and started BEFORE the sharechain is loaded.
+	/* ----- peer network --------------------------------------------- */
+	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
+	go pm.ListenForPeers()
+
+	// **FIX:** Now that the Peer Manager is running, we can safely load the sharechain.
+	// It will be able to resolve any orphans by asking its new peers.
 	if err := sc.Load(); err != nil {
 		logging.Fatalf("MAIN: Failed to load sharechain: %v", err)
 	}
@@ -108,10 +115,6 @@ func main() {
 	go workManager.WatchBlockTemplate()
 	go workManager.WatchMaturedBlocks()
 	go workManager.WatchFoundBlocks()
-
-	/* ----- peer network --------------------------------------------- */
-	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
-	go pm.ListenForPeers()
 
 	/* ----- Stratum server instance ---------------------------------- */
 	stratumSrv := stratum.NewStratumServer(workManager, pm)
