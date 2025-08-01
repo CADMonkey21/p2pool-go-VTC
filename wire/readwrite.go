@@ -153,8 +153,7 @@ func ReadChainHashList(r io.Reader) ([]*chainhash.Hash, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Add a sanity check to prevent panics from malicious payloads
-	const maxHashes = 1024 // A reasonable upper limit for any list of hashes
+	const maxHashes = 1024
 	if count > maxHashes {
 		return nil, fmt.Errorf("hash list too large: %d > %d", count, maxHashes)
 	}
@@ -193,7 +192,6 @@ func WriteFixedBytes(w io.Writer, b []byte, length int) error {
 	if len(b) > length {
 		return fmt.Errorf("byte slice too large for fixed-bytes write: got %d, want %d", len(b), length)
 	}
-	// Pad with leading zeros if too short. This is critical for compatibility.
 	if len(b) < length {
 		padding := make([]byte, length-len(b))
 		b = append(padding, b...)
@@ -229,7 +227,6 @@ func WriteInt(w io.Writer, val *big.Int, bits int, endian binary.ByteOrder) erro
 	if len(rawBytes) > byteLen {
 		return errors.New("value too large for specified bit length")
 	}
-	// Pad with leading zeros if needed.
 	if len(rawBytes) < byteLen {
 		padding := make([]byte, byteLen-len(rawBytes))
 		rawBytes = append(padding, rawBytes...)
@@ -261,24 +258,20 @@ func ReadPossiblyNoneHash(r io.Reader) (*chainhash.Hash, error) {
 	}
 
 	if isPresent == 0x00 {
-		return nil, nil // Hash is not present
+		return nil, nil
 	}
 
-	// If isPresent is 0x01 (or anything else, to be lenient), the hash follows.
 	return ReadChainHash(r)
 }
 
 func WritePossiblyNoneHash(w io.Writer, h *chainhash.Hash) error {
 	if h == nil {
-		// Write 0x00 to indicate no hash
 		return binary.Write(w, binary.LittleEndian, uint8(0x00))
 	}
-	// Write 0x01 to indicate a hash follows
 	err := binary.Write(w, binary.LittleEndian, uint8(0x01))
 	if err != nil {
 		return err
 	}
-	// Write the actual hash
 	return WriteChainHash(w, h)
 }
 
@@ -316,7 +309,6 @@ func WriteStaleInfo(w io.Writer, si StaleInfo) error {
 }
 
 func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
-	// The VarInt here is the count of PAIRS, not the total number of items.
 	pairCount, err := ReadVarInt(r)
 	if err != nil {
 		return nil, err
@@ -324,7 +316,6 @@ func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
 
 	refs := make([]TransactionHashRef, pairCount)
 	for i := uint64(0); i < pairCount; i++ {
-		// For each pair, read the two VarInts.
 		shareCount, err := ReadVarInt(r)
 		if err != nil {
 			return nil, err
@@ -342,7 +333,6 @@ func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
 }
 
 func WriteTransactionHashRefs(w io.Writer, refs []TransactionHashRef) error {
-	// Write the number of PAIRS as the length prefix.
 	err := WriteVarInt(w, uint64(len(refs)))
 	if err != nil {
 		return err
@@ -361,7 +351,6 @@ func WriteTransactionHashRefs(w io.Writer, refs []TransactionHashRef) error {
 	return nil
 }
 
-// New, resilient function
 func ReadShares(r io.Reader) ([]Share, error) {
 	shares := make([]Share, 0)
 	count, err := ReadVarInt(r)
@@ -377,7 +366,6 @@ func ReadShares(r io.Reader) ([]Share, error) {
 		err = share.FromBytes(r)
 
 		if err != nil {
-			// Downgraded to Debugf to reduce console noise for expected errors
 			logging.Debugf("Skipping one malformed share from peer (share %d of %d). The error was: %v", i+1, count, err)
 			return shares, fmt.Errorf("error processing share %d: %v; stopping deserialization of this message", i+1, err)
 		} else {
