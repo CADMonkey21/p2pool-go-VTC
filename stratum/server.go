@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
@@ -24,6 +24,9 @@ import (
 
 // Each unit of VertHash difficulty represents 2^24 hashes.
 const hashrateConstant = 16777216 // 2^24
+
+// jobCounter is a thread-safe counter for generating unique job IDs.
+var jobCounter uint64
 
 /* -------------------------------------------------------------------- */
 /* Helpers                                                              */
@@ -181,6 +184,7 @@ func (s *StratumServer) keepAliveLoop() {
 		}
 		s.clientsMutex.RUnlock()
 		for _, c := range clients {
+			// As per feedback, could add a check on c.LastActivity here to be more efficient
 			if c.Authorized && s.isClientActive(c.ID) {
 				s.sendMiningJob(c, job.BlockTemplate, false)
 			}
@@ -191,8 +195,12 @@ func (s *StratumServer) keepAliveLoop() {
 func (s *StratumServer) jobBroadcaster() {
 	for {
 		template := <-s.workManager.NewBlockChan
+
+		// Use the thread-safe counter for unique job IDs
+		newJobID := atomic.AddUint64(&jobCounter, 1)
+
 		newJob := &Job{
-			ID:            fmt.Sprintf("job%d", rand.Intn(10000)),
+			ID:            fmt.Sprintf("%d", newJobID),
 			BlockTemplate: template,
 		}
 		s.lastJobMutex.Lock()
@@ -264,6 +272,9 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	var params []string
 	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
 		logging.Warnf("Stratum: Malformed submit params from %s", c.Conn.RemoteAddr())
+		// IMPROVEMENT: Send error feedback to miner
+		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{25, "Malformed submission", nil}}
+		_ = c.send(resp)
 		return
 	}
 
@@ -277,15 +288,18 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	c.Mutex.Unlock()
 
 	if !jobExists {
-		// This is normal after a rapid template refresh. The miner is submitting a share
-		// for a job that has already been cleared. Silently drop it.
-		logging.Debugf("Stratum: Dropping stale share for unknown jobID %s", jobID)
+		logging.Warnf("Stratum: Stale share for unknown jobID %s from %s", jobID, c.WorkerName)
+		// IMPROVEMENT: Send error feedback to miner for stale share
+		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{21, "Stale share", nil}}
+		_ = c.send(resp)
 		return
 	}
 
 	headerBytes, _, err := work.CreateHeader(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr)
 	if err != nil {
 		logging.Errorf("Stratum: Failed to create header: %v", err)
+		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{26, "Internal error creating header", nil}}
+		_ = c.send(resp)
 		return
 	}
 
@@ -299,7 +313,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
 		if err != nil {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
-			return // Return early as we can't process this share
+			return // Cannot proceed, but miner's share was valid.
 		}
 
 		shareDiff := TargetToDiff(powInt)
@@ -324,19 +338,21 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-		// CORRECTED: Use the network target from the job's original block template.
+		// Use the network target from the job's original block template.
 		bits, err := hex.DecodeString(job.BlockTemplate.Bits)
 		if err == nil {
 			nBits := binary.LittleEndian.Uint32(bits)
 			netTarget := blockchain.CompactToBig(nBits)
 
 			if powInt.Cmp(netTarget) <= 0 {
-				logging.Successf("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
+				// IMPROVEMENT: Log both difficulties for clarity
+				netDiff := TargetToDiff(netTarget)
+				logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
 				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
 			}
 		}
 	} else {
-		logging.Warnf("Stratum: Share rejected – hash above target")
+		logging.Warnf("Stratum: Share rejected – hash above target for %s", c.WorkerName)
 		c.Mutex.Lock()
 		c.RejectedShares++
 		c.Mutex.Unlock()
@@ -479,7 +495,10 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	}
 
 	c.Mutex.Lock()
-	jobID := fmt.Sprintf("job%d", rand.Intn(10000))
+	// Use the thread-safe counter for unique job IDs
+	newJobID := atomic.AddUint64(&jobCounter, 1)
+	jobID := fmt.Sprintf("%d", newJobID)
+
 	job := &Job{
 		ID:              jobID,
 		BlockTemplate:   tmpl,
