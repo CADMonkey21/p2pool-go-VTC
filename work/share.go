@@ -29,7 +29,7 @@ func CreateHeader(tmpl *BlockTemplate, extraNonce1, extraNonce2, nTime, nonceHex
 	}
 	coinbaseTxHashBytes := DblSha256(coinbaseTxBytes)
 
-	// CORRECTED LINE: The coinbase hash must also be reversed for the Merkle root calculation.
+	// The coinbase hash must also be reversed for the Merkle root calculation.
 	txHashesForMerkle := [][]byte{ReverseBytes(coinbaseTxHashBytes)}
 	for _, tx := range tmpl.Transactions {
 		txHashBytes, _ := hex.DecodeString(tx.Hash)
@@ -65,7 +65,7 @@ func CreateHeader(tmpl *BlockTemplate, extraNonce1, extraNonce2, nTime, nonceHex
 	header.Write(ReverseBytes(prevHashBytes))
 	header.Write(ReverseBytes(merkleRootBytes))
 	header.Write(ReverseBytes(nTimeBytes)) // Timestamps in headers are little-endian
-	header.Write(nBitsBytes)
+	header.Write(ReverseBytes(nBitsBytes)) // Bits field must be little-endian in the header
 	header.Write(ReverseBytes(nonceBytes))
 
 	return header.Bytes(), merkleRootBytes, nil
@@ -119,8 +119,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	pkhVersion := decoded[0]
 	pkh := decoded[1:]
 
-	// FIX: Use the network bits from the template for p2p compatibility,
-	// not the stratum-specific difficulty.
 	nBitsBytes, err := hex.DecodeString(job.Bits)
 	if err != nil {
 		return nil, fmt.Errorf("could not decode bits from template: %v", err)
@@ -186,6 +184,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		ShareInfo: p2pwire.ShareInfo{
 			ShareData: p2pwire.ShareData{
 				PreviousShareHash: shareChain.GetTipHash(),
+				// CORRECTED: This field requires the full coinbase transaction, not its hash.
 				CoinBase:          coinbaseTxBytes,
 				Nonce:             nonceUint32,
 				PubKeyHash:        pkh,
