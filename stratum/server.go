@@ -301,7 +301,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
 			return // Return early as we can't process this share
 		}
-		
+
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
 			c.WorkerName,
@@ -309,7 +309,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			shareDiff,
 			newShare.Hash.String()[:12],
 		)
-		
+
 		c.Mutex.Lock()
 		c.AcceptedShares++
 		c.Mutex.Unlock()
@@ -324,12 +324,16 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-		bits, _ := hex.DecodeString(job.BlockTemplate.Bits)
-		nBits := binary.LittleEndian.Uint32(bits)
-		netTarget := blockchain.CompactToBig(nBits)
-		if powInt.Cmp(netTarget) <= 0 {
-			logging.Successf("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
-			go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
+		// CORRECTED: Use the network target from the job's original block template.
+		bits, err := hex.DecodeString(job.BlockTemplate.Bits)
+		if err == nil {
+			nBits := binary.LittleEndian.Uint32(bits)
+			netTarget := blockchain.CompactToBig(nBits)
+
+			if powInt.Cmp(netTarget) <= 0 {
+				logging.Successf("!!!! BLOCK FOUND !!!! Share %s is a valid block!", newShare.Hash.String()[:12])
+				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
+			}
 		}
 	} else {
 		logging.Warnf("Stratum: Share rejected – hash above target")
