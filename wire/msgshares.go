@@ -181,15 +181,16 @@ func (s *Share) RecalculatePOW() error {
 }
 
 // IsValid checks if the share's PoW hash is less than or equal to its target.
-func (s *Share) IsValid() bool {
+func (s *Share) IsValid() (bool, string) {
 	if s.POWHash == nil {
 		if err := s.RecalculatePOW(); err != nil {
+			reason := fmt.Sprintf("could not recalculate PoW: %v", err)
 			if s.Hash != nil {
 				logging.Warnf("Could not recalculate PoW for share %s: %v", s.Hash.String()[:12], err)
 			} else {
 				logging.Warnf("Could not recalculate PoW for share: %v", err)
 			}
-			return false
+			return false, reason
 		}
 	}
 
@@ -206,23 +207,27 @@ func (s *Share) IsValid() bool {
 	case s.ShareInfo.MaxBits != 0:
 		effectiveBits = s.ShareInfo.MaxBits
 	default:
+		reason := "share has no difficulty/target fields"
 		if s.Hash != nil {
 			logging.Warnf("Share %s has no difficulty fields.", s.Hash.String()[:12])
 		} else {
-			logging.Warnf("Share has no difficulty fields.")
+			logging.Warnf(reason)
 		}
-		return false
+		return false, reason
 	}
 	s.ShareInfo.Bits = effectiveBits
 
 	target := blockchain.CompactToBig(effectiveBits)
 	if target.Sign() <= 0 {
-		return false
+		return false, "target is zero or negative"
 	}
 
 	hashInt := new(big.Int).SetBytes(util.ReverseBytes(s.POWHash.CloneBytes()))
+	if hashInt.Cmp(target) <= 0 {
+		return true, ""
+	}
 
-	return hashInt.Cmp(target) <= 0
+	return false, "hash is greater than target"
 }
 
 type MerkleLink struct {
@@ -331,25 +336,53 @@ func (s *Share) FromBytes(r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("failed to calculate legacy hash: %w", err)
 	}
-	
+
 	s.ShareInfo.AbsWork = new(big.Int)
 	isEOF := func(e error) bool { return e == io.EOF || e == io.ErrUnexpectedEOF }
 
-	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Version); err != nil && !isEOF(err) { return err }
-	if s.MinHeader.PreviousBlock, err = ReadPossiblyNoneHash(lr); err != nil && !isEOF(err) { return err }
-	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Timestamp); err != nil && !isEOF(err) { return err }
-	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Bits); err != nil && !isEOF(err) { return err }
-	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Nonce); err != nil && !isEOF(err) { return err }
-	if s.ShareInfo.ShareData.PreviousShareHash, err = ReadPossiblyNoneHash(lr); err != nil && !isEOF(err) { return err }
-	if s.ShareInfo.ShareData.CoinBase, err = ReadVarString(lr); err != nil && !isEOF(err) { return err }
-	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.Nonce); err != nil && !isEOF(err) { return err }
-	if s.ShareInfo.ShareData.PubKeyHash, err = ReadFixedBytes(lr, 20); err != nil && !isEOF(err) { return err }
-	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.PubKeyHashVersion); err != nil && !isEOF(err) { return err }
-	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.Subsidy); err != nil && !isEOF(err) { return err }
-	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.Donation); err != nil && !isEOF(err) { return err }
-	if s.ShareInfo.ShareData.StaleInfo, err = ReadStaleInfo(lr); err != nil && !isEOF(err) { return err }
-	if s.ShareInfo.ShareData.DesiredVersion, err = ReadVarInt(lr); err != nil && !isEOF(err) { return err }
-	
+	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Version); err != nil && !isEOF(err) {
+		return err
+	}
+	if s.MinHeader.PreviousBlock, err = ReadPossiblyNoneHash(lr); err != nil && !isEOF(err) {
+		return err
+	}
+	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Timestamp); err != nil && !isEOF(err) {
+		return err
+	}
+	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Bits); err != nil && !isEOF(err) {
+		return err
+	}
+	if err = binary.Read(lr, binary.LittleEndian, &s.MinHeader.Nonce); err != nil && !isEOF(err) {
+		return err
+	}
+	if s.ShareInfo.ShareData.PreviousShareHash, err = ReadPossiblyNoneHash(lr); err != nil && !isEOF(err) {
+		return err
+	}
+	if s.ShareInfo.ShareData.CoinBase, err = ReadVarString(lr); err != nil && !isEOF(err) {
+		return err
+	}
+	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.Nonce); err != nil && !isEOF(err) {
+		return err
+	}
+	if s.ShareInfo.ShareData.PubKeyHash, err = ReadFixedBytes(lr, 20); err != nil && !isEOF(err) {
+		return err
+	}
+	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.PubKeyHashVersion); err != nil && !isEOF(err) {
+		return err
+	}
+	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.Subsidy); err != nil && !isEOF(err) {
+		return err
+	}
+	if err = binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.Donation); err != nil && !isEOF(err) {
+		return err
+	}
+	if s.ShareInfo.ShareData.StaleInfo, err = ReadStaleInfo(lr); err != nil && !isEOF(err) {
+		return err
+	}
+	if s.ShareInfo.ShareData.DesiredVersion, err = ReadVarInt(lr); err != nil && !isEOF(err) {
+		return err
+	}
+
 	if lr.Len() >= 4 {
 		binary.Read(lr, binary.LittleEndian, &s.ShareInfo.ShareData.Bits)
 	}
@@ -365,7 +398,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 			sd.TXIDMerkleLink.Index = uint64(idx32)
 		}
 		sd.WTXIDMerkleRoot, _ = ReadChainHash(lr)
-		
+
 		ff := bytes.Repeat([]byte{0xff}, 32)
 		if len(sd.TXIDMerkleLink.Branch) != 0 || (sd.WTXIDMerkleRoot != nil && !bytes.Equal(sd.WTXIDMerkleRoot[:], ff)) {
 			s.ShareInfo.SegwitData = &sd
@@ -379,7 +412,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 	binary.Read(lr, binary.LittleEndian, &s.ShareInfo.Bits)
 	binary.Read(lr, binary.LittleEndian, &s.ShareInfo.Timestamp)
 	binary.Read(lr, binary.LittleEndian, &s.ShareInfo.AbsHeight)
-	
+
 	if lr.Len() >= 16 {
 		aw, _ := ReadFixedBytes(lr, 16)
 		s.ShareInfo.AbsWork.SetBytes(aw)
@@ -401,10 +434,9 @@ func (s *Share) FromBytes(r io.Reader) error {
 	if binary.Read(lr, binary.LittleEndian, &mIndex) == nil {
 		s.MerkleLink.Index = uint64(mIndex)
 	}
-	
+
 	return nil
 }
-
 
 // LegacyHash calculates the share hash in the exact same way as the original Python implementation.
 func (s *Share) LegacyHash(payload []byte) (*chainhash.Hash, error) {

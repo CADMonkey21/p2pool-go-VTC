@@ -115,8 +115,9 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 		}
 
 		if !trusted {
-			if !share.IsValid() {
-				logging.Warnf("SHARECHAIN/AddShares: Discarding INVALID share %s.", shareHashStr[:12])
+			valid, reason := share.IsValid()
+			if !valid {
+				logging.Warnf("SHARECHAIN/AddShares: Discarding INVALID share %s. Reason: %s", shareHashStr[:12], reason)
 				continue
 			}
 		}

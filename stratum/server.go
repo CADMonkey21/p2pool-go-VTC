@@ -336,6 +336,13 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		})
 
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
+
+		// Diagnostic Logging: Log the share payload before broadcasting
+		shareBytes, err := newShare.ToBytes()
+		if err == nil {
+			logging.Debugf("Broadcasting share payload: %s", hex.EncodeToString(shareBytes))
+		}
+
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
 		// Use the network target from the job's original block template.
