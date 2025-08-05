@@ -64,19 +64,18 @@ func (pm *PeerManager) ListenForPeers() {
 
 func (pm *PeerManager) shareRequester() {
 	for neededHash := range pm.shareChain.NeedShareChannel {
-		// Generate a random ID for this request for legacy peer compatibility
 		var idBytes [4]byte
 		_, err := rand.Read(idBytes[:])
 		if err != nil {
 			logging.Warnf("Could not generate random ID for get_shares: %v", err)
-			continue // Skip this request if we can't make a proper ID
+			continue
 		}
 		randomID := binary.LittleEndian.Uint32(idBytes[:])
 
 		logging.Debugf("Broadcasting request for needed share %s with ID %d", neededHash.String()[:12], randomID)
 		msg := &wire.MsgGetShares{
 			Hashes:  []*chainhash.Hash{neededHash},
-			Parents: 10, // Ask for parents to help resolve the share chain
+			Parents: 10,
 			ID:      randomID,
 			Stops:   &chainhash.Hash{},
 		}
@@ -90,7 +89,7 @@ func (pm *PeerManager) AddPossiblePeer(addr string) {
 	if addr == "" {
 		return
 	}
-	if _, exists := pm.peers[addr]; !exists && !pm.possiblePeers[addr] {
+	if _, exists := pm.peers[addr]; !exists {
 		pm.possiblePeers[addr] = true
 	}
 }
@@ -105,6 +104,17 @@ func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
 			if p.IsConnected() {
 				p.Connection.Outgoing <- msg
 			}
+		}
+	}
+}
+
+// relayToOthers broadcasts a message to all peers except the original sender.
+func (pm *PeerManager) relayToOthers(msg wire.P2PoolMessage, sender *Peer) {
+	pm.peersMutex.RLock()
+	defer pm.peersMutex.RUnlock()
+	for _, peer := range pm.peers {
+		if peer != sender && peer.IsConnected() {
+			peer.Connection.Outgoing <- msg
 		}
 	}
 }
@@ -125,11 +135,10 @@ func (pm *PeerManager) peerConnectorLoop() {
 			for p := range pm.possiblePeers {
 				if _, active := pm.peers[p]; !active {
 					peerToTry = p
-					delete(pm.possiblePeers, p)
 					break
 				}
-				delete(pm.possiblePeers, p)
 			}
+			delete(pm.possiblePeers, peerToTry)
 			pm.peersMutex.Unlock()
 
 			if peerToTry != "" {
@@ -150,6 +159,7 @@ func (pm *PeerManager) TryPeer(p string) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		logging.Warnf("Invalid port for peer %s: %v", p, err)
+		pm.AddPossiblePeer(p) // Re-add to try again later
 		return
 	}
 
@@ -164,6 +174,7 @@ func (pm *PeerManager) TryPeer(p string) {
 	conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
 	if err != nil {
 		logging.Warnf("Failed to connect to %s: %v", remoteAddr, err)
+		pm.AddPossiblePeer(p) // Re-add to try again later
 		return
 	}
 
@@ -178,23 +189,25 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	}
 
 	peerKey := conn.RemoteAddr().String()
-
 	pm.peersMutex.Lock()
 	pm.peers[peerKey] = peer
 	pm.peersMutex.Unlock()
 
-	pm.handlePeerMessages(peer)
+	// Defer the removal of the peer until the message handler exits
+	defer func() {
+		pm.peersMutex.Lock()
+		delete(pm.peers, peerKey)
+		pm.peersMutex.Unlock()
+		logging.Warnf("Peer %s has disconnected.", peer.RemoteIP)
+	}()
 
-	pm.peersMutex.Lock()
-	delete(pm.peers, peerKey)
-	pm.peersMutex.Unlock()
+	pm.handlePeerMessages(peer)
 }
 
 func (pm *PeerManager) handlePeerMessages(p *Peer) {
 	for msg := range p.Connection.Incoming {
 		switch t := msg.(type) {
 		case *wire.MsgPing:
-			logging.Debugf("Received ping from %s, sending pong", p.RemoteIP)
 			p.Connection.Outgoing <- &wire.MsgPong{}
 		case *wire.MsgAddrs:
 			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP, len(t.Addresses))
@@ -205,16 +218,31 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 				pm.AddPossiblePeer(peerAddr)
 			}
 		case *wire.MsgShares:
-			logging.Infof("Received shares message from %s with %d shares.", p.RemoteIP, len(t.Shares))
-			// Shares from the network are untrusted and MUST be validated.
-			pm.shareChain.AddShares(t.Shares, false)
+			// NOTE: We rely on the ShareChain's AddShares to validate and only process new shares.
+			// AddShares should be modified to return a slice of shares that were actually new.
+			var newSharesToRelay []wire.Share
+			for _, share := range t.Shares {
+				if pm.shareChain.GetShare(share.Hash.String()) == nil {
+					newSharesToRelay = append(newSharesToRelay, share)
+				}
+			}
+
+			if len(newSharesToRelay) > 0 {
+				logging.Infof("Received %d new shares from %s to process.", len(newSharesToRelay), p.RemoteIP)
+				pm.shareChain.AddShares(newSharesToRelay, false)
+				pm.relayToOthers(&wire.MsgShares{Shares: newSharesToRelay}, p)
+			}
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
+			var responseShares []wire.Share
 			for _, h := range t.Hashes {
 				if share := pm.shareChain.GetShare(h.String()); share != nil {
-					logging.Debugf("Found share %s, sending to peer", h.String()[:12])
-					p.Connection.Outgoing <- &wire.MsgShares{Shares: []wire.Share{*share}}
+					responseShares = append(responseShares, *share)
 				}
+			}
+			if len(responseShares) > 0 {
+				logging.Debugf("Found %d requested shares, sending to peer %s", len(responseShares), p.RemoteIP)
+				p.Connection.Outgoing <- &wire.MsgShares{Shares: responseShares}
 			}
 		default:
 			logging.Debugf("Received unhandled message of type %T from %s", t, p.RemoteIP)
