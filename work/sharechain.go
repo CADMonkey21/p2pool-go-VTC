@@ -28,8 +28,9 @@ const (
 )
 
 type orphanInfo struct {
-	share *wire.Share
-	age   uint8
+	share   *wire.Share
+	age     uint8
+	isLocal bool // Flag to indicate if the share is from our own miner
 }
 
 type ChainStats struct {
@@ -149,7 +150,7 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 		}
 
 		logging.Debugf("SHARECHAIN/AddShares: Adding share %s to disconnected list (new orphan).", shareHashStr[:12])
-		sc.disconnectedShares[shareHashStr] = &orphanInfo{share: share, age: 0}
+		sc.disconnectedShares[shareHashStr] = &orphanInfo{share: share, age: 0, isLocal: trusted}
 		newSharesAdded = true
 
 		if prev := share.ShareInfo.ShareData.PreviousShareHash; prev != nil {
@@ -340,7 +341,11 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 			sc.allSharesLock.Unlock()
 
 			if exists {
-				logging.Infof("SHARECHAIN/Resolve: Found parent %s for orphan %s. Linking now.", prevHashStr[:12], hashStr[:12])
+				origin := "PEER"
+				if orphan.isLocal {
+					origin = "LOCAL"
+				}
+				logging.Infof("SHARECHAIN/Resolve: Found parent %s for [%s] orphan %s. Linking now.", prevHashStr[:12], origin, hashStr[:12])
 				newChainShare := &ChainShare{Share: orphan.share, Previous: parent}
 
 				sc.allSharesLock.Lock()
