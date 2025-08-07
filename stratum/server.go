@@ -1,13 +1,13 @@
 package stratum
 
 import (
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -184,7 +184,6 @@ func (s *StratumServer) keepAliveLoop() {
 		}
 		s.clientsMutex.RUnlock()
 		for _, c := range clients {
-			// As per feedback, could add a check on c.LastActivity here to be more efficient
 			if c.Authorized && s.isClientActive(c.ID) {
 				s.sendMiningJob(c, job.BlockTemplate, false)
 			}
@@ -196,7 +195,6 @@ func (s *StratumServer) jobBroadcaster() {
 	for {
 		template := <-s.workManager.NewBlockChan
 
-		// Use the thread-safe counter for unique job IDs
 		newJobID := atomic.AddUint64(&jobCounter, 1)
 
 		newJob := &Job{
@@ -272,7 +270,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	var params []string
 	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
 		logging.Warnf("Stratum: Malformed submit params from %s", c.Conn.RemoteAddr())
-		// IMPROVEMENT: Send error feedback to miner
 		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{25, "Malformed submission", nil}}
 		_ = c.send(resp)
 		return
@@ -289,7 +286,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	if !jobExists {
 		logging.Warnf("Stratum: Stale share for unknown jobID %s from %s", jobID, c.WorkerName)
-		// IMPROVEMENT: Send error feedback to miner for stale share
 		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{21, "Stale share", nil}}
 		_ = c.send(resp)
 		return
@@ -305,15 +301,14 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	powHash := p2pnet.ActiveNetwork.POWHash(headerBytes)
 	shareTarget := work.DiffToTarget(currentDiff)
-
-	powInt := new(big.Int).SetBytes(work.ReverseBytes(powHash))
+	powInt := new(big.Int).SetBytes(powHash)
 	accepted := powInt.Cmp(shareTarget) <= 0
 
 	if accepted {
 		newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
 		if err != nil {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
-			return // Cannot proceed, but miner's share was valid.
+			return
 		}
 
 		shareDiff := TargetToDiff(powInt)
@@ -337,7 +332,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
 
-		// Diagnostic Logging: Log the share payload before broadcasting
 		shareBytes, err := newShare.ToBytes()
 		if err == nil {
 			logging.Debugf("Broadcasting share payload: %s", hex.EncodeToString(shareBytes))
@@ -345,14 +339,15 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-		// Use the network target from the job's original block template.
-		bits, err := hex.DecodeString(job.BlockTemplate.Bits)
-		if err == nil {
-			nBits := binary.LittleEndian.Uint32(bits)
+		// FINAL FIX: Parse the 'bits' hex string directly to avoid endianness issues.
+		nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
+		if err != nil {
+			logging.Errorf("Could not parse bits from block template: %v", err)
+		} else {
+			nBits := uint32(nBits64)
 			netTarget := blockchain.CompactToBig(nBits)
 
 			if powInt.Cmp(netTarget) <= 0 {
-				// IMPROVEMENT: Log both difficulties for clarity
 				netDiff := TargetToDiff(netTarget)
 				logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
 				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
@@ -502,7 +497,6 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	}
 
 	c.Mutex.Lock()
-	// Use the thread-safe counter for unique job IDs
 	newJobID := atomic.AddUint64(&jobCounter, 1)
 	jobID := fmt.Sprintf("%d", newJobID)
 
@@ -540,7 +534,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		for _, tx := range tmpl.Transactions {
 			txSize += len(tx.Data)
 		}
-		blockValue := float64(tmpl.CoinbaseValue) / 100000000.0 // Assuming value is in satoshis
+		blockValue := float64(tmpl.CoinbaseValue) / 100000000.0
 
 		logging.Noticef("New job %s sent to %s (Height: %d, Block Value: %.2f VTC, Share Diff: %.2f, %d tx, %.1f kB)",
 			jobID,

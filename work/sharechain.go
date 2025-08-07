@@ -1,8 +1,6 @@
 package work
 
 import (
-	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"math/big"
@@ -124,26 +122,32 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 		}
 
 		// Block checking logic
-		if share.MinHeader.PreviousBlock != nil {
-			headerInfo, err := sc.rpcClient.GetBlockHeader(share.MinHeader.PreviousBlock)
-			if err == nil {
-				bitsBytes, err := hex.DecodeString(headerInfo.Bits)
-				if err != nil || len(bitsBytes) != 4 {
-					logging.Warnf("Bad bits from daemon: %v", headerInfo.Bits)
-				} else {
-					networkBits := binary.LittleEndian.Uint32(bitsBytes)
-					networkTarget := blockchain.CompactToBig(networkBits)
+		if share.POWHash != nil {
+			// This check is for shares coming from peers OR from our own miners after being processed.
+			// The stratum server handles the initial block submission for local miners. This code
+			// identifies blocks found by others and adds them to the pending list for maturity watching.
+			miningInfo, err := sc.rpcClient.GetMiningInfo()
+			if err != nil {
+				logging.Warnf("Failed to get mining info for block check: %v", err)
+			} else {
+				// Use the project's helper to convert float difficulty to a big.Int target
+				networkTarget := DiffToTarget(miningInfo.Difficulty)
 
-					if share.POWHash != nil {
-						sharePOWInt := new(big.Int).SetBytes(share.POWHash.CloneBytes())
-						if sharePOWInt.Cmp(networkTarget) <= 0 {
-							logging.Infof("!!!! PEER BLOCK DETECTED !!!! Share %s is a valid block!", share.Hash.String()[:12])
-							select {
-							case sc.FoundBlockChan <- share:
-							default:
-								logging.Warnf("FoundBlockChan is full, dropping block notification.")
-							}
-						}
+				// CORRECTED: Reverse the bytes of the POWHash to ensure correct endianness for comparison.
+				// This matches the logic used in the stratum server for consistency.
+				sharePOWInt := new(big.Int).SetBytes(ReverseBytes(share.POWHash.CloneBytes()))
+
+				logging.Debugf("Comparing share %s: POWInt=%064x target=%064x (netdiff=%.6f)",
+					share.Hash.String()[:12], sharePOWInt, networkTarget, miningInfo.Difficulty)
+
+				if sharePOWInt.Cmp(networkTarget) <= 0 {
+					// NOTE: The log says "PEER BLOCK" but this logic runs for any valid share added
+					// to the chain, including those from local miners.
+					logging.Successf("!!!! BLOCK DETECTED !!!! Share %s meets network target!", share.Hash.String()[:12])
+					select {
+					case sc.FoundBlockChan <- share:
+					default:
+						logging.Warnf("FoundBlockChan is full, dropping block notification.")
 					}
 				}
 			}
