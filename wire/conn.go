@@ -117,6 +117,8 @@ func (c *P2PoolConnection) readMessage() {
 		case "addrs":
 			msg = &MsgAddrs{}
 		case "shares":
+			// THIS IS THE ONLY CHANGE NEEDED
+			logging.Debugf("Received raw 'shares' message payload: %x", payload)
 			msg = &MsgShares{}
 		case "sharereply":
 			msg = &MsgShareReply{}
