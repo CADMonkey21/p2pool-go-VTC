@@ -107,7 +107,7 @@ func (s *StratumServer) Serve(listener net.Listener) error {
 }
 
 /* -------------------------------------------------------------------- */
-/* Share‑rate helpers                                                   */
+/* Share-rate helpers                                                   */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) GetLocalSharesPerSecond() float64 {
@@ -164,7 +164,7 @@ func (s *StratumServer) isClientActive(id uint64) bool {
 }
 
 /* -------------------------------------------------------------------- */
-/* Keep‑alive & job broadcast loops                                     */
+/* Keep-alive & job broadcast loops                                     */
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) keepAliveLoop() {
@@ -310,6 +310,9 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			logging.Errorf("Stratum: Could not create share object: %v", err)
 			return
 		}
+
+		// This is the only change required
+		newShare.Type = 23
 
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
@@ -501,7 +504,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	jobID := fmt.Sprintf("%d", newJobID)
 
 	job := &Job{
-		ID:              jobID,
+		ID:            jobID,
 		BlockTemplate:   tmpl,
 		ExtraNonce1:     c.ExtraNonce1,
 		Difficulty:      c.CurrentDifficulty,
