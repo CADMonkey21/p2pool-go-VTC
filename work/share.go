@@ -173,7 +173,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	}
 
 	share := &p2pwire.Share{
-		Type: 17,
+		Type: 23,
 		MinHeader: p2pwire.SmallBlockHeader{
 			Version:       int32(job.Version),
 			PreviousBlock: prevBlockHash,
