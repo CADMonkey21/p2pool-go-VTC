@@ -30,7 +30,7 @@ func init() {
 func Vertcoin(testnet bool) Network {
 	n := Network{
 		P2PPort:         config.Active.P2PPort,
-		StandardP2PPort: 9346,
+		StandardP2PPort: 9348,
 		ProtocolVersion: 3501,
 		RPCPort:         config.Active.RPCPort,
 		WorkerPort:      config.Active.StratumPort,
@@ -54,8 +54,8 @@ func Vertcoin(testnet bool) Network {
 	}
 
 	n.SeedHosts = config.Active.Peers
-	n.MessagePrefix, _ = hex.DecodeString("1c0c1c71cc197bc1")
-	n.Identifier, _ = hex.DecodeString("a06a81c827cab983")
+	n.MessagePrefix, _ = hex.DecodeString("e4c3b2a1f0d9e8c7")
+	n.Identifier, _ = hex.DecodeString("d8b3c4e5f6a7b8c9")
 
 	return n
 }

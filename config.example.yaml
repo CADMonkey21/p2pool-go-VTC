@@ -10,12 +10,7 @@ testnet: false
 # --- P2P Network Peers ---
 # List of initial peers to connect to. The more the better.
 peers:
-  - "p2p-usa.xyz"
-  - "p2p-spb.xyz"
-  - "mindcraftblocks.com"
-  - "boofpool.ddns.net"
-  - "vtc-fl.javerity.com"
-  - "vtc-ut.myangelprints.com"
+  - "p2poolvtc.com"
 #  - "127.0.0.1" This is if you run legacy node (python) on same machine.
 
 
@@ -42,7 +37,7 @@ pplns_window: 8640
 stratumPort: 9172
 
 # The port that other p2pool nodes will connect to.
-p2pPort: 9346
+p2pPort: 9348
 
 
 # --- Variable Difficulty Settings ---
