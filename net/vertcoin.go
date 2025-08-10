@@ -5,28 +5,26 @@ import (
 
 	"github.com/CADMonkey21/p2pool-go-vtc/config"
 	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	"github.com/gertjaap/verthash-go"
+	"github.com/CADMonkey21/p2pool-go-VTC/verthash" // Use your new local package
 )
 
-// This variable will hold our single, stable Verthash engine.
-var verthashEngine *verthash.Verthash
+// Use the Verthasher interface from your new package
+var verthashEngine verthash.Verthasher
 
-// This is a standard Go function that runs automatically and exactly once
-// when the 'net' package is first used. This is the perfect place to
-// initialize the Verthash engine.
+// The init function now uses NewRealVerthasher
 func init() {
-	logging.Infof("Initializing Verthash engine...")
-	vh, err := verthash.NewVerthash("verthash.dat", true) // true = read-only mode, which is safer
+	logging.Infof("Initializing Verthash engine from local package...")
+	// The hasher_impl.go will find verthash.dat in default locations if "" is passed
+	vh, err := verthash.NewRealVerthasher("verthash.dat")
 	if err != nil {
-		// Log a fatal error. The program cannot continue if this fails.
-		logging.Fatalf("CRITICAL: Failed to initialize Verthash. Make sure 'verthash.dat' is in the same directory as p2pool-go-VTC. Error: %v", err)
+		logging.Fatalf("CRITICAL: Failed to initialize Verthash. Make sure 'verthash.dat' is present. Error: %v", err)
 		return
 	}
 	verthashEngine = vh
 	logging.Successf("Verthash engine initialized successfully.")
 }
 
-// Your original Vertcoin function remains, but is now much safer.
+// The Vertcoin function now correctly calls the Hash method
 func Vertcoin(testnet bool) Network {
 	n := Network{
 		P2PPort:         config.Active.P2PPort,
@@ -35,22 +33,20 @@ func Vertcoin(testnet bool) Network {
 		RPCPort:         config.Active.RPCPort,
 		WorkerPort:      config.Active.StratumPort,
 		ChainLength:     5100,
-		// It now uses the stable engine we created above.
-		Verthash: verthashEngine,
+		Verthash:        verthashEngine, // Assign the engine
 	}
 
 	n.POWHash = func(data []byte) []byte {
-		// Add a safety check in case initialization failed.
 		if n.Verthash == nil {
 			logging.Errorf("Verthash engine is not available, cannot compute hash.")
 			return nil
 		}
-		hash, err := n.Verthash.SumVerthash(data)
+		hash, err := n.Verthash.Hash(data) // Use the .Hash() method from the interface
 		if err != nil {
 			logging.Errorf("Verthash failed during hashing: %v", err)
 			return nil
 		}
-		return hash[:]
+		return hash
 	}
 
 	n.SeedHosts = config.Active.Peers
