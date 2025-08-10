@@ -1,3 +1,5 @@
+// p2pool-go-VTC/wire/msgshares.go
+
 package wire
 
 import (
@@ -11,9 +13,9 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
-	"github.com/CADMonkey21/p2pool-go-vtc/util"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net" // Corrected import path
+	"github.com/CADMonkey21/p2pool-go-VTC/util"    // Corrected import path
 )
 
 // legacyHeaderSerialize replicates the exact, non-standard block header
@@ -23,7 +25,6 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	if err != nil {
 		return err
 	}
-	// Note: The legacy implementation reverses the byte order of these hashes.
 	if _, err := w.Write(util.ReverseBytes(header.PrevBlock.CloneBytes())); err != nil {
 		return err
 	}
@@ -170,12 +171,13 @@ func (s *Share) RecalculatePOW() error {
 		return fmt.Errorf("could not serialize header for PoW: %v", err)
 	}
 
-	powBytesLE, err := p2pnet.ActiveNetwork.Verthash.SumVerthash(hdrBuf.Bytes())
+	// THIS IS THE CORRECTED PART
+	powBytesLE, err := p2pnet.ActiveNetwork.Verthash.Hash(hdrBuf.Bytes())
 	if err != nil {
 		return fmt.Errorf("verthash failed during PoW recalculation: %v", err)
 	}
 
-	powBytesBE := util.ReverseBytes(powBytesLE[:])
+	powBytesBE := util.ReverseBytes(powBytesLE) // Your new function returns a slice
 	s.POWHash, _ = chainhash.NewHash(powBytesBE)
 	return nil
 }

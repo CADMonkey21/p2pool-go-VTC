@@ -2,9 +2,9 @@ package net
 
 import (
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	// Import the verthash library here
-	"github.com/gertjaap/verthash-go"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	// Import your new local verthash package
+	"github.com/CADMonkey21/p2pool-go-VTC/verthash"
 )
 
 var ActiveNetwork Network
@@ -20,10 +20,10 @@ type Network struct {
 	WorkerPort       int
 	ChainLength      int
 	SeedHosts        []string
-	// The POWHash function signature is correct
 	POWHash          func([]byte) []byte
-	// NEW: A field to hold our initialized Verthash instance
-	Verthash         *verthash.Verthash
+	// THIS IS THE CORRECTED LINE:
+	// It now uses the Verthasher interface from your local package.
+	Verthash         verthash.Verthasher
 }
 
 func SetNetwork(net string, testnet bool) {
@@ -49,6 +49,6 @@ func getVtcChainConfig(testnet bool) chaincfg.Params {
 	params.Bech32HRPSegwit = "vtc"
 	params.WitnessPubKeyHashAddrID = 0x06
 	params.WitnessScriptHashAddrID = 0x0A
-	
+
 	return params
 }
