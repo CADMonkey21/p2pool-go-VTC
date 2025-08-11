@@ -182,7 +182,7 @@ func (pm *PeerManager) TryPeer(p string) {
 }
 
 func (pm *PeerManager) handleNewPeer(conn net.Conn) {
-	peer, err := NewPeer(conn, pm.activeNetwork)
+	peer, err := NewPeer(conn, pm.activeNetwork, pm.shareChain)
 	if err != nil {
 		logging.Warnf("P2P: Handshake with %s failed: %v", conn.RemoteAddr(), err)
 		return
@@ -192,9 +192,6 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	pm.peersMutex.Lock()
 	pm.peers[peerKey] = peer
 	pm.peersMutex.Unlock()
-	
-	// After successful handshake, start the initial sync
-	go peer.InitialSync()
 
 	// Defer the removal of the peer until the message handler exits
 	defer func() {
@@ -215,7 +212,6 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 		
 		case *wire.MsgVerAck:
 			// This is expected after a handshake, but requires no action.
-			// We add the case here to prevent the "unhandled message" log.
 			
 		case *wire.MsgAddrs:
 			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP, len(t.Addresses))
