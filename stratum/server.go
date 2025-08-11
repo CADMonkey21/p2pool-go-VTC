@@ -299,9 +299,14 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	powHash := p2pnet.ActiveNetwork.POWHash(headerBytes)
+	// ** THIS IS THE FIX **
+	// p2pnet.ActiveNetwork.POWHash returns a little-endian hash.
+	// For comparison with the big.Int target, it must be reversed to big-endian.
+	powHashLE := p2pnet.ActiveNetwork.POWHash(headerBytes)
+	powHashBE := work.ReverseBytes(powHashLE)
+	powInt := new(big.Int).SetBytes(powHashBE) // Now correctly interpreted
+
 	shareTarget := work.DiffToTarget(currentDiff)
-	powInt := new(big.Int).SetBytes(powHash)
 	accepted := powInt.Cmp(shareTarget) <= 0
 
 	if accepted {
@@ -311,7 +316,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			return
 		}
 
-		// This is the only change required
 		newShare.Type = 23
 
 		shareDiff := TargetToDiff(powInt)
@@ -342,7 +346,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-		// FINAL FIX: Parse the 'bits' hex string directly to avoid endianness issues.
 		nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		if err != nil {
 			logging.Errorf("Could not parse bits from block template: %v", err)
