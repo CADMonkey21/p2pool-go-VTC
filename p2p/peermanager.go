@@ -218,20 +218,13 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 				pm.AddPossiblePeer(peerAddr)
 			}
 		case *wire.MsgShares:
-			// NOTE: We rely on the ShareChain's AddShares to validate and only process new shares.
-			// AddShares should be modified to return a slice of shares that were actually new.
-			var newSharesToRelay []wire.Share
-			for _, share := range t.Shares {
-				if pm.shareChain.GetShare(share.Hash.String()) == nil {
-					newSharesToRelay = append(newSharesToRelay, share)
-				}
-			}
+			// ** THIS IS THE FIX **
+			// The validation logic is now handled correctly. We add all received shares
+			// to the share chain and let it determine which are new.
+			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP)
+			pm.shareChain.AddShares(t.Shares, false)
+			pm.relayToOthers(msg, p)
 
-			if len(newSharesToRelay) > 0 {
-				logging.Infof("Received %d new shares from %s to process.", len(newSharesToRelay), p.RemoteIP)
-				pm.shareChain.AddShares(newSharesToRelay, false)
-				pm.relayToOthers(&wire.MsgShares{Shares: newSharesToRelay}, p)
-			}
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
 			var responseShares []wire.Share
