@@ -43,61 +43,9 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	return nil
 }
 
-// readVarIntLoose decodes the CompactSize format but *does not*
-// enforce that the shortest possible prefix was used.
-func readVarIntLoose(r io.Reader) (uint64, error) {
-	var b [1]byte
-	if _, err := io.ReadFull(r, b[:]); err != nil {
-		return 0, err
-	}
-	switch b[0] {
-	case 0xff:
-		var v uint64
-		if err := binary.Read(r, binary.LittleEndian, &v); err != nil {
-			return 0, err
-		}
-		return v, nil
-	case 0xfe:
-		var v uint32
-		if err := binary.Read(r, binary.LittleEndian, &v); err != nil {
-			return 0, err
-		}
-		return uint64(v), nil
-	case 0xfd:
-		var v uint16
-		if err := binary.Read(r, binary.LittleEndian, &v); err != nil {
-			return 0, err
-		}
-		return uint64(v), nil
-	default:
-		return uint64(b[0]), nil
-	}
-}
+// readVarIntLoose is no longer needed and has been removed for modern serialization.
 
-// readTransactionHashRefsLoose uses the loose VarInt reader to accept
-// non-canonically packed values from older peers.
-func readTransactionHashRefsLoose(r io.Reader) ([]TransactionHashRef, error) {
-	cnt, err := readVarIntLoose(r)
-	if err != nil {
-		return nil, err
-	}
-	if cnt > 10000 { // Sanity check
-		return nil, fmt.Errorf("transaction hash ref count too high: %d", cnt)
-	}
-	out := make([]TransactionHashRef, cnt)
-	for i := uint64(0); i < cnt; i++ {
-		sc, err := readVarIntLoose(r) // ShareCount
-		if err != nil {
-			return nil, err
-		}
-		tc, err := readVarIntLoose(r) // TxCount
-		if err != nil {
-			return nil, err
-		}
-		out[i] = TransactionHashRef{ShareCount: sc, TxCount: tc}
-	}
-	return out, nil
-}
+// readTransactionHashRefsLoose is no longer needed and has been removed for modern serialization.
 
 var _ P2PoolMessage = &MsgShares{}
 
@@ -406,7 +354,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 	}
 
 	s.ShareInfo.NewTransactionHashes, _ = ReadChainHashList(lr)
-	s.ShareInfo.TransactionHashRefs, _ = readTransactionHashRefsLoose(lr)
+	s.ShareInfo.TransactionHashRefs, _ = ReadTransactionHashRefs(lr) // MODERNIZED
 	s.ShareInfo.FarShareHash, _ = ReadPossiblyNoneHash(lr)
 	binary.Read(lr, binary.LittleEndian, &s.ShareInfo.MaxBits)
 	binary.Read(lr, binary.LittleEndian, &s.ShareInfo.Bits)
