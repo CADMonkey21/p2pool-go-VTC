@@ -171,14 +171,11 @@ func (s *Share) RecalculatePOW() error {
 		return fmt.Errorf("could not serialize header for PoW: %v", err)
 	}
 
-	// The Verthash function returns a little-endian hash.
 	powBytesLE, err := p2pnet.ActiveNetwork.Verthash.Hash(hdrBuf.Bytes())
 	if err != nil {
 		return fmt.Errorf("verthash failed during PoW recalculation: %v", err)
 	}
 
-	// We reverse it to big-endian for storage in chainhash.Hash, which is
-	// the standard for Bitcoin-derived chains and for comparison with big.Int targets.
 	powBytesBE := util.ReverseBytes(powBytesLE)
 	s.POWHash, _ = chainhash.NewHash(powBytesBE)
 	return nil
@@ -187,7 +184,6 @@ func (s *Share) RecalculatePOW() error {
 // IsValid checks if the share's PoW hash is less than or equal to its target.
 func (s *Share) IsValid() (bool, string) {
 	// Force recalculation of the PoW hash every time we validate.
-	// This is the most robust way to ensure consistency between nodes.
 	if err := s.RecalculatePOW(); err != nil {
 		reason := fmt.Sprintf("could not recalculate PoW: %v", err)
 		if s.Hash != nil {
@@ -225,8 +221,7 @@ func (s *Share) IsValid() (bool, string) {
 	if target.Sign() <= 0 {
 		return false, "target is zero or negative"
 	}
-	
-	// s.POWHash is already big-endian, so we can use its bytes directly.
+
 	hashInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
 	if hashInt.Cmp(target) <= 0 {
 		return true, ""
