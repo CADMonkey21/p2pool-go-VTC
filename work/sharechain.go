@@ -95,7 +95,14 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 	var newSharesAdded bool
 	for i := range s {
 		share := &s[i]
+		
+		// Ensure the hash is calculated for logging, even if the share is new
+		if share.Hash == nil {
+			// This is a failsafe; the hash should be calculated upon creation.
+			share.IsValid()
+		}
 		shareHashStr := share.Hash.String()
+
 
 		origin := "PEER"
 		if trusted {
@@ -117,37 +124,11 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 			continue
 		}
 
-		// ** THIS IS THE FIX **
-		// The validation logic is now outside the "!trusted" block and runs for ALL shares.
-		valid, reason := share.IsValid()
-		if !valid {
-			logging.Warnf("SHARECHAIN/AddShares: Discarding INVALID share %s from %s. Reason: %s", shareHashStr[:12], origin, reason)
-			continue
-		}
-
-		// Block checking logic
-		if share.POWHash != nil {
-			miningInfo, err := sc.rpcClient.GetMiningInfo()
-			if err != nil {
-				logging.Warnf("Failed to get mining info for block check: %v", err)
-			} else {
-				networkTarget := DiffToTarget(miningInfo.Difficulty)
-				
-				// ** THIS IS THE FIX **
-				// s.POWHash is already big-endian, so we don't need to reverse it.
-				sharePOWInt := new(big.Int).SetBytes(share.POWHash.CloneBytes())
-
-				logging.Debugf("Comparing share %s: POWInt=%064x target=%064x (netdiff=%.6f)",
-					share.Hash.String()[:12], sharePOWInt, networkTarget, miningInfo.Difficulty)
-
-				if sharePOWInt.Cmp(networkTarget) <= 0 {
-					logging.Successf("!!!! BLOCK DETECTED !!!! Share %s from %s meets network target!", share.Hash.String()[:12], origin)
-					select {
-					case sc.FoundBlockChan <- share:
-					default:
-						logging.Warnf("FoundBlockChan is full, dropping block notification.")
-					}
-				}
+		if !trusted {
+			valid, reason := share.IsValid()
+			if !valid {
+				logging.Warnf("SHARECHAIN/AddShares: Discarding INVALID share %s from %s. Reason: %s", shareHashStr[:12], origin, reason)
+				continue
 			}
 		}
 

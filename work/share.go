@@ -12,64 +12,8 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	p2pwire "github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
-
-// CreateHeader reconstructs the block header from template and miner data.
-func CreateHeader(tmpl *BlockTemplate, extraNonce1, extraNonce2, nTime, nonceHex, payoutAddress string) ([]byte, []byte, error) {
-	_, witnessCommitment, err := CalculateWitnessCommitment(tmpl)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	coinbaseTxBytes, err := CreateCoinbaseTx(tmpl, payoutAddress, extraNonce1, extraNonce2, witnessCommitment.CloneBytes())
-	if err != nil {
-		return nil, nil, err
-	}
-	coinbaseTxHashBytes := DblSha256(coinbaseTxBytes)
-
-	// The coinbase hash must also be reversed for the Merkle root calculation.
-	txHashesForMerkle := [][]byte{ReverseBytes(coinbaseTxHashBytes)}
-	for _, tx := range tmpl.Transactions {
-		txHashBytes, _ := hex.DecodeString(tx.Hash)
-		txHashesForMerkle = append(txHashesForMerkle, ReverseBytes(txHashBytes))
-	}
-	merkleRootBytes := calculateMerkleRoot(txHashesForMerkle)
-
-	versionBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(versionBytes, tmpl.Version)
-
-	prevHashBytes, err := hex.DecodeString(tmpl.PreviousBlockHash)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nTimeBytes, err := hex.DecodeString(nTime)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nBitsBytes, err := hex.DecodeString(tmpl.Bits)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nonceBytes, err := hex.DecodeString(nonceHex)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var header bytes.Buffer
-	header.Write(versionBytes)
-	header.Write(ReverseBytes(prevHashBytes))
-	header.Write(ReverseBytes(merkleRootBytes))
-	header.Write(ReverseBytes(nTimeBytes)) // Timestamps in headers are little-endian
-	header.Write(ReverseBytes(nBitsBytes)) // Bits field must be little-endian in the header
-	header.Write(ReverseBytes(nonceBytes))
-
-	return header.Bytes(), merkleRootBytes, nil
-}
 
 // calculateMerkleRoot is a helper function for header creation.
 func calculateMerkleRoot(hashes [][]byte) []byte {
@@ -138,15 +82,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		return nil, err
 	}
 
-	header, _, err := CreateHeader(job, extraNonce1, extraNonce2, nTimeHex, nonceHex, payoutAddress)
-	if err != nil {
-		return nil, err
-	}
-
-	powHashBytes := p2pnet.ActiveNetwork.POWHash(header)
-	powHash, _ := chainhash.NewHash(powHashBytes)
-	shareHash, _ := chainhash.NewHash(DblSha256(header))
-
 	coinbaseWtxid, _ := chainhash.NewHashFromStr("0000000000000000000000000000000000000000000000000000000000000000")
 	wtxids := []*chainhash.Hash{coinbaseWtxid}
 	for _, txTmpl := range job.Transactions {
@@ -184,7 +119,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		ShareInfo: p2pwire.ShareInfo{
 			ShareData: p2pwire.ShareData{
 				PreviousShareHash: shareChain.GetTipHash(),
-				// CORRECTED: This field requires the full coinbase transaction, not its hash.
 				CoinBase:          coinbaseTxBytes,
 				Nonce:             nonceUint32,
 				PubKeyHash:        pkh,
@@ -210,10 +144,8 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		},
 		MerkleLink:    p2pwire.MerkleLink{Branch: merkleLinkBranches, Index: 0},
 		RefMerkleLink: p2pwire.MerkleLink{Branch: []*chainhash.Hash{}, Index: 0},
-		POWHash:       powHash,
-		Hash:          shareHash,
 	}
 
-	logging.Infof("Successfully created new share with hash %s and populated SegwitData", share.Hash.String()[:12])
+	logging.Infof("Successfully created new share object")
 	return share, nil
 }

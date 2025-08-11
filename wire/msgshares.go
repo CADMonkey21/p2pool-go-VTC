@@ -103,7 +103,18 @@ func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
 }
 
 // RecalculatePOW computes and sets the share's POWHash.
-func (s *Share) RecalculatePOW() error {
+func (s *Share) RecalculateHashes() error {
+	// First, calculate the share's own identifier hash
+	payload, err := s.getCanonicalPayload()
+	if err != nil {
+		return fmt.Errorf("could not get canonical payload for share hash: %v", err)
+	}
+	s.Hash, err = s.LegacyHash(payload)
+	if err != nil {
+		return fmt.Errorf("could not calculate legacy hash: %v", err)
+	}
+
+	// Now, calculate the Proof-of-Work hash
 	header, err := s.FullBlockHeader()
 	if err != nil {
 		return fmt.Errorf("could not construct header to recalculate PoW: %v", err)
@@ -125,15 +136,16 @@ func (s *Share) RecalculatePOW() error {
 	return nil
 }
 
+
 // IsValid checks if the share's PoW hash is less than or equal to its target.
 func (s *Share) IsValid() (bool, string) {
-	// Force recalculation of the PoW hash every time we validate.
-	if err := s.RecalculatePOW(); err != nil {
-		reason := fmt.Sprintf("could not recalculate PoW: %v", err)
+	// Force recalculation of BOTH hashes every time we validate.
+	if err := s.RecalculateHashes(); err != nil {
+		reason := fmt.Sprintf("could not recalculate hashes: %v", err)
 		if s.Hash != nil {
-			logging.Warnf("Could not recalculate PoW for share %s: %v", s.Hash.String()[:12], err)
+			logging.Warnf("Could not recalculate hashes for share %s: %v", s.Hash.String()[:12], err)
 		} else {
-			logging.Warnf("Could not recalculate PoW for share: %v", err)
+			logging.Warnf("Could not recalculate hashes for share: %v", err)
 		}
 		return false, reason
 	}
