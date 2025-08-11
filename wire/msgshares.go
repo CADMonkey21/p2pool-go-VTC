@@ -102,8 +102,8 @@ func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
 	return header, nil
 }
 
-// RecalculatePOW computes and sets the share's POWHash.
-func (s *Share) RecalculateHashes() error {
+// CalculateHashes computes and sets BOTH the share's identifier hash and its POWHash.
+func (s *Share) CalculateHashes() error {
 	// First, calculate the share's own identifier hash
 	payload, err := s.getCanonicalPayload()
 	if err != nil {
@@ -139,17 +139,11 @@ func (s *Share) RecalculateHashes() error {
 
 // IsValid checks if the share's PoW hash is less than or equal to its target.
 func (s *Share) IsValid() (bool, string) {
-	// Force recalculation of BOTH hashes every time we validate.
-	if err := s.RecalculateHashes(); err != nil {
-		reason := fmt.Sprintf("could not recalculate hashes: %v", err)
-		if s.Hash != nil {
-			logging.Warnf("Could not recalculate hashes for share %s: %v", s.Hash.String()[:12], err)
-		} else {
-			logging.Warnf("Could not recalculate hashes for share: %v", err)
-		}
-		return false, reason
+	// This function now trusts that POWHash has already been calculated.
+	if s.POWHash == nil {
+		return false, "share has no PoW hash to validate"
 	}
-
+	
 	var effectiveBits uint32
 	switch {
 	case s.ShareInfo.Bits != 0:
@@ -288,12 +282,6 @@ func (s *Share) FromBytes(r io.Reader) error {
 	}
 	lr := bytes.NewReader(payloadBytes)
 
-	// Calculate the hash of the raw payload for identification, matching legacy behavior.
-	s.Hash, err = s.LegacyHash(payloadBytes)
-	if err != nil {
-		return fmt.Errorf("failed to calculate legacy hash: %w", err)
-	}
-
 	s.ShareInfo.AbsWork = new(big.Int)
 	isEOF := func(e error) bool { return e == io.EOF || e == io.ErrUnexpectedEOF }
 
@@ -356,7 +344,6 @@ func (s *Share) FromBytes(r io.Reader) error {
 		}
 		sd.WTXIDMerkleRoot, _ = ReadChainHash(lr)
 
-		// A non-nil WTXIDMerkleRoot that isn't all 0xff indicates segwit data is present.
 		ff := bytes.Repeat([]byte{0xff}, 32)
 		if len(sd.TXIDMerkleLink.Branch) != 0 || (sd.WTXIDMerkleRoot != nil && !bytes.Equal(sd.WTXIDMerkleRoot[:], ff)) {
 			s.ShareInfo.SegwitData = &sd
@@ -364,7 +351,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 	}
 
 	s.ShareInfo.NewTransactionHashes, _ = ReadChainHashList(lr)
-	s.ShareInfo.TransactionHashRefs, _ = ReadTransactionHashRefs(lr) // MODERNIZED
+	s.ShareInfo.TransactionHashRefs, _ = ReadTransactionHashRefs(lr)
 	s.ShareInfo.FarShareHash, _ = ReadPossiblyNoneHash(lr)
 	binary.Read(lr, binary.LittleEndian, &s.ShareInfo.MaxBits)
 	binary.Read(lr, binary.LittleEndian, &s.ShareInfo.Bits)
@@ -392,15 +379,15 @@ func (s *Share) FromBytes(r io.Reader) error {
 	if binary.Read(lr, binary.LittleEndian, &mIndex) == nil {
 		s.MerkleLink.Index = uint64(mIndex)
 	}
+    
+    // After deserializing, always calculate the hashes to ensure the object is complete.
+	s.CalculateHashes()
 
 	return nil
 }
 
 // LegacyHash calculates the share hash in the exact same way as the original Python implementation.
 func (s *Share) LegacyHash(payload []byte) (*chainhash.Hash, error) {
-	// The legacy hash is a double-sha256 of:
-	// 1. The share type (as a VarInt)
-	// 2. The *entire* payload that follows it.
 	var buf bytes.Buffer
 	if err := WriteVarInt(&buf, s.Type); err != nil {
 		return nil, err
@@ -438,7 +425,6 @@ func (s *Share) getCanonicalPayload() ([]byte, error) {
 			binary.Write(&contents, binary.LittleEndian, uint32(s.ShareInfo.SegwitData.TXIDMerkleLink.Index))
 			WriteChainHash(&contents, s.ShareInfo.SegwitData.WTXIDMerkleRoot)
 		} else {
-			// Write empty/nil data to maintain struct alignment
 			WriteChainHashList(&contents, []*chainhash.Hash{})
 			binary.Write(&contents, binary.LittleEndian, uint32(0))
 			WriteChainHash(&contents, &chainhash.Hash{})
