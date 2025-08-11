@@ -64,6 +64,17 @@ func NewPeer(conn net.Conn, n p2pnet.Network) (*Peer, error) {
 	return &p, nil
 }
 
+func (p *Peer) InitialSync() {
+	logging.Infof("P2P: Starting initial share sync with %s", p.RemoteIP)
+	msg := &wire.MsgGetShares{
+		Hashes:  []*chainhash.Hash{p.BestShare()},
+		Parents: 10, // Request a decent number of parents to start
+		Stops:   &chainhash.Hash{},
+	}
+	p.Connection.Outgoing <- msg
+}
+
+
 func (p *Peer) monitorDisconnect() {
 	<-p.Connection.Disconnected
 	p.connMutex.Lock()
@@ -153,4 +164,3 @@ func (p *Peer) Handshake() error {
 	logging.Infof("Handshake successful with %s! Peer is on protocol version %d", p.RemoteIP, p.versionInfo.Version)
 	return nil
 }
-

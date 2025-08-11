@@ -192,6 +192,9 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	pm.peersMutex.Lock()
 	pm.peers[peerKey] = peer
 	pm.peersMutex.Unlock()
+	
+	// After successful handshake, start the initial sync
+	go peer.InitialSync()
 
 	// Defer the removal of the peer until the message handler exits
 	defer func() {
@@ -223,9 +226,6 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 				pm.AddPossiblePeer(peerAddr)
 			}
 		case *wire.MsgShares:
-			// ** THIS IS THE FIX **
-			// The validation logic is now handled correctly. We add all received shares
-			// to the share chain and let it determine which are new.
 			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP)
 			pm.shareChain.AddShares(t.Shares, false)
 			pm.relayToOthers(msg, p)
