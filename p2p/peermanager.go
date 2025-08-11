@@ -209,6 +209,11 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 		switch t := msg.(type) {
 		case *wire.MsgPing:
 			p.Connection.Outgoing <- &wire.MsgPong{}
+		
+		case *wire.MsgVerAck:
+			// This is expected after a handshake, but requires no action.
+			// We add the case here to prevent the "unhandled message" log.
+			
 		case *wire.MsgAddrs:
 			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP, len(t.Addresses))
 			for _, addrRecord := range t.Addresses {
