@@ -14,8 +14,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net" // Corrected import path
-	"github.com/CADMonkey21/p2pool-go-VTC/util"    // Corrected import path
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
+	"github.com/CADMonkey21/p2pool-go-VTC/util"
 )
 
 // legacyHeaderSerialize replicates the exact, non-standard block header
@@ -186,9 +186,8 @@ func (s *Share) RecalculatePOW() error {
 
 // IsValid checks if the share's PoW hash is less than or equal to its target.
 func (s *Share) IsValid() (bool, string) {
-	// ** THIS IS THE FIX **
 	// Force recalculation of the PoW hash every time we validate.
-	// This ensures that we are always using a consistent hash.
+	// This is the most robust way to ensure consistency between nodes.
 	if err := s.RecalculatePOW(); err != nil {
 		reason := fmt.Sprintf("could not recalculate PoW: %v", err)
 		if s.Hash != nil {
@@ -227,6 +226,7 @@ func (s *Share) IsValid() (bool, string) {
 		return false, "target is zero or negative"
 	}
 	
+	// s.POWHash is already big-endian, so we can use its bytes directly.
 	hashInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
 	if hashInt.Cmp(target) <= 0 {
 		return true, ""
