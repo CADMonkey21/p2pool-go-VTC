@@ -132,7 +132,10 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 				logging.Warnf("Failed to get mining info for block check: %v", err)
 			} else {
 				networkTarget := DiffToTarget(miningInfo.Difficulty)
-				sharePOWInt := new(big.Int).SetBytes(ReverseBytes(share.POWHash.CloneBytes()))
+				
+				// ** THIS IS THE FIX **
+				// s.POWHash is already big-endian, so we don't need to reverse it.
+				sharePOWInt := new(big.Int).SetBytes(share.POWHash.CloneBytes())
 
 				logging.Debugf("Comparing share %s: POWInt=%064x target=%064x (netdiff=%.6f)",
 					share.Hash.String()[:12], sharePOWInt, networkTarget, miningInfo.Difficulty)

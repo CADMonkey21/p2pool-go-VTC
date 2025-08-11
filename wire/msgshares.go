@@ -186,16 +186,17 @@ func (s *Share) RecalculatePOW() error {
 
 // IsValid checks if the share's PoW hash is less than or equal to its target.
 func (s *Share) IsValid() (bool, string) {
-	if s.POWHash == nil {
-		if err := s.RecalculatePOW(); err != nil {
-			reason := fmt.Sprintf("could not recalculate PoW: %v", err)
-			if s.Hash != nil {
-				logging.Warnf("Could not recalculate PoW for share %s: %v", s.Hash.String()[:12], err)
-			} else {
-				logging.Warnf("Could not recalculate PoW for share: %v", err)
-			}
-			return false, reason
+	// ** THIS IS THE FIX **
+	// Force recalculation of the PoW hash every time we validate.
+	// This ensures that we are always using a consistent hash.
+	if err := s.RecalculatePOW(); err != nil {
+		reason := fmt.Sprintf("could not recalculate PoW: %v", err)
+		if s.Hash != nil {
+			logging.Warnf("Could not recalculate PoW for share %s: %v", s.Hash.String()[:12], err)
+		} else {
+			logging.Warnf("Could not recalculate PoW for share: %v", err)
 		}
+		return false, reason
 	}
 
 	var effectiveBits uint32
@@ -225,11 +226,7 @@ func (s *Share) IsValid() (bool, string) {
 	if target.Sign() <= 0 {
 		return false, "target is zero or negative"
 	}
-
-	// ** THIS IS THE FIX **
-	// The s.POWHash is already stored in big-endian format.
-	// We can use its bytes directly to create the big.Int for comparison.
-	// The previous code was incorrectly reversing it back to little-endian.
+	
 	hashInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
 	if hashInt.Cmp(target) <= 0 {
 		return true, ""
