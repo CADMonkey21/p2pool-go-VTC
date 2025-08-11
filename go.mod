@@ -6,11 +6,6 @@ require (
 	github.com/btcsuite/btcd v0.24.2
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
-)
-
-require (
-	github.com/CADMonkey21/p2pool-go-vtc v0.0.0-20250810214855-677ffe9d2e1d
-	github.com/gertjaap/verthash-go v0.0.0-20210205201258-234a3a9698d1
 	github.com/soheilhy/cmux v0.1.5
 	golang.org/x/crypto v0.17.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -27,3 +22,6 @@ require (
 	golang.org/x/sys v0.15.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
+
+// This tells Go to use your local verthash folder instead of looking online.
+replace github.com/CADMonkey21/p2pool-go-VTC/verthash => ./verthash

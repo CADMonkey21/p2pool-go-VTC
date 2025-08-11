@@ -1,7 +1,7 @@
 package stratum
 
 import (
-	"github.com/CADMonkey21/p2pool-go-vtc/work"
+	"github.com/CADMonkey21/p2pool-go-VTC/work"
 )
 
 type Job struct {

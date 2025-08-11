@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
-	"github.com/CADMonkey21/p2pool-go-vtc/work"
-	"github.com/CADMonkey21/p2pool-go-vtc/wire"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
+	"github.com/CADMonkey21/p2pool-go-VTC/work"
+	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 type PeerManager struct {

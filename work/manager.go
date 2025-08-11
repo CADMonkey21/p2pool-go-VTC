@@ -15,11 +15,11 @@ import (
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/CADMonkey21/p2pool-go-vtc/config"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	"github.com/CADMonkey21/p2pool-go-vtc/rpc"
-	"github.com/CADMonkey21/p2pool-go-vtc/util"
-	p2pwire "github.com/CADMonkey21/p2pool-go-vtc/wire"
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
+	"github.com/CADMonkey21/p2pool-go-VTC/util"
+	p2pwire "github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 // BlockState defines the status of a block in the payout processor.

@@ -14,12 +14,12 @@ import (
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/CADMonkey21/p2pool-go-vtc/config"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
-	"github.com/CADMonkey21/p2pool-go-vtc/p2p"
-	"github.com/CADMonkey21/p2pool-go-vtc/work"
-	"github.com/CADMonkey21/p2pool-go-vtc/wire"
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
+	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
+	"github.com/CADMonkey21/p2pool-go-VTC/work"
+	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 // Each unit of VertHash difficulty represents 2^24 hashes.

@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-vtc/net"
-	"github.com/CADMonkey21/p2pool-go-vtc/util"
-	"github.com/CADMonkey21/p2pool-go-vtc/wire"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
+	"github.com/CADMonkey21/p2pool-go-VTC/util"
+	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 var publicIP net.IP

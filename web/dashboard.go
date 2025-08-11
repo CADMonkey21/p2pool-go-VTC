@@ -9,10 +9,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/CADMonkey21/p2pool-go-vtc/config"
-	"github.com/CADMonkey21/p2pool-go-vtc/p2p"
-	"github.com/CADMonkey21/p2pool-go-vtc/stratum"
-	"github.com/CADMonkey21/p2pool-go-vtc/work"
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
+	"github.com/CADMonkey21/p2pool-go-VTC/stratum"
+	"github.com/CADMonkey21/p2pool-go-VTC/work"
 )
 
 const dashboardTemplate = `

@@ -3,8 +3,8 @@ package net
 import (
 	"encoding/hex"
 
-	"github.com/CADMonkey21/p2pool-go-vtc/config"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/verthash" // Use your new local package
 )
 

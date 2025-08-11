@@ -11,10 +11,10 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/CADMonkey21/p2pool-go-vtc/config"
-	"github.com/CADMonkey21/p2pool-go-vtc/logging"
-	"github.com/CADMonkey21/p2pool-go-vtc/rpc"
-	"github.com/CADMonkey21/p2pool-go-vtc/wire"
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
+	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 // Each unit of VertHash difficulty represents 2^24 hashes.
@@ -97,7 +97,11 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 		share := &s[i]
 		shareHashStr := share.Hash.String()
 
-		logging.Debugf("SHARECHAIN/AddShares: Processing share %s.", shareHashStr[:12])
+		origin := "PEER"
+		if trusted {
+			origin = "LOCAL"
+		}
+		logging.Debugf("SHARECHAIN/AddShares: Processing share %s from %s.", shareHashStr[:12], origin)
 
 		sc.allSharesLock.Lock()
 		_, existsInChain := sc.AllShares[shareHashStr]
@@ -113,37 +117,28 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 			continue
 		}
 
-		if !trusted {
-			valid, reason := share.IsValid()
-			if !valid {
-				logging.Warnf("SHARECHAIN/AddShares: Discarding INVALID share %s. Reason: %s", shareHashStr[:12], reason)
-				continue
-			}
+		// ** THIS IS THE FIX **
+		// The validation logic is now outside the "!trusted" block and runs for ALL shares.
+		valid, reason := share.IsValid()
+		if !valid {
+			logging.Warnf("SHARECHAIN/AddShares: Discarding INVALID share %s from %s. Reason: %s", shareHashStr[:12], origin, reason)
+			continue
 		}
 
 		// Block checking logic
 		if share.POWHash != nil {
-			// This check is for shares coming from peers OR from our own miners after being processed.
-			// The stratum server handles the initial block submission for local miners. This code
-			// identifies blocks found by others and adds them to the pending list for maturity watching.
 			miningInfo, err := sc.rpcClient.GetMiningInfo()
 			if err != nil {
 				logging.Warnf("Failed to get mining info for block check: %v", err)
 			} else {
-				// Use the project's helper to convert float difficulty to a big.Int target
 				networkTarget := DiffToTarget(miningInfo.Difficulty)
-
-				// CORRECTED: Reverse the bytes of the POWHash to ensure correct endianness for comparison.
-				// This matches the logic used in the stratum server for consistency.
 				sharePOWInt := new(big.Int).SetBytes(ReverseBytes(share.POWHash.CloneBytes()))
 
 				logging.Debugf("Comparing share %s: POWInt=%064x target=%064x (netdiff=%.6f)",
 					share.Hash.String()[:12], sharePOWInt, networkTarget, miningInfo.Difficulty)
 
 				if sharePOWInt.Cmp(networkTarget) <= 0 {
-					// NOTE: The log says "PEER BLOCK" but this logic runs for any valid share added
-					// to the chain, including those from local miners.
-					logging.Successf("!!!! BLOCK DETECTED !!!! Share %s meets network target!", share.Hash.String()[:12])
+					logging.Successf("!!!! BLOCK DETECTED !!!! Share %s from %s meets network target!", share.Hash.String()[:12], origin)
 					select {
 					case sc.FoundBlockChan <- share:
 					default:
