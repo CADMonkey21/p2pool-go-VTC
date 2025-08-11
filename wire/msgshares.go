@@ -43,10 +43,6 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	return nil
 }
 
-// readVarIntLoose is no longer needed and has been removed for modern serialization.
-
-// readTransactionHashRefsLoose is no longer needed and has been removed for modern serialization.
-
 var _ P2PoolMessage = &MsgShares{}
 
 type Share struct {
@@ -280,6 +276,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 	}
 	lr := bytes.NewReader(payloadBytes)
 
+	// Calculate the hash of the raw payload for identification, matching legacy behavior.
 	s.Hash, err = s.LegacyHash(payloadBytes)
 	if err != nil {
 		return fmt.Errorf("failed to calculate legacy hash: %w", err)
@@ -347,6 +344,7 @@ func (s *Share) FromBytes(r io.Reader) error {
 		}
 		sd.WTXIDMerkleRoot, _ = ReadChainHash(lr)
 
+		// A non-nil WTXIDMerkleRoot that isn't all 0xff indicates segwit data is present.
 		ff := bytes.Repeat([]byte{0xff}, 32)
 		if len(sd.TXIDMerkleLink.Branch) != 0 || (sd.WTXIDMerkleRoot != nil && !bytes.Equal(sd.WTXIDMerkleRoot[:], ff)) {
 			s.ShareInfo.SegwitData = &sd
@@ -388,6 +386,9 @@ func (s *Share) FromBytes(r io.Reader) error {
 
 // LegacyHash calculates the share hash in the exact same way as the original Python implementation.
 func (s *Share) LegacyHash(payload []byte) (*chainhash.Hash, error) {
+	// The legacy hash is a double-sha256 of:
+	// 1. The share type (as a VarInt)
+	// 2. The *entire* payload that follows it.
 	var buf bytes.Buffer
 	if err := WriteVarInt(&buf, s.Type); err != nil {
 		return nil, err
@@ -425,6 +426,7 @@ func (s *Share) getCanonicalPayload() ([]byte, error) {
 			binary.Write(&contents, binary.LittleEndian, uint32(s.ShareInfo.SegwitData.TXIDMerkleLink.Index))
 			WriteChainHash(&contents, s.ShareInfo.SegwitData.WTXIDMerkleRoot)
 		} else {
+			// Write empty/nil data to maintain struct alignment
 			WriteChainHashList(&contents, []*chainhash.Hash{})
 			binary.Write(&contents, binary.LittleEndian, uint32(0))
 			WriteChainHash(&contents, &chainhash.Hash{})
