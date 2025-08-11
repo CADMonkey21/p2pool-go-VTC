@@ -1,10 +1,15 @@
-p2pool-go
+p2pool-go-VTC
+VerthashMiner
 debugproxy/debugproxy
 p2pool.log
 debug.go
 sharechain.dat
 p2pool-go.log
+
+# Ingore data files
 verthash.dat
+share.dat
+
 # Ignore local configurations
 config.yaml
 
