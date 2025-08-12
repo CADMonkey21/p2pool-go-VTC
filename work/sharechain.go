@@ -107,7 +107,6 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 		}
 		shareHashStr := share.Hash.String()
 
-
 		origin := "PEER"
 		if trusted {
 			origin = "LOCAL"
@@ -277,25 +276,42 @@ func (sc *ShareChain) findGenesisOrphan() (hash string, info *orphanInfo) {
 	return bestOrphanHash, bestOrphan
 }
 
-
+// CORRECTED attachChildren function to prevent deadlocks.
 func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
+	// Find all direct children of the parent that are currently orphans.
+	// We do this in a locked section to safely access the maps.
 	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
-	logging.Debugf("SHARECHAIN/attachChildren: Attaching children to %s", parentHash[:12])
 
+	newlyLinkedChildren := make([]*ChainShare, 0)
 	if kids, ok := sc.AllSharesByPrev[parentHash]; ok {
 		for _, kidShare := range kids {
 			kHash := kidShare.Hash.String()
-			if _, ok := sc.disconnectedShares[kHash]; ok {
+			// Check if this kid is in the disconnected/orphan list
+			if _, isOrphan := sc.disconnectedShares[kHash]; isOrphan {
 				logging.Infof(" ↳ Attaching waiting child %s to parent %s", kHash[:12], parentHash[:12])
+
+				// Create the new linked share
 				cs := &ChainShare{Share: kidShare, Previous: parentCS}
 				parentCS.Next = cs
+
+				// Update all the maps
 				sc.AllShares[kHash] = cs
 				delete(sc.disconnectedShares, kHash)
-				sc.attachChildren(kHash, cs)
+
+				// Add the new ChainShare to a list to process its children later
+				newlyLinkedChildren = append(newlyLinkedChildren, cs)
 			}
 		}
+		// Since we've processed all potential children for this parent, remove the entry
 		delete(sc.AllSharesByPrev, parentHash)
+	}
+
+	// Release the lock BEFORE making recursive calls
+	sc.allSharesLock.Unlock()
+
+	// Now that the lock is released, recursively call for each newly linked child.
+	for _, childCS := range newlyLinkedChildren {
+		sc.attachChildren(childCS.Share.Hash.String(), childCS)
 	}
 }
 
