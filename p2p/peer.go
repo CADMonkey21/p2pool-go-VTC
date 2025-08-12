@@ -101,9 +101,6 @@ func (p *Peer) IsConnected() bool {
 }
 
 func (p *Peer) Close() {
-	p.connMutex.Lock()
-	p.connected = false
-	p.connMutex.Unlock()
 	p.Connection.Close()
 }
 

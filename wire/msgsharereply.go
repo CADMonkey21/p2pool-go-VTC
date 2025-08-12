@@ -23,13 +23,11 @@ func (m *MsgShareReply) FromBytes(b []byte) error {
 		return err
 	}
 	m.Shares = shares
-	// Ignoring Result and ID for now
 	return nil
 }
 
 func (m *MsgShareReply) ToBytes() ([]byte, error) {
 	var buf bytes.Buffer
 	err := WriteShares(&buf, m.Shares)
-	// Ignoring Result and ID
 	return buf.Bytes(), err
 }

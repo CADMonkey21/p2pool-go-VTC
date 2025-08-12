@@ -37,8 +37,6 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	return nil
 }
 
-var _ P2PoolMessage = &MsgShares{}
-
 type Share struct {
 	Type           uint64
 	MinHeader      SmallBlockHeader
