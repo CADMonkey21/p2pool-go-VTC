@@ -179,6 +179,7 @@ func (pm *PeerManager) TryPeer(p string) {
 	pm.handleNewPeer(conn)
 }
 
+// CORRECTED handleNewPeer to ensure peers are added back to the possible list on disconnect.
 func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	peer, err := NewPeer(conn, pm.activeNetwork, pm.shareChain)
 	if err != nil {
@@ -186,15 +187,23 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 		return
 	}
 
-	peerKey := conn.RemoteAddr().String()
+	// The original address used for the connection attempt is what we want to re-add later.
+	// For incoming, this is just the remote address. For outgoing, it could be a domain name.
+	originalAddr := conn.RemoteAddr().String()
+
 	pm.peersMutex.Lock()
-	pm.peers[peerKey] = peer
+	pm.peers[originalAddr] = peer
 	pm.peersMutex.Unlock()
 
 	defer func() {
 		pm.peersMutex.Lock()
-		delete(pm.peers, peerKey)
+		delete(pm.peers, originalAddr)
 		pm.peersMutex.Unlock()
+
+		// CRITICAL FIX: Add the peer back to the list of possible peers
+		// so the node will attempt to reconnect to it later.
+		pm.AddPossiblePeer(originalAddr)
+
 		logging.Warnf("Peer %s has disconnected.", peer.RemoteIP)
 	}()
 
@@ -206,10 +215,10 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 		switch t := msg.(type) {
 		case *wire.MsgPing:
 			p.Connection.Outgoing <- &wire.MsgPong{}
-		
+
 		case *wire.MsgVerAck:
 			// No action needed.
-			
+
 		case *wire.MsgAddrs:
 			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP, len(t.Addresses))
 			for _, addrRecord := range t.Addresses {
