@@ -63,7 +63,6 @@ func NewPeer(conn net.Conn, n p2pnet.Network, sc *work.ShareChain) (*Peer, error
 
 	go p.monitorDisconnect()
 	go p.PingLoop()
-	go p.InitialSync() // Trigger initial sync after successful handshake
 
 	return &p, nil
 }
