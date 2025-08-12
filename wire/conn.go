@@ -44,16 +44,21 @@ func NewP2PoolConnection(conn net.Conn, n p2pnet.Network) *P2PoolConnection {
 	gob.Register(&MsgGetShares{})
 	gob.Register(&MsgShares{})
 	gob.Register(&MsgBestBlock{})
-	
+
 	go p.readLoop()
 	go p.writeLoop()
 	return p
 }
 
+// CORRECTED Close function to ensure all channels are properly shut down.
 func (p *P2PoolConnection) Close() {
 	p.closeOnce.Do(func() {
 		p.Connection.Close()
 		close(p.Disconnected)
+		// CRITICAL FIX: Closing the Incoming channel is what allows the
+		// peer message handler to exit, which in turn triggers the
+		// deferred cleanup logic in the PeerManager.
+		close(p.Incoming)
 	})
 }
 
