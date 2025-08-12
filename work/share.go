@@ -50,7 +50,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	if err != nil {
 		return nil, err
 	}
-	// The nTime from stratum is big-endian, so we read it that way to get the correct unix time.
 	nTimeUint32 := binary.BigEndian.Uint32(nTimeBytes)
 
 	hrp, decoded, err := bech32.Decode(payoutAddress)
@@ -94,7 +93,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	txidMerkleLinkBranches := CalculateMerkleLinkFromHashes(wtxids, 0)
 
 	coinbaseTxHash := DblSha256(coinbaseTxBytes)
-	txHashesForLink := [][]byte{ReverseBytes(coinbaseTxHash)} // Also apply fix here
+	txHashesForLink := [][]byte{ReverseBytes(coinbaseTxHash)}
 	for _, tx := range job.Transactions {
 		txHashBytes, _ := hex.DecodeString(tx.Hash)
 		txHashesForLink = append(txHashesForLink, ReverseBytes(txHashBytes))
@@ -112,7 +111,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		MinHeader: p2pwire.SmallBlockHeader{
 			Version:       int32(job.Version),
 			PreviousBlock: prevBlockHash,
-			Timestamp:     nTimeUint32, // Use corrected timestamp
+			Timestamp:     nTimeUint32,
 			Bits:          shareBits,
 			Nonce:         nonceUint32,
 		},
@@ -138,7 +137,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 			FarShareHash:         nil,
 			MaxBits:              shareBits,
 			Bits:                 shareBits,
-			Timestamp:            int32(nTimeUint32), // Use corrected timestamp
+			Timestamp:            int32(nTimeUint32),
 			AbsHeight:            int32(job.Height),
 			AbsWork:              new(big.Int),
 		},
@@ -146,6 +145,12 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		RefMerkleLink: p2pwire.MerkleLink{Branch: []*chainhash.Hash{}, Index: 0},
 	}
 
-	logging.Infof("Successfully created new share object")
+	// Calculate hashes immediately after creation
+	err = share.CalculateHashes()
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate hashes for new share: %v", err)
+	}
+
+	logging.Infof("Successfully created new share with hash %s and populated SegwitData", share.Hash.String()[:12])
 	return share, nil
 }

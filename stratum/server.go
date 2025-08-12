@@ -297,20 +297,12 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
         return
     }
 
-    // Set the target difficulty from the stratum client's current difficulty
+    // Set the target difficulty from the stratum client's current difficulty for validation
     shareTarget := work.DiffToTarget(currentDiff)
     newShare.Target = shareTarget.Bytes()
     newShare.ShareInfo.Bits = blockchain.BigToCompact(shareTarget)
-	
-	// THIS IS THE CRITICAL FIX: Calculate the hashes ONCE right after creation.
-	err = newShare.CalculateHashes()
-	if err != nil {
-		logging.Errorf("Stratum: Failed to calculate hashes for new share: %v", err)
-		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{27, "Internal error calculating share hash", nil}}
-        _ = c.send(resp)
-        return
-	}
-
+    
+    // The hashes are now calculated inside CreateShare, so we can validate immediately.
     accepted, reason := newShare.IsValid()
     if accepted {
         powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
@@ -362,7 +354,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
         s.dropClient(c)
     }
 }
-
 
 func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 	id := extractID(req.ID)
