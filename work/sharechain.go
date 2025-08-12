@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -92,14 +93,17 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 	defer sc.disconnectedShareLock.Unlock()
 	logging.Debugf("SHARECHAIN/AddShares: Attempting to add %d new shares.", len(s))
 
+	// Sort shares by height to encourage correct linking order
+	sort.Slice(s, func(i, j int) bool {
+		return s[i].ShareInfo.AbsHeight < s[j].ShareInfo.AbsHeight
+	})
+
 	var newSharesAdded bool
 	for i := range s {
 		share := &s[i]
-		
-		// Ensure the hash is calculated for logging, even if the share is new
+
 		if share.Hash == nil {
-			// This is a failsafe; the hash should be calculated upon creation.
-			share.IsValid()
+			share.CalculateHashes()
 		}
 		shareHashStr := share.Hash.String()
 
@@ -257,14 +261,22 @@ func (sc *ShareChain) GetStats() ChainStats {
 	return stats
 }
 
-func (sc *ShareChain) bestOrphan() (hash string, info *orphanInfo) {
-	for h, inf := range sc.disconnectedShares {
-		if info == nil || inf.share.ShareInfo.AbsHeight > info.share.ShareInfo.AbsHeight {
-			hash, info = h, inf
+func (sc *ShareChain) findGenesisOrphan() (hash string, info *orphanInfo) {
+	var bestOrphan *orphanInfo
+	var bestOrphanHash string
+
+	for h, i := range sc.disconnectedShares {
+		// A potential genesis is an orphan whose parent we don't have (not even as another orphan)
+		if _, parentIsOrphan := sc.disconnectedShares[i.share.ShareInfo.ShareData.PreviousShareHash.String()]; !parentIsOrphan {
+			if bestOrphan == nil || i.share.ShareInfo.AbsHeight < bestOrphan.share.ShareInfo.AbsHeight {
+				bestOrphan = i
+				bestOrphanHash = h
+			}
 		}
 	}
-	return
+	return bestOrphanHash, bestOrphan
 }
+
 
 func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
 	sc.allSharesLock.Lock()
@@ -291,13 +303,15 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 	logging.Debugf("SHARECHAIN/Resolve: Starting resolution with %d disconnected shares.", len(sc.disconnectedShares))
 	sc.allSharesLock.Lock()
 	if sc.Tip == nil && len(sc.disconnectedShares) > 0 {
-		h, o := sc.bestOrphan()
+		h, o := sc.findGenesisOrphan()
 		if o != nil {
+			// We have an orphan whose parent isn't in the disconnected list, meaning it should link to the main chain or be a genesis.
+			// Since our main chain is empty, let's make it the genesis.
 			cs := &ChainShare{Share: o.share}
 			sc.AllShares[h] = cs
 			sc.Tip, sc.Tail = cs, cs
 			delete(sc.disconnectedShares, h)
-			logging.Warnf("SHARECHAIN/Resolve: No tip found. Forcing genesis from best orphan: %s at height %d.", h[:12], o.share.ShareInfo.AbsHeight)
+			logging.Warnf("SHARECHAIN/Resolve: No tip found. Forcing genesis from oldest orphan: %s at height %d.", h[:12], o.share.ShareInfo.AbsHeight)
 			sc.allSharesLock.Unlock()
 			sc.attachChildren(h, cs)
 			sc.allSharesLock.Lock()
