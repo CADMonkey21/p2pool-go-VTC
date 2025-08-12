@@ -193,6 +193,8 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	pm.peers[peerKey] = peer
 	pm.peersMutex.Unlock()
 
+	go peer.InitialSync()
+
 	// Defer the removal of the peer until the message handler exits
 	defer func() {
 		pm.peersMutex.Lock()
@@ -229,11 +231,21 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
 			var responseShares []wire.Share
+			// This needs to be more robust to handle chain syncing
+			// For now, we just return the shares we have.
 			for _, h := range t.Hashes {
-				if share := pm.shareChain.GetShare(h.String()); share != nil {
+				share := pm.shareChain.GetShare(h.String())
+				if share != nil {
 					responseShares = append(responseShares, *share)
+					// Now, let's also find some parents
+					cs := pm.shareChain.AllShares[h.String()]
+					for i := 0; i < 50 && cs != nil && cs.Previous != nil; i++ {
+						cs = cs.Previous
+						responseShares = append(responseShares, *cs.Share)
+					}
 				}
 			}
+
 			if len(responseShares) > 0 {
 				logging.Debugf("Found %d requested shares, sending to peer %s", len(responseShares), p.RemoteIP)
 				p.Connection.Outgoing <- &wire.MsgShares{Shares: responseShares}
