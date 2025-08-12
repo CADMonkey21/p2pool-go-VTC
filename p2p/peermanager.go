@@ -39,7 +39,6 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	return pm
 }
 
-// ListenForPeers starts a listener to accept incoming P2P connections.
 func (pm *PeerManager) ListenForPeers() {
 	addr := fmt.Sprintf(":%d", pm.activeNetwork.P2PPort)
 	listener, err := net.Listen("tcp", addr)
@@ -108,7 +107,6 @@ func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
 	}
 }
 
-// relayToOthers broadcasts a message to all peers except the original sender.
 func (pm *PeerManager) relayToOthers(msg wire.P2PoolMessage, sender *Peer) {
 	pm.peersMutex.RLock()
 	defer pm.peersMutex.RUnlock()
@@ -159,7 +157,7 @@ func (pm *PeerManager) TryPeer(p string) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		logging.Warnf("Invalid port for peer %s: %v", p, err)
-		pm.AddPossiblePeer(p) // Re-add to try again later
+		pm.AddPossiblePeer(p)
 		return
 	}
 
@@ -174,7 +172,7 @@ func (pm *PeerManager) TryPeer(p string) {
 	conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
 	if err != nil {
 		logging.Warnf("Failed to connect to %s: %v", remoteAddr, err)
-		pm.AddPossiblePeer(p) // Re-add to try again later
+		pm.AddPossiblePeer(p)
 		return
 	}
 
@@ -193,9 +191,6 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	pm.peers[peerKey] = peer
 	pm.peersMutex.Unlock()
 
-	go peer.InitialSync()
-
-	// Defer the removal of the peer until the message handler exits
 	defer func() {
 		pm.peersMutex.Lock()
 		delete(pm.peers, peerKey)
@@ -213,13 +208,13 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			p.Connection.Outgoing <- &wire.MsgPong{}
 		
 		case *wire.MsgVerAck:
-			// This is expected after a handshake, but requires no action.
+			// No action needed.
 			
 		case *wire.MsgAddrs:
 			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP, len(t.Addresses))
 			for _, addrRecord := range t.Addresses {
-				ip := addrRecord.Address.Address.String()
-				port := addrRecord.Address.Port
+				ip := addrRecord.Address.String()
+				port := addrRecord.Port
 				peerAddr := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
 				pm.AddPossiblePeer(peerAddr)
 			}
@@ -231,13 +226,10 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
 			var responseShares []wire.Share
-			// This needs to be more robust to handle chain syncing
-			// For now, we just return the shares we have.
 			for _, h := range t.Hashes {
 				share := pm.shareChain.GetShare(h.String())
 				if share != nil {
 					responseShares = append(responseShares, *share)
-					// Now, let's also find some parents
 					cs := pm.shareChain.AllShares[h.String()]
 					for i := 0; i < 50 && cs != nil && cs.Previous != nil; i++ {
 						cs = cs.Previous

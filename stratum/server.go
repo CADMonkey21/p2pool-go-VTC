@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
@@ -297,27 +297,9 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
         return
     }
 
-    // Set the target difficulty from the stratum client's current difficulty
     shareTarget := work.DiffToTarget(currentDiff)
-    compactTarget := blockchain.BigToCompact(shareTarget)
+    newShare.Target = shareTarget
     
-    // ** THE FINAL FIX **
-    // To ensure compatibility and prevent validation errors on peers, we will
-    // explicitly set ALL the possible difficulty fields on the new share.
-    newShare.Target = shareTarget.Bytes()
-    newShare.ShareInfo.Bits = compactTarget
-    newShare.ShareInfo.ShareData.Bits = compactTarget
-    newShare.ShareInfo.MaxBits = compactTarget
-    newShare.MinHeader.Bits = compactTarget
-
-    err = newShare.CalculateHashes()
-    if err != nil {
-        logging.Errorf("Stratum: Failed to calculate hashes for new share: %v", err)
-        resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{27, "Internal error calculating share hash", nil}}
-        _ = c.send(resp)
-        return
-    }
-
     accepted, reason := newShare.IsValid()
     if accepted {
         powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())

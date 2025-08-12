@@ -2,137 +2,55 @@ package wire
 
 import (
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"io"
-	"math/big"
-	"net"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 )
 
-var nullHash chainhash.Hash
-
-func ReadVarInt(r io.Reader) (uint64, error) {
-	var d uint8
-	err := binary.Read(r, binary.LittleEndian, &d)
-	if err != nil {
-		return 0, err
-	}
-	var rv uint64
-	switch d {
-	case 0xff:
-		err = binary.Read(r, binary.LittleEndian, &rv)
-		if rv < 0x100000000 {
-			return 0, errors.New("varint not canonically packed (0xff prefix with value < 2^32)")
-		}
-	case 0xfe:
-		var v uint32
-		err = binary.Read(r, binary.LittleEndian, &v)
-		rv = uint64(v)
-		if rv < 0x10000 {
-			return 0, errors.New("varint not canonically packed (0xfe prefix with value < 2^16)")
-		}
-	case 0xfd:
-		var v uint16
-		err = binary.Read(r, binary.LittleEndian, &v)
-		rv = uint64(v)
-		if rv < 0xfd {
-			return 0, errors.New("varint not canonically packed (0xfd prefix with value < 0xfd)")
-		}
-	default:
-		rv = uint64(d)
-	}
-	return rv, err
+func ReadFixedBytes(r io.Reader, size int) ([]byte, error) {
+	b := make([]byte, size)
+	_, err := io.ReadFull(r, b)
+	return b, err
 }
 
-func WriteVarInt(w io.Writer, val uint64) error {
-	if val < 0xfd {
-		return binary.Write(w, binary.LittleEndian, uint8(val))
-	} else if val <= 0xffff {
-		binary.Write(w, binary.LittleEndian, uint8(0xfd))
-		return binary.Write(w, binary.LittleEndian, uint16(val))
-	} else if val <= 0xffffffff {
-		binary.Write(w, binary.LittleEndian, uint8(0xfe))
-		return binary.Write(w, binary.LittleEndian, uint32(val))
-	} else {
-		binary.Write(w, binary.LittleEndian, uint8(0xff))
-		return binary.Write(w, binary.LittleEndian, val)
+func WriteFixedBytes(w io.Writer, b []byte, size int) error {
+	if len(b) != size {
+		b = make([]byte, size)
 	}
+	_, err := w.Write(b)
+	return err
+}
+
+func ReadVarInt(r io.Reader) (uint64, error) {
+	var n uint64
+	err := binary.Read(r, binary.LittleEndian, &n)
+	return n, err
+}
+
+func WriteVarInt(w io.Writer, n uint64) error {
+	return binary.Write(w, binary.LittleEndian, n)
 }
 
 func ReadVarString(r io.Reader) ([]byte, error) {
-	count, err := ReadVarInt(r)
+	length, err := ReadVarInt(r)
 	if err != nil {
 		return nil, err
 	}
-	if count == 0 {
-		return []byte{}, nil
-	}
-	buf := make([]byte, count)
-	_, err = io.ReadFull(r, buf)
-	if err != nil {
-		return nil, err
-	}
-	return buf, nil
+	return ReadFixedBytes(r, int(length))
 }
 
-func WriteVarString(w io.Writer, s []byte) error {
-	err := WriteVarInt(w, uint64(len(s)))
+func WriteVarString(w io.Writer, b []byte) error {
+	err := WriteVarInt(w, uint64(len(b)))
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(s)
+	_, err = w.Write(b)
 	return err
 }
 
-func ReadIPAddr(r io.Reader) (net.IP, error) {
-	b := make([]byte, 16)
-	_, err := io.ReadFull(r, b)
-	return net.IP(b), err
-}
-
-func WriteIPAddr(w io.Writer, ip net.IP) error {
-	_, err := w.Write(ip.To16())
-	return err
-}
-
-func ReadP2PoolAddress(r io.Reader) (P2PoolAddress, error) {
-	addr := P2PoolAddress{}
-	var err error
-	err = binary.Read(r, binary.LittleEndian, &addr.Services)
-	if err != nil {
-		return addr, err
-	}
-	addr.Address, err = ReadIPAddr(r)
-	if err != nil {
-		return addr, err
-	}
-	err = binary.Read(r, binary.BigEndian, &addr.Port)
-	if err != nil {
-		return addr, err
-	}
-	return addr, nil
-}
-
-func WriteP2PoolAddress(w io.Writer, addr P2PoolAddress) error {
-	var err error
-	err = binary.Write(w, binary.LittleEndian, addr.Services)
-	if err != nil {
-		return err
-	}
-	err = WriteIPAddr(w, addr.Address)
-	if err != nil {
-		return err
-	}
-	err = binary.Write(w, binary.BigEndian, addr.Port)
-	return err
-}
 
 func ReadChainHash(r io.Reader) (*chainhash.Hash, error) {
-	b := make([]byte, chainhash.HashSize)
-	_, err := io.ReadFull(r, b)
+	b, err := ReadFixedBytes(r, 32)
 	if err != nil {
 		return nil, err
 	}
@@ -140,12 +58,54 @@ func ReadChainHash(r io.Reader) (*chainhash.Hash, error) {
 }
 
 func WriteChainHash(w io.Writer, h *chainhash.Hash) error {
-	if h == nil {
-		_, err := w.Write(make([]byte, chainhash.HashSize))
+	return WriteFixedBytes(w, h.CloneBytes(), 32)
+}
+
+func ReadPossiblyNoneHash(r io.Reader) (*chainhash.Hash, error) {
+	isNone, err := ReadFixedBytes(r, 1)
+	if err != nil {
+		return nil, err
+	}
+	if isNone[0] == 0x01 {
+		return ReadChainHash(r)
+	}
+	return &chainhash.Hash{}, nil
+}
+
+func WritePossiblyNoneHash(w io.Writer, h *chainhash.Hash) error {
+	if h != nil && *h != (chainhash.Hash{}) {
+		w.Write([]byte{0x01})
+		return WriteChainHash(w, h)
+	}
+	w.Write([]byte{0x00})
+	return nil
+}
+
+func ReadP2PoolAddress(r io.Reader) (*P2PoolAddress, error) {
+	var addr P2PoolAddress
+	err := binary.Read(r, binary.BigEndian, &addr.Services)
+	if err != nil {
+		return nil, err
+	}
+	ip, err := ReadFixedBytes(r, 16)
+	if err != nil {
+		return nil, err
+	}
+	addr.Address = ip
+	err = binary.Read(r, binary.BigEndian, &addr.Port)
+	return &addr, err
+}
+
+func WriteIPAddr(w io.Writer, addr *P2PoolAddress) error {
+	err := binary.Write(w, binary.BigEndian, addr.Services)
+	if err != nil {
 		return err
 	}
-	_, err := w.Write(h.CloneBytes())
-	return err
+	err = WriteFixedBytes(w, addr.Address, 16)
+	if err != nil {
+		return err
+	}
+	return binary.Write(w, binary.BigEndian, addr.Port)
 }
 
 func ReadChainHashList(r io.Reader) ([]*chainhash.Hash, error) {
@@ -153,27 +113,22 @@ func ReadChainHashList(r io.Reader) ([]*chainhash.Hash, error) {
 	if err != nil {
 		return nil, err
 	}
-	const maxHashes = 1024
-	if count > maxHashes {
-		return nil, fmt.Errorf("hash list too large: %d > %d", count, maxHashes)
-	}
-
-	hashes := make([]*chainhash.Hash, count)
+	list := make([]*chainhash.Hash, count)
 	for i := uint64(0); i < count; i++ {
-		hashes[i], err = ReadChainHash(r)
+		list[i], err = ReadChainHash(r)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return hashes, nil
+	return list, nil
 }
 
-func WriteChainHashList(w io.Writer, l []*chainhash.Hash) error {
-	err := WriteVarInt(w, uint64(len(l)))
+func WriteChainHashList(w io.Writer, list []*chainhash.Hash) error {
+	err := WriteVarInt(w, uint64(len(list)))
 	if err != nil {
 		return err
 	}
-	for _, h := range l {
+	for _, h := range list {
 		err = WriteChainHash(w, h)
 		if err != nil {
 			return err
@@ -182,214 +137,15 @@ func WriteChainHashList(w io.Writer, l []*chainhash.Hash) error {
 	return nil
 }
 
-func ReadFixedBytes(r io.Reader, length int) ([]byte, error) {
-	b := make([]byte, length)
-	_, err := io.ReadFull(r, b)
-	return b, err
-}
-
-func WriteFixedBytes(w io.Writer, b []byte, length int) error {
-	if len(b) > length {
-		return fmt.Errorf("byte slice too large for fixed-bytes write: got %d, want %d", len(b), length)
-	}
-	if len(b) < length {
-		padding := make([]byte, length-len(b))
-		b = append(padding, b...)
-	}
-	_, err := w.Write(b)
-	return err
-}
-
-func ReadInt(r io.Reader, bits int, endian binary.ByteOrder) (*big.Int, error) {
-	byteLen := bits / 8
-	if bits%8 != 0 {
-		return nil, errors.New("bit length must be a multiple of 8")
-	}
-	rawBytes := make([]byte, byteLen)
-	if _, err := io.ReadFull(r, rawBytes); err != nil {
-		return nil, err
-	}
-	if endian == binary.LittleEndian {
-		for i, j := 0, len(rawBytes)-1; i < j; i, j = i+1, j-1 {
-			rawBytes[i], rawBytes[j] = rawBytes[j], rawBytes[i]
-		}
-	}
-	val := new(big.Int).SetBytes(rawBytes)
-	return val, nil
-}
-
-func WriteInt(w io.Writer, val *big.Int, bits int, endian binary.ByteOrder) error {
-	byteLen := bits / 8
-	if bits%8 != 0 {
-		return errors.New("bit length must be a multiple of 8")
-	}
-	rawBytes := val.Bytes()
-	if len(rawBytes) > byteLen {
-		return errors.New("value too large for specified bit length")
-	}
-	if len(rawBytes) < byteLen {
-		padding := make([]byte, byteLen-len(rawBytes))
-		rawBytes = append(padding, rawBytes...)
-	}
-	if endian == binary.LittleEndian {
-		for i, j := 0, len(rawBytes)-1; i < j; i, j = i+1, j-1 {
-			rawBytes[i], rawBytes[j] = rawBytes[j], rawBytes[i]
-		}
-	}
-	_, err := w.Write(rawBytes)
-	return err
-}
-
-func ReadFloatingInteger(r io.Reader) (uint32, error) {
-	var bits uint32
-	err := binary.Read(r, binary.LittleEndian, &bits)
-	return bits, err
-}
-
-func WriteFloatingInteger(w io.Writer, bits uint32) error {
-	return binary.Write(w, binary.LittleEndian, bits)
-}
-
-func ReadPossiblyNoneHash(r io.Reader) (*chainhash.Hash, error) {
-	var isPresent uint8
-	err := binary.Read(r, binary.LittleEndian, &isPresent)
-	if err != nil {
-		return nil, err
-	}
-
-	if isPresent == 0x00 {
-		return nil, nil
-	}
-
-	return ReadChainHash(r)
-}
-
-func WritePossiblyNoneHash(w io.Writer, h *chainhash.Hash) error {
-	if h == nil {
-		return binary.Write(w, binary.LittleEndian, uint8(0x00))
-	}
-	err := binary.Write(w, binary.LittleEndian, uint8(0x01))
-	if err != nil {
-		return err
-	}
-	return WriteChainHash(w, h)
-}
-
-func ReadStaleInfo(r io.Reader) (StaleInfo, error) {
-	var val uint8
-	err := binary.Read(r, binary.LittleEndian, &val)
-	if err != nil {
-		return StaleInfoNone, err
-	}
-	switch val {
-	case 0:
-		return StaleInfoNone, nil
-	case 253:
-		return StaleInfoOrphan, nil
-	case 254:
-		return StaleInfoDOA, nil
-	default:
-		return StaleInfo(val), nil
-	}
-}
-
-func WriteStaleInfo(w io.Writer, si StaleInfo) error {
-	var val uint8
-	switch si {
-	case StaleInfoNone:
-		val = 0
-	case StaleInfoOrphan:
-		val = 253
-	case StaleInfoDOA:
-		val = 254
-	default:
-		val = uint8(si)
-	}
-	return binary.Write(w, binary.LittleEndian, val)
-}
-
-func ReadTransactionHashRefs(r io.Reader) ([]TransactionHashRef, error) {
-	pairCount, err := ReadVarInt(r)
-	if err != nil {
-		return nil, err
-	}
-
-	refs := make([]TransactionHashRef, pairCount)
-	for i := uint64(0); i < pairCount; i++ {
-		shareCount, err := ReadVarInt(r)
-		if err != nil {
-			return nil, err
-		}
-		txCount, err := ReadVarInt(r)
-		if err != nil {
-			return nil, err
-		}
-		refs[i] = TransactionHashRef{
-			ShareCount: shareCount,
-			TxCount:    txCount,
-		}
-	}
-	return refs, nil
-}
-
-func WriteTransactionHashRefs(w io.Writer, refs []TransactionHashRef) error {
-	err := WriteVarInt(w, uint64(len(refs)))
-	if err != nil {
-		return err
-	}
-
-	for _, ref := range refs {
-		err := WriteVarInt(w, ref.ShareCount)
-		if err != nil {
-			return err
-		}
-		err = WriteVarInt(w, ref.TxCount)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func ReadShares(r io.Reader) ([]Share, error) {
-	shares := make([]Share, 0)
 	count, err := ReadVarInt(r)
 	if err != nil {
-		if err == io.EOF {
-			return shares, nil
-		}
-		return shares, fmt.Errorf("failed to read shares count: %v", err)
+		return nil, err
 	}
-
-	for i := uint64(0); i < count; i++ {
-		var share Share
-		err = share.FromBytes(r)
-
-		if err != nil {
-			logging.Debugf("Skipping one malformed share from peer (share %d of %d). The error was: %v", i+1, count, err)
-			return shares, fmt.Errorf("error processing share %d: %v; stopping deserialization of this message", i+1, err)
-		} else {
-			shares = append(shares, share)
-		}
-	}
-
+	shares := make([]Share, count)
 	return shares, nil
 }
 
 func WriteShares(w io.Writer, shares []Share) error {
-	err := WriteVarInt(w, uint64(len(shares)))
-	if err != nil {
-		return err
-	}
-	for _, share := range shares {
-		shareBytes, err := share.ToBytes()
-		if err != nil {
-			return err
-		}
-		_, err = w.Write(shareBytes)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return WriteVarInt(w, uint64(len(shares)))
 }

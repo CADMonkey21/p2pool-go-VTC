@@ -35,7 +35,7 @@ type Peer struct {
 	RemoteIP    net.IP
 	RemotePort  int
 	Network     p2pnet.Network
-	ShareChain  *work.ShareChain // Add a reference to the share chain
+	ShareChain  *work.ShareChain
 	versionInfo *wire.MsgVersion
 	connected   bool
 	connMutex   sync.RWMutex
@@ -47,7 +47,7 @@ func NewPeer(conn net.Conn, n p2pnet.Network, sc *work.ShareChain) (*Peer, error
 		RemoteIP:   conn.RemoteAddr().(*net.TCPAddr).IP,
 		RemotePort: conn.RemoteAddr().(*net.TCPAddr).Port,
 		Connection: wire.NewP2PoolConnection(conn, n),
-		ShareChain: sc, // Store the share chain reference
+		ShareChain: sc,
 		connected:  false,
 	}
 
@@ -63,12 +63,13 @@ func NewPeer(conn net.Conn, n p2pnet.Network, sc *work.ShareChain) (*Peer, error
 
 	go p.monitorDisconnect()
 	go p.PingLoop()
+	go p.InitialSync()
 
 	return &p, nil
 }
 
 func (p *Peer) InitialSync() {
-	time.Sleep(1 * time.Second) // Give the connection a moment to settle
+	time.Sleep(1 * time.Second)
 	localTip := p.ShareChain.GetTipHash()
 	peerTip := p.BestShare()
 
@@ -76,7 +77,7 @@ func (p *Peer) InitialSync() {
 		logging.Infof("P2P: Chains are out of sync (Local: %s, Peer: %s). Starting sync with %s.", localTip.String()[:12], peerTip.String()[:12], p.RemoteIP)
 		msg := &wire.MsgGetShares{
 			Hashes:  []*chainhash.Hash{peerTip},
-			Parents: 100, // Request a larger chunk for initial sync
+			Parents: 100,
 			Stops:   localTip,
 		}
 		p.Connection.Outgoing <- msg
@@ -84,7 +85,6 @@ func (p *Peer) InitialSync() {
 		logging.Infof("P2P: Chains are already in sync with %s.", p.RemoteIP)
 	}
 }
-
 
 func (p *Peer) monitorDisconnect() {
 	<-p.Connection.Disconnected
@@ -136,21 +136,19 @@ func (p *Peer) Handshake() error {
 	}
 
 	versionMsg := &wire.MsgVersion{
-		Version:       p.Network.ProtocolVersion,
+		Version:       uint32(p.Network.ProtocolVersion),
 		Services:      0,
-		AddrTo:        wire.P2PoolAddress{Services: 0, Address: p.RemoteIP, Port: int16(p.RemotePort)},
-		AddrFrom:      wire.P2PoolAddress{Services: 0, Address: addrFrom, Port: int16(p.Network.P2PPort)},
+		AddrTo:        wire.P2PoolAddress{Address: p.RemoteIP, Port: int16(p.RemotePort)},
+		AddrFrom:      wire.P2PoolAddress{Address: addrFrom, Port: int16(p.Network.P2PPort)},
 		Nonce:         int64(rand.Uint64()),
 		SubVersion:    "p2pool-go/0.1.0",
 		Mode:          1,
-		BestShareHash: p.ShareChain.GetTipHash(), // Correctly advertise our best share
+		BestShareHash: p.ShareChain.GetTipHash(),
 	}
 
-	// 1. Send our version message.
 	logging.Debugf("Sending version message to %s", p.RemoteIP)
 	p.Connection.Outgoing <- versionMsg
 
-	// 2. Wait for their version message.
 	logging.Debugf("Waiting for version message from peer %s", p.RemoteIP)
 	select {
 	case msg := <-p.Connection.Incoming:
@@ -166,11 +164,9 @@ func (p *Peer) Handshake() error {
 		return fmt.Errorf("peer disconnected during handshake")
 	}
 
-	// 3. Send our verack.
 	logging.Debugf("Sending verack to %s", p.RemoteIP)
 	p.Connection.Outgoing <- &wire.MsgVerAck{}
 
-	// 4. Handshake is now COMPLETE.
 	logging.Infof("Handshake successful with %s! Peer is on protocol version %d", p.RemoteIP, p.versionInfo.Version)
 	return nil
 }

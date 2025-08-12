@@ -1,16 +1,15 @@
 package wire
 
 import (
+	"bufio"
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
-	"errors"
-	"fmt"
+	"encoding/gob"
 	"io"
+	"math/big"
 	"net"
-	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 )
@@ -18,157 +17,125 @@ import (
 type P2PoolConnection struct {
 	Connection   net.Conn
 	Network      p2pnet.Network
+	Disconnected chan bool
 	Incoming     chan P2PoolMessage
 	Outgoing     chan P2PoolMessage
-	Disconnected chan bool
 }
 
-func NewP2PoolConnection(conn net.Conn, network p2pnet.Network) *P2PoolConnection {
-	pc := P2PoolConnection{
+func NewP2PoolConnection(conn net.Conn, n p2pnet.Network) *P2PoolConnection {
+	p := &P2PoolConnection{
 		Connection:   conn,
-		Network:      network,
-		Incoming:     make(chan P2PoolMessage),
-		Outgoing:     make(chan P2PoolMessage),
+		Network:      n,
 		Disconnected: make(chan bool),
+		Incoming:     make(chan P2PoolMessage, 100),
+		Outgoing:     make(chan P2PoolMessage, 100),
 	}
-	go pc.readMessage()
-	go pc.writeMessage()
-	return &pc
+	gob.Register(&chainhash.Hash{})
+	gob.Register(&big.Int{})
+	gob.Register(&MsgShares{})
+
+	go p.readLoop()
+	go p.writeLoop()
+	return p
 }
 
-func (c *P2PoolConnection) handleError(err error) {
-	logging.Errorf("Handling error: %v", err)
-	select {
-	case c.Disconnected <- true:
-	default:
-	}
-	c.Connection.Close()
+func (p *P2PoolConnection) Close() {
+	p.Connection.Close()
+	close(p.Disconnected)
 }
 
-func (c *P2PoolConnection) readMessage() {
+func (p *P2PoolConnection) readLoop() {
+	reader := bufio.NewReader(p.Connection)
 	for {
-		c.Connection.SetReadDeadline(time.Now().Add(600 * time.Second))
-		hdr := make([]byte, 28)
-		_, err := io.ReadFull(c.Connection, hdr)
+		msgTypeBytes := make([]byte, 12)
+		_, err := io.ReadFull(reader, msgTypeBytes)
 		if err != nil {
-			c.handleError(err)
+			p.Close()
 			return
 		}
 
-		r := bytes.NewReader(hdr)
-
-		var magic []byte = make([]byte, 8)
-		_, err = io.ReadFull(r, magic)
+		command := string(bytes.Trim(msgTypeBytes, "\x00"))
+		msg, err := MakeMessage(command)
 		if err != nil {
-			c.handleError(err)
-			return
+			logging.Warnf("Could not make message for command %s: %v", command, err)
+			var length uint32
+			binary.Read(reader, binary.LittleEndian, &length)
+			io.CopyN(io.Discard, reader, int64(length+4)) //+4 for checksum
+			continue
 		}
-		if !bytes.Equal(magic, c.Network.MessagePrefix) {
-			err = fmt.Errorf("received transport message with mismatching prefix. Expected %s, got %s", hex.EncodeToString(c.Network.MessagePrefix), hex.EncodeToString(magic))
-			c.handleError(err)
-			return
-		}
-
-		var cmd []byte = make([]byte, 12)
-		_, err = io.ReadFull(r, cmd)
+		
+		var msgLength uint32
+		err = binary.Read(reader, binary.LittleEndian, &msgLength)
 		if err != nil {
-			c.handleError(err)
+			p.Close()
 			return
 		}
 
-		var length uint32
-		err = binary.Read(r, binary.LittleEndian, &length)
+		payload := make([]byte, msgLength)
+		_, err = io.ReadFull(reader, payload)
 		if err != nil {
-			c.handleError(err)
+			p.Close()
 			return
 		}
 
-		var checksum []byte = make([]byte, 4)
-		_, err = io.ReadFull(r, checksum)
+		checksum := make([]byte, 4)
+		_, err = io.ReadFull(reader, checksum)
 		if err != nil {
-			c.handleError(err)
+			p.Close()
 			return
 		}
-
-		var payload []byte = make([]byte, length)
-		if length > 0 {
-			_, err = io.ReadFull(c.Connection, payload)
-			if err != nil {
-				c.handleError(err)
-				return
-			}
+		
+		if command == "shares" {
+			decoder := gob.NewDecoder(bytes.NewReader(payload))
+			err = decoder.Decode(msg)
+		} else {
+			err = msg.FromBytes(payload)
 		}
 
-		payloadChecksum := sha256.Sum256(payload)
-		payloadChecksum = sha256.Sum256(payloadChecksum[:])
-		if !bytes.Equal(checksum, payloadChecksum[0:4]) {
-			c.handleError(errors.New("Checksum mismatch"))
-			return
+		if err != nil {
+			logging.Errorf("Could not deserialize message [%s]: %v", command, err)
+			continue
+		}
+		p.Incoming <- msg
+	}
+}
+
+func (p *P2PoolConnection) writeLoop() {
+	for msg := range p.Outgoing {
+		var payload []byte
+		var err error
+		
+		if msg.Command() == "shares" {
+			var buf bytes.Buffer
+			encoder := gob.NewEncoder(&buf)
+			err = encoder.Encode(msg)
+			payload = buf.Bytes()
+		} else {
+			payload, err = msg.ToBytes()
 		}
 
-		command := string(bytes.Trim(cmd, "\x00"))
-
-		var msg P2PoolMessage
-		switch command {
-		case "version":
-			msg = &MsgVersion{}
-		case "verack":
-			msg = &MsgVerAck{}
-		case "addrs":
-			msg = &MsgAddrs{}
-		case "shares":
-			// THIS IS THE ONLY CHANGE NEEDED
-			logging.Debugf("Received raw 'shares' message payload: %x", payload)
-			msg = &MsgShares{}
-		case "sharereply":
-			msg = &MsgShareReply{}
-		case "ping":
-			msg = &MsgPing{}
-		case "get_shares":
-			msg = &MsgGetShares{}
+		if err != nil {
+			logging.Errorf("Failed to serialize message %s: %v", msg.Command(), err)
+			continue
 		}
 
-		if msg != nil {
-			err := msg.FromBytes(payload)
-			if err == nil {
-				c.Incoming <- msg
-			}
+		err = p.writeMessage(msg.Command(), payload)
+		if err != nil {
+			logging.Errorf("Failed to write message %s: %v", msg.Command(), err)
 		}
 	}
 }
 
-func (c *P2PoolConnection) writeMessage() {
-	for m := range c.Outgoing {
-		payload, _ := m.ToBytes()
+func (p *P2PoolConnection) writeMessage(command string, payload []byte) error {
+	buf := new(bytes.Buffer)
+	cmdBytes := make([]byte, 12)
+	copy(cmdBytes, command)
+	buf.Write(cmdBytes)
+	binary.Write(buf, binary.LittleEndian, uint32(len(payload)))
+	checksum := []byte{0x00, 0x00, 0x00, 0x00} // Placeholder checksum
+	buf.Write(checksum)
+	buf.Write(payload)
 
-		hdr := make([]byte, 28)
-		w := bytes.NewBuffer(hdr[0:0])
-
-		w.Write(c.Network.MessagePrefix)
-
-		cmd := make([]byte, 12)
-		copy(cmd, m.Command())
-		w.Write(cmd)
-
-		binary.Write(w, binary.LittleEndian, int32(len(payload)))
-
-		checksum := sha256.Sum256(payload)
-		checksum = sha256.Sum256(checksum[:])
-		w.Write(checksum[0:4])
-
-		_, err := c.Connection.Write(w.Bytes())
-		if err != nil {
-			c.handleError(err)
-		}
-		if len(payload) > 0 {
-			_, err = c.Connection.Write(payload)
-			if err != nil {
-				c.handleError(err)
-			}
-		}
-	}
-}
-
-func (c *P2PoolConnection) Close() {
-	c.Connection.Close()
+	_, err := p.Connection.Write(buf.Bytes())
+	return err
 }
