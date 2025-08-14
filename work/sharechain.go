@@ -24,6 +24,12 @@ const (
 	maxResolvePasses = 100
 )
 
+// FIX: Define an interface for the PeerManager to avoid circular dependencies
+// and allow the ShareChain to call back to it.
+type PeerManager interface {
+	Broadcast(msg wire.P2PoolMessage)
+}
+
 type orphanInfo struct {
 	share   *wire.Share
 	age     int
@@ -53,6 +59,7 @@ type ShareChain struct {
 	disconnectedShares  map[string]*orphanInfo
 	requestedParents    map[string]time.Time
 	rpcClient           *rpc.Client
+	pm                  PeerManager // FIX: Hold a reference to the peer manager
 	disconnectedShareLock sync.Mutex
 	allSharesLock       sync.Mutex
 }
@@ -78,6 +85,11 @@ func NewShareChain(client *rpc.Client) *ShareChain {
 	}
 	go sc.ReadShareChan()
 	return sc
+}
+
+// FIX: Add a setter for the peer manager to be called during initialization.
+func (sc *ShareChain) SetPeerManager(pm PeerManager) {
+	sc.pm = pm
 }
 
 func (sc *ShareChain) ReadShareChan() {
@@ -417,7 +429,6 @@ func (sc *ShareChain) Resolve(loading bool) {
 						sc.AllShares[hashStr] = newChainShare
 						delete(sc.disconnectedShares, hashStr)
 						if newTipShare != nil {
-							// FIX: The compiler error was here. There is no .Share on a *wire.Share
 							if tipCS, ok := sc.AllShares[newTipShare.Hash.String()]; ok {
 								sc.Tip = tipCS
 							}
@@ -436,6 +447,11 @@ func (sc *ShareChain) Resolve(loading bool) {
 					}
 					delete(sc.disconnectedShares, hashStr)
 					changedInLoop = true
+
+					// FIX: Broadcast the newly linked share to other peers.
+					if sc.pm != nil {
+						sc.pm.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newChainShare.Share}})
+					}
 				}
 				sc.allSharesLock.Unlock()
 
@@ -545,9 +561,9 @@ func (sc *ShareChain) Load() error {
 
 	// Step 2: Link the ChainShare objects together.
 	for _, cs := range sc.AllShares {
-		prevHash := cs.Share.ShareInfo.ShareData.PreviousShareHash
-		if prevHash != nil {
-			if parentCS, ok := sc.AllShares[prevHash.String()]; ok {
+		if cs.Share.ShareInfo.ShareData.PreviousShareHash != nil {
+			prevHashStr := cs.Share.ShareInfo.ShareData.PreviousShareHash.String()
+			if parentCS, ok := sc.AllShares[prevHashStr]; ok {
 				cs.Previous = parentCS
 				parentCS.Next = cs
 			}
@@ -561,7 +577,6 @@ func (sc *ShareChain) Load() error {
 			if bestTip == nil {
 				bestTip = cs
 			} else {
-				// Compare weights to find the true tip in case of fragmentation
 				currentTipWeight, _ := sc.getChainWeight(bestTip.Share)
 				newTipWeight, _ := sc.getChainWeight(cs.Share)
 				if newTipWeight.Cmp(currentTipWeight) > 0 {
