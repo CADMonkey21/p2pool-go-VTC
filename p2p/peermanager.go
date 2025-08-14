@@ -19,7 +19,7 @@ import (
 type PeerManager struct {
 	peers           map[string]*Peer
 	possiblePeers   map[string]bool
-	pendingPeers    map[string]bool // Add a map to track pending outbound connections
+	pendingPeers    map[string]bool // FIX: Add a map to track pending outbound connections
 	activeNetwork   p2pnet.Network
 	shareChain      *work.ShareChain
 	peersMutex      sync.RWMutex
@@ -29,7 +29,7 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	pm := &PeerManager{
 		peers:           make(map[string]*Peer),
 		possiblePeers:   make(map[string]bool),
-		pendingPeers:    make(map[string]bool), // Initialize the new map
+		pendingPeers:    make(map[string]bool), // FIX: Initialize the new map
 		activeNetwork:   net,
 		shareChain:      sc,
 	}
@@ -135,14 +135,14 @@ func (pm *PeerManager) peerConnectorLoop() {
 			var peerToTry string
 			for p := range pm.possiblePeers {
 				_, isActive := pm.peers[p]
-				_, isPending := pm.pendingPeers[p] // Check if we are already trying to connect
+				_, isPending := pm.pendingPeers[p] // FIX: Check if we are already trying to connect
 				if !isActive && !isPending {
 					peerToTry = p
 					break
 				}
 			}
 			
-			// Mark the peer as pending BEFORE starting the connection attempt.
+			// FIX: Mark the peer as pending BEFORE starting the connection attempt.
 			if peerToTry != "" {
 				pm.pendingPeers[peerToTry] = true
 			}
@@ -156,7 +156,8 @@ func (pm *PeerManager) peerConnectorLoop() {
 }
 
 func (pm *PeerManager) TryPeer(p string) {
-	// Ensure the pending status is removed when this function exits.
+	// FIX: Ensure the pending status is removed when this function exits,
+	// regardless of whether the connection was successful or not.
 	defer func() {
 		pm.peersMutex.Lock()
 		delete(pm.pendingPeers, p)
