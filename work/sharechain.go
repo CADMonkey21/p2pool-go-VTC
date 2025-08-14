@@ -43,18 +43,18 @@ type ChainStats struct {
 }
 
 type ShareChain struct {
-	SharesChannel         chan []wire.Share
-	NeedShareChannel      chan *chainhash.Hash
-	FoundBlockChan        chan *wire.Share
-	Tip                   *ChainShare
-	Tail                  *ChainShare
-	AllShares             map[string]*ChainShare
-	AllSharesByPrev       map[string][]*wire.Share
-	disconnectedShares    map[string]*orphanInfo
-	requestedParents      map[string]time.Time
-	rpcClient             *rpc.Client
+	SharesChannel       chan []wire.Share
+	NeedShareChannel    chan *chainhash.Hash
+	FoundBlockChan      chan *wire.Share
+	Tip                 *ChainShare
+	Tail                *ChainShare
+	AllShares           map[string]*ChainShare
+	AllSharesByPrev     map[string][]*wire.Share
+	disconnectedShares  map[string]*orphanInfo
+	requestedParents    map[string]time.Time
+	rpcClient           *rpc.Client
 	disconnectedShareLock sync.Mutex
-	allSharesLock         sync.Mutex
+	allSharesLock       sync.Mutex
 }
 
 type ChainShare struct {
@@ -487,7 +487,6 @@ func (sc *ShareChain) Resolve(loading bool) {
 	logging.Debugf("SHARECHAIN/Resolve: Finished resolution after %d passes. %d orphans remaining.", passCount, len(sc.disconnectedShares))
 }
 
-
 func (sc *ShareChain) Commit() error {
 	f, err := os.Create("shares.dat")
 	if err != nil {
@@ -523,7 +522,14 @@ func (sc *ShareChain) Load() error {
 	}
 	logging.Debugf("SHARECHAIN/LOAD: Read %d shares from shares.dat.", len(shares))
 	logging.Debugf("SHARECHAIN/LOAD: Adding loaded shares to the chain as trusted...")
-	go sc.AddShares(shares, true)
+	
+    // NEW: The core fix is here. We process the loaded shares in a more controlled way.
+	go func() {
+		// Wait a moment for the rest of the system to initialize
+		time.Sleep(2 * time.Second)
+		sc.AddShares(shares, true)
+	}()
+
 	logging.Debugf("SHARECHAIN/LOAD: Finished loading, resolution will proceed in the background.")
 	return nil
 }
