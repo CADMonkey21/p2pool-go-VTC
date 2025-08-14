@@ -21,14 +21,13 @@ import (
 const hashrateConstant = 4294967296 // 2^32
 
 const (
-	// CORRECTED: maxOrphanAge is now based on the PPLNS window, making it dynamic.
 	maxResolvePasses = 100
 )
 
 type orphanInfo struct {
 	share   *wire.Share
-	age     int    // Changed to int to allow for larger values
-	isLocal bool // Flag to indicate if the share is from our own miner
+	age     int
+	isLocal bool
 }
 
 type ChainStats struct {
@@ -92,7 +91,6 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 	defer sc.disconnectedShareLock.Unlock()
 	logging.Debugf("SHARECHAIN/AddShares: Attempting to add %d new shares.", len(s))
 
-	// Sort shares by height to encourage correct linking order
 	sort.Slice(s, func(i, j int) bool {
 		return s[i].ShareInfo.AbsHeight < s[j].ShareInfo.AbsHeight
 	})
@@ -148,7 +146,7 @@ func (sc *ShareChain) AddShares(s []wire.Share, trusted bool) {
 	}
 
 	if newSharesAdded {
-		sc.Resolve(false)
+		go sc.Resolve(false)
 	} else {
 		logging.Debugf("SHARECHAIN/AddShares: No new shares were added to the orphan list in this batch.")
 	}
@@ -193,12 +191,15 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 }
 
 func (sc *ShareChain) GetStats() ChainStats {
+	stats := ChainStats{}
+	sc.disconnectedShareLock.Lock()
+	stats.SharesOrphan = len(sc.disconnectedShares)
+	sc.disconnectedShareLock.Unlock()
+
 	sc.allSharesLock.Lock()
 	defer sc.allSharesLock.Unlock()
 
-	stats := ChainStats{}
 	stats.SharesTotal = len(sc.AllShares)
-	stats.SharesOrphan = len(sc.disconnectedShares)
 
 	netInfo, err := sc.rpcClient.GetMiningInfo()
 	if err != nil {
@@ -259,8 +260,15 @@ func (sc *ShareChain) findGenesisOrphan() (hash string, info *orphanInfo) {
 	var bestOrphanHash string
 
 	for h, i := range sc.disconnectedShares {
-		// A potential genesis is an orphan whose parent we don't have (not even as another orphan)
-		if _, parentIsOrphan := sc.disconnectedShares[i.share.ShareInfo.ShareData.PreviousShareHash.String()]; !parentIsOrphan {
+		prev := i.share.ShareInfo.ShareData.PreviousShareHash
+		if prev == nil {
+			if bestOrphan == nil || i.share.ShareInfo.AbsHeight < bestOrphan.share.ShareInfo.AbsHeight {
+				bestOrphan = i
+				bestOrphanHash = h
+			}
+			continue
+		}
+		if _, parentIsOrphan := sc.disconnectedShares[prev.String()]; !parentIsOrphan {
 			if bestOrphan == nil || i.share.ShareInfo.AbsHeight < bestOrphan.share.ShareInfo.AbsHeight {
 				bestOrphan = i
 				bestOrphanHash = h
@@ -268,6 +276,46 @@ func (sc *ShareChain) findGenesisOrphan() (hash string, info *orphanInfo) {
 		}
 	}
 	return bestOrphanHash, bestOrphan
+}
+
+func (sc *ShareChain) getOrphanChainWeight(start *wire.Share) (*big.Int, *wire.Share) {
+	weight := big.NewInt(0)
+	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	current := start
+	var tip *wire.Share
+
+	for {
+		shareTarget := blockchain.CompactToBig(current.ShareInfo.Bits)
+		if shareTarget.Sign() > 0 {
+			difficulty := new(big.Int).Div(maxTarget, shareTarget)
+			weight.Add(weight, difficulty)
+		}
+
+		tip = current
+		nextHash := current.Hash.String()
+		children, ok := sc.AllSharesByPrev[nextHash]
+		if !ok || len(children) == 0 {
+			break
+		}
+
+		if len(children) > 1 {
+			bestWeight := big.NewInt(0)
+			var bestTip *wire.Share
+			for _, child := range children {
+				childWeight, childTip := sc.getOrphanChainWeight(child)
+				if childWeight.Cmp(bestWeight) > 0 {
+					bestWeight = childWeight
+					bestTip = childTip
+				}
+			}
+			weight.Add(weight, bestWeight)
+			tip = bestTip
+			current = nil // End the loop
+		} else {
+			current = children[0]
+		}
+	}
+	return weight, tip
 }
 
 func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
@@ -296,8 +344,10 @@ func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
 	}
 }
 
-// CORRECTED Resolve to handle orphan aging more safely.
 func (sc *ShareChain) Resolve(loading bool) {
+	sc.disconnectedShareLock.Lock()
+	defer sc.disconnectedShareLock.Unlock()
+
 	logging.Debugf("SHARECHAIN/Resolve: Starting resolution with %d disconnected shares.", len(sc.disconnectedShares))
 	sc.allSharesLock.Lock()
 	if sc.Tip == nil && len(sc.disconnectedShares) > 0 {
@@ -338,13 +388,41 @@ func (sc *ShareChain) Resolve(loading bool) {
 				if orphan.isLocal {
 					origin = "LOCAL"
 				}
-				logging.Infof("SHARECHAIN/Resolve: Found parent %s for [%s] orphan %s. Linking now.", prevHashStr[:12], origin, hashStr[:12])
 				newChainShare := &ChainShare{Share: orphan.share, Previous: parent}
 
 				sc.allSharesLock.Lock()
 				if parent.Next != nil {
-					logging.Warnf("SHARECHAIN/Resolve: Parent %s already has a 'next' share. This indicates a potential fork or duplicate share. Current orphan %s will not be linked to this parent.", parent.Share.Hash.String()[:12], hashStr[:12])
+					existingChild := parent.Next.Share
+					newChild := orphan.share
+					existingWeight, _ := sc.getOrphanChainWeight(existingChild)
+					newWeight, newTipShare := sc.getOrphanChainWeight(newChild)
+
+					logging.Warnf("SHARECHAIN/Resolve: Fork detected at parent %s. Existing child: %s (weight %s), New child: %s (weight %s)",
+						parent.Share.Hash.String()[:12], existingChild.Hash.String()[:12], existingWeight.String(), newChild.Hash.String()[:12], newWeight.String())
+
+					if newWeight.Cmp(existingWeight) > 0 {
+						logging.Warnf("SHARECHAIN/Resolve: New chain is stronger. Reorganizing.")
+						current := parent.Next
+						parent.Next = nil
+						for current != nil {
+							delete(sc.AllShares, current.Share.Hash.String())
+							sc.disconnectedShares[current.Share.Hash.String()] = &orphanInfo{share: current.Share, age: 0, isLocal: false}
+							current = current.Next
+						}
+						parent.Next = newChainShare
+						sc.AllShares[hashStr] = newChainShare
+						delete(sc.disconnectedShares, hashStr)
+						if newTipShare != nil {
+							if tipCS, ok := sc.AllShares[newTipShare.Hash.String()]; ok {
+								sc.Tip = tipCS
+							}
+						}
+						changedInLoop = true
+					} else {
+						logging.Warnf("SHARECHAIN/Resolve: Existing chain is stronger. Ignoring new share.")
+					}
 				} else {
+					logging.Infof("SHARECHAIN/Resolve: Found parent %s for [%s] orphan %s. Linking now.", prevHashStr[:12], origin, hashStr[:12])
 					parent.Next = newChainShare
 					sc.AllShares[hashStr] = newChainShare
 					if sc.Tip == parent {
@@ -370,10 +448,28 @@ func (sc *ShareChain) Resolve(loading bool) {
 			for hashStr, orphan := range sc.disconnectedShares {
 				if !loading {
 					orphan.age++
-					// Purge orphans that are older than 3x the PPLNS window. This is a very safe margin.
 					if orphan.age > (config.Active.PPLNSWindow * 3) {
 						logging.Warnf("SHARECHAIN/Resolve: Purging stale orphan %s after %d checks.", hashStr[:12], orphan.age)
+						prev := orphan.share.ShareInfo.ShareData.PreviousShareHash
+						if prev != nil {
+							key := prev.String()
+							if kids, ok := sc.AllSharesByPrev[key]; ok {
+								k := orphan.share.Hash.String()
+								out := kids[:0]
+								for _, s := range kids {
+									if s.Hash.String() != k {
+										out = append(out, s)
+									}
+								}
+								if len(out) == 0 {
+									delete(sc.AllSharesByPrev, key)
+								} else {
+									sc.AllSharesByPrev[key] = out
+								}
+							}
+						}
 						delete(sc.disconnectedShares, hashStr)
+						continue
 					}
 				}
 
@@ -427,10 +523,8 @@ func (sc *ShareChain) Load() error {
 	}
 	logging.Debugf("SHARECHAIN/LOAD: Read %d shares from shares.dat.", len(shares))
 	logging.Debugf("SHARECHAIN/LOAD: Adding loaded shares to the chain as trusted...")
-	sc.AddShares(shares, true)
-	logging.Debugf("SHARECHAIN/LOAD: Resolving loaded share chain...")
-	sc.Resolve(true) // Pass true to indicate we are in the loading phase
-	logging.Debugf("SHARECHAIN/LOAD: Finished resolving.")
+	go sc.AddShares(shares, true)
+	logging.Debugf("SHARECHAIN/LOAD: Finished loading, resolution will proceed in the background.")
 	return nil
 }
 
