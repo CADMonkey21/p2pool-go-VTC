@@ -191,7 +191,7 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn, originalAddr string) {
 		logging.Warnf("P2P: Handshake with %s failed: %v", conn.RemoteAddr(), err)
 		return
 	}
-
+	
 	peerKey := conn.RemoteAddr().String()
 
 	pm.peersMutex.Lock()
@@ -209,7 +209,9 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn, originalAddr string) {
 	pm.handlePeerMessages(peer)
 }
 
+
 func (pm *PeerManager) handlePeerMessages(p *Peer) {
+	// Trigger for initial sync
 	logging.Infof("Requesting share chain tip from new peer %s", p.RemoteIP.String())
 	initialGetShares := &wire.MsgGetShares{
 		Hashes:  []*chainhash.Hash{},
