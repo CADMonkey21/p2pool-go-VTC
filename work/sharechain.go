@@ -278,13 +278,17 @@ func (sc *ShareChain) findGenesisOrphan() (hash string, info *orphanInfo) {
 	return bestOrphanHash, bestOrphan
 }
 
-func (sc *ShareChain) getOrphanChainWeight(start *wire.Share) (*big.Int, *wire.Share) {
+func (sc *ShareChain) getChainWeight(start *wire.Share) (*big.Int, *wire.Share) {
 	weight := big.NewInt(0)
 	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 	current := start
 	var tip *wire.Share
 
 	for {
+		if current == nil {
+			break
+		}
+
 		shareTarget := blockchain.CompactToBig(current.ShareInfo.Bits)
 		if shareTarget.Sign() > 0 {
 			difficulty := new(big.Int).Div(maxTarget, shareTarget)
@@ -302,7 +306,7 @@ func (sc *ShareChain) getOrphanChainWeight(start *wire.Share) (*big.Int, *wire.S
 			bestWeight := big.NewInt(0)
 			var bestTip *wire.Share
 			for _, child := range children {
-				childWeight, childTip := sc.getOrphanChainWeight(child)
+				childWeight, childTip := sc.getChainWeight(child)
 				if childWeight.Cmp(bestWeight) > 0 {
 					bestWeight = childWeight
 					bestTip = childTip
@@ -394,8 +398,8 @@ func (sc *ShareChain) Resolve(loading bool) {
 				if parent.Next != nil {
 					existingChild := parent.Next.Share
 					newChild := orphan.share
-					existingWeight, _ := sc.getOrphanChainWeight(existingChild)
-					newWeight, newTipShare := sc.getOrphanChainWeight(newChild)
+					existingWeight, _ := sc.getChainWeight(existingChild)
+					newWeight, newTipShare := sc.getChainWeight(newChild)
 
 					logging.Warnf("SHARECHAIN/Resolve: Fork detected at parent %s. Existing child: %s (weight %s), New child: %s (weight %s)",
 						parent.Share.Hash.String()[:12], existingChild.Hash.String()[:12], existingWeight.String(), newChild.Hash.String()[:12], newWeight.String())
@@ -413,6 +417,7 @@ func (sc *ShareChain) Resolve(loading bool) {
 						sc.AllShares[hashStr] = newChainShare
 						delete(sc.disconnectedShares, hashStr)
 						if newTipShare != nil {
+							// FIX: The compiler error was here. There is no .Share on a *wire.Share
 							if tipCS, ok := sc.AllShares[newTipShare.Hash.String()]; ok {
 								sc.Tip = tipCS
 							}
@@ -515,22 +520,72 @@ func (sc *ShareChain) Load() error {
 		return err
 	}
 	defer f.Close()
+
 	logging.Debugf("SHARECHAIN/LOAD: Reading shares from file...")
 	shares, err := wire.ReadShares(f)
 	if err != nil && err.Error() != "EOF" {
 		return fmt.Errorf("error reading shares: %v", err)
 	}
-	logging.Debugf("SHARECHAIN/LOAD: Read %d shares from shares.dat.", len(shares))
-	logging.Debugf("SHARECHAIN/LOAD: Adding loaded shares to the chain as trusted...")
-	
-    // NEW: The core fix is here. We process the loaded shares in a more controlled way.
-	go func() {
-		// Wait a moment for the rest of the system to initialize
-		time.Sleep(2 * time.Second)
-		sc.AddShares(shares, true)
-	}()
+	logging.Debugf("SHARECHAIN/LOAD: Read %d shares from shares.dat. Reconstructing chain...", len(shares))
+	if len(shares) == 0 {
+		return nil
+	}
 
-	logging.Debugf("SHARECHAIN/LOAD: Finished loading, resolution will proceed in the background.")
+	sc.allSharesLock.Lock()
+	defer sc.allSharesLock.Unlock()
+
+	// Step 1: Create ChainShare wrappers for all shares and index them by hash.
+	for i := range shares {
+		share := &shares[i]
+		if share.Hash == nil {
+			share.CalculateHashes()
+		}
+		sc.AllShares[share.Hash.String()] = &ChainShare{Share: share}
+	}
+
+	// Step 2: Link the ChainShare objects together.
+	for _, cs := range sc.AllShares {
+		prevHash := cs.Share.ShareInfo.ShareData.PreviousShareHash
+		if prevHash != nil {
+			if parentCS, ok := sc.AllShares[prevHash.String()]; ok {
+				cs.Previous = parentCS
+				parentCS.Next = cs
+			}
+		}
+	}
+
+	// Step 3: Find the true tip (the one with no 'Next' pointer).
+	var bestTip *ChainShare
+	for _, cs := range sc.AllShares {
+		if cs.Next == nil {
+			if bestTip == nil {
+				bestTip = cs
+			} else {
+				// Compare weights to find the true tip in case of fragmentation
+				currentTipWeight, _ := sc.getChainWeight(bestTip.Share)
+				newTipWeight, _ := sc.getChainWeight(cs.Share)
+				if newTipWeight.Cmp(currentTipWeight) > 0 {
+					bestTip = cs
+				}
+			}
+		}
+	}
+	sc.Tip = bestTip
+
+	// Step 4: Find the tail by traversing back from the tip.
+	if sc.Tip != nil {
+		current := sc.Tip
+		for current.Previous != nil {
+			current = current.Previous
+		}
+		sc.Tail = current
+		logging.Infof("SHARECHAIN/LOAD: Reconstructed chain from file. Tip: %s at height %d. Total shares: %d", sc.Tip.Share.Hash.String()[:12], sc.Tip.Share.ShareInfo.AbsHeight, len(sc.AllShares))
+	} else if len(sc.AllShares) > 0 {
+		logging.Warnf("SHARECHAIN/LOAD: Loaded %d shares but could not determine a chain tip. The chain may be fragmented.", len(sc.AllShares))
+	} else {
+		logging.Infof("SHARECHAIN/LOAD: shares.dat was empty or contained no valid shares.")
+	}
+
 	return nil
 }
 
