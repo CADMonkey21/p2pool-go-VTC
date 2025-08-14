@@ -2,7 +2,6 @@ package work
 
 import (
 	"fmt"
-	"math"
 	"math/big"
 	"os"
 	"sort"
@@ -18,17 +17,17 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
-// Each unit of VertHash difficulty represents 2^24 hashes.
-const hashrateConstant = 16777216 // 2^24
+// Each unit of VertHash difficulty represents 2^32 hashes.
+const hashrateConstant = 4294967296 // 2^32
 
 const (
-	maxOrphanAge     = 40
+	// CORRECTED: maxOrphanAge is now based on the PPLNS window, making it dynamic.
 	maxResolvePasses = 100
 )
 
 type orphanInfo struct {
 	share   *wire.Share
-	age     uint8
+	age     int    // Changed to int to allow for larger values
 	isLocal bool // Flag to indicate if the share is from our own miner
 }
 
@@ -212,12 +211,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 	lookbackDuration := 30 * time.Minute
 	startTime := time.Now().Add(-lookbackDuration)
 
-	var totalWork = new(big.Float).SetFloat64(0.0)
-	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-	maxTargetFloat := new(big.Float).SetInt(maxTarget)
-
-	var deadShares = 0
-	var sharesInWindow = 0
+	totalDifficulty := new(big.Int)
+	var deadShares, sharesInWindow int
 
 	current := sc.Tip
 	for current != nil && time.Unix(int64(current.Share.ShareInfo.Timestamp), 0).After(startTime) {
@@ -226,14 +221,14 @@ func (sc *ShareChain) GetStats() ChainStats {
 			deadShares++
 		}
 
-		shareTargetInt := blockchain.CompactToBig(current.Share.ShareInfo.Bits)
-		if shareTargetInt.Sign() <= 0 {
+		shareTarget := blockchain.CompactToBig(current.Share.ShareInfo.Bits)
+		if shareTarget.Sign() <= 0 {
 			current = current.Previous
 			continue
 		}
-		shareTargetFloat := new(big.Float).SetInt(shareTargetInt)
-		workOfShare := new(big.Float).Quo(maxTargetFloat, shareTargetFloat)
-		totalWork.Add(totalWork, workOfShare)
+		maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+		difficulty := new(big.Int).Div(maxTarget, shareTarget)
+		totalDifficulty.Add(totalDifficulty, difficulty)
 
 		current = current.Previous
 	}
@@ -245,15 +240,14 @@ func (sc *ShareChain) GetStats() ChainStats {
 		stats.Efficiency = 100.0
 	}
 
-	totalWorkFloat, _ := totalWork.Float64()
-	if lookbackDuration.Seconds() > 0 && totalWorkFloat > 0 {
-		stats.PoolHashrate = (totalWorkFloat * hashrateConstant) / lookbackDuration.Seconds()
+	if totalDifficulty.Sign() > 0 {
+		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
+		hashrateFloat := new(big.Float).Quo(new(big.Float).Mul(totalDifficultyFloat, big.NewFloat(hashrateConstant)), big.NewFloat(lookbackDuration.Seconds()))
+		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		pow32 := math.Pow(2, 32)
-		netWorkTerm := stats.NetworkDifficulty * pow32
-		stats.TimeToBlock = netWorkTerm / stats.PoolHashrate
+		stats.TimeToBlock = (stats.NetworkDifficulty * hashrateConstant) / stats.PoolHashrate
 	}
 
 	stats.CurrentPayout = 0.0
@@ -276,53 +270,39 @@ func (sc *ShareChain) findGenesisOrphan() (hash string, info *orphanInfo) {
 	return bestOrphanHash, bestOrphan
 }
 
-// CORRECTED attachChildren function to prevent deadlocks.
 func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
-	// Find all direct children of the parent that are currently orphans.
-	// We do this in a locked section to safely access the maps.
 	sc.allSharesLock.Lock()
 
 	newlyLinkedChildren := make([]*ChainShare, 0)
 	if kids, ok := sc.AllSharesByPrev[parentHash]; ok {
 		for _, kidShare := range kids {
 			kHash := kidShare.Hash.String()
-			// Check if this kid is in the disconnected/orphan list
 			if _, isOrphan := sc.disconnectedShares[kHash]; isOrphan {
 				logging.Infof(" ↳ Attaching waiting child %s to parent %s", kHash[:12], parentHash[:12])
-
-				// Create the new linked share
 				cs := &ChainShare{Share: kidShare, Previous: parentCS}
 				parentCS.Next = cs
-
-				// Update all the maps
 				sc.AllShares[kHash] = cs
 				delete(sc.disconnectedShares, kHash)
-
-				// Add the new ChainShare to a list to process its children later
 				newlyLinkedChildren = append(newlyLinkedChildren, cs)
 			}
 		}
-		// Since we've processed all potential children for this parent, remove the entry
 		delete(sc.AllSharesByPrev, parentHash)
 	}
 
-	// Release the lock BEFORE making recursive calls
 	sc.allSharesLock.Unlock()
 
-	// Now that the lock is released, recursively call for each newly linked child.
 	for _, childCS := range newlyLinkedChildren {
 		sc.attachChildren(childCS.Share.Hash.String(), childCS)
 	}
 }
 
-func (sc *ShareChain) Resolve(skipCommit bool) {
+// CORRECTED Resolve to handle orphan aging more safely.
+func (sc *ShareChain) Resolve(loading bool) {
 	logging.Debugf("SHARECHAIN/Resolve: Starting resolution with %d disconnected shares.", len(sc.disconnectedShares))
 	sc.allSharesLock.Lock()
 	if sc.Tip == nil && len(sc.disconnectedShares) > 0 {
 		h, o := sc.findGenesisOrphan()
 		if o != nil {
-			// We have an orphan whose parent isn't in the disconnected list, meaning it should link to the main chain or be a genesis.
-			// Since our main chain is empty, let's make it the genesis.
 			cs := &ChainShare{Share: o.share}
 			sc.AllShares[h] = cs
 			sc.Tip, sc.Tail = cs, cs
@@ -388,18 +368,21 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 		if !changedInLoop {
 			logging.Debugf("SHARECHAIN/Resolve: No shares were linked in pass #%d. Checking for missing parents to request.", passCount)
 			for hashStr, orphan := range sc.disconnectedShares {
-				orphan.age++
-				if orphan.age > maxOrphanAge {
-					logging.Warnf("SHARECHAIN/Resolve: Purging stale orphan %s after %d checks.", hashStr[:12], orphan.age)
-					delete(sc.disconnectedShares, hashStr)
-				} else {
-					prevHash := orphan.share.ShareInfo.ShareData.PreviousShareHash
-					if prevHash != nil {
-						if lastReq, ok := sc.requestedParents[prevHash.String()]; !ok || time.Since(lastReq) > 30*time.Second {
-							logging.Debugf("SHARECHAIN/Resolve: Requesting missing parent %s for orphan %s.", prevHash.String()[:12], hashStr[:12])
-							sc.NeedShareChannel <- prevHash
-							sc.requestedParents[prevHash.String()] = time.Now()
-						}
+				if !loading {
+					orphan.age++
+					// Purge orphans that are older than 3x the PPLNS window. This is a very safe margin.
+					if orphan.age > (config.Active.PPLNSWindow * 3) {
+						logging.Warnf("SHARECHAIN/Resolve: Purging stale orphan %s after %d checks.", hashStr[:12], orphan.age)
+						delete(sc.disconnectedShares, hashStr)
+					}
+				}
+
+				prevHash := orphan.share.ShareInfo.ShareData.PreviousShareHash
+				if prevHash != nil {
+					if lastReq, ok := sc.requestedParents[prevHash.String()]; !ok || time.Since(lastReq) > 30*time.Second {
+						logging.Debugf("SHARECHAIN/Resolve: Requesting missing parent %s for orphan %s.", prevHash.String()[:12], hashStr[:12])
+						sc.NeedShareChannel <- prevHash
+						sc.requestedParents[prevHash.String()] = time.Now()
 					}
 				}
 			}
@@ -407,6 +390,7 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 	}
 	logging.Debugf("SHARECHAIN/Resolve: Finished resolution after %d passes. %d orphans remaining.", passCount, len(sc.disconnectedShares))
 }
+
 
 func (sc *ShareChain) Commit() error {
 	f, err := os.Create("shares.dat")
@@ -445,7 +429,7 @@ func (sc *ShareChain) Load() error {
 	logging.Debugf("SHARECHAIN/LOAD: Adding loaded shares to the chain as trusted...")
 	sc.AddShares(shares, true)
 	logging.Debugf("SHARECHAIN/LOAD: Resolving loaded share chain...")
-	sc.Resolve(true)
+	sc.Resolve(true) // Pass true to indicate we are in the loading phase
 	logging.Debugf("SHARECHAIN/LOAD: Finished resolving.")
 	return nil
 }
@@ -493,7 +477,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 	}
 
 	if totalWorkInWindow.Sign() <= 0 {
-		return nil, fmt.Errorf("total work in PPLNS window is zero, cannot project payment")
+		return make(map[string]float64), nil
 	}
 
 	for _, share := range payoutShares {
