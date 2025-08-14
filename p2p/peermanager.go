@@ -31,6 +31,8 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 		activeNetwork:   net,
 		shareChain:      sc,
 	}
+	// Pass the peer manager to the sharechain so it can broadcast new shares
+	sc.SetPeerManager(pm)
 	for _, h := range net.SeedHosts {
 		pm.AddPossiblePeer(h)
 	}
@@ -98,7 +100,7 @@ func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
 	defer pm.peersMutex.RUnlock()
 
 	if len(pm.peers) > 0 {
-		logging.Debugf("P2P: Broadcasting '%s' message to %d peers", msg.Command(), len(pm.peers))
+		// logging.Debugf("P2P: Broadcasting '%s' message to %d peers", msg.Command(), len(pm.peers))
 		for _, p := range pm.peers {
 			if p.IsConnected() {
 				p.Connection.Outgoing <- msg
@@ -143,9 +145,6 @@ func (pm *PeerManager) peerConnectorLoop() {
 					break
 				}
 			}
-			// FIX: Do not delete the peer. This was the cause of the peer exhaustion bug.
-			// If a peer is temporarily offline, we want to be able to try connecting to it again later.
-			// delete(pm.possiblePeers, peerToTry)
 			pm.peersMutex.Unlock()
 
 			if peerToTry != "" {
@@ -183,7 +182,6 @@ func (pm *PeerManager) TryPeer(p string) {
 		return
 	}
 
-	// Pass the original address `p` to handleNewPeer.
 	go pm.handleNewPeer(conn, p)
 }
 
@@ -194,7 +192,6 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn, originalAddr string) {
 		return
 	}
 
-	// The peer map key should be the actual remote address string.
 	peerKey := conn.RemoteAddr().String()
 
 	pm.peersMutex.Lock()
@@ -205,10 +202,7 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn, originalAddr string) {
 		pm.peersMutex.Lock()
 		delete(pm.peers, peerKey)
 		pm.peersMutex.Unlock()
-
-		// Re-add the original address to the list for future connection attempts.
 		pm.AddPossiblePeer(originalAddr)
-
 		logging.Warnf("Peer %s has disconnected.", peerKey)
 	}()
 
@@ -216,9 +210,6 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn, originalAddr string) {
 }
 
 func (pm *PeerManager) handlePeerMessages(p *Peer) {
-	// FIX: This is the trigger for the initial sync.
-	// After a successful handshake, we ask the new peer for its share chain tip.
-	// An empty Hashes slice in a get_shares message is a request for the tip.
 	logging.Infof("Requesting share chain tip from new peer %s", p.RemoteIP.String())
 	initialGetShares := &wire.MsgGetShares{
 		Hashes:  []*chainhash.Hash{},
@@ -247,18 +238,16 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 		case *wire.MsgShares:
 			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP.String())
 			pm.shareChain.AddShares(t.Shares, false)
-			pm.relayToOthers(msg, p)
+			// relayToOthers is removed to prevent broadcast loops.
 
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP.String(), len(t.Hashes))
 			var responseShares []wire.Share
 
-			// Handle the initial sync request for the tip when Hashes is empty.
 			if len(t.Hashes) == 0 {
 				tip := pm.shareChain.Tip
 				if tip != nil {
 					cs := tip
-					// Walk back up to 500 shares from the tip
 					for i := 0; i < 500 && cs != nil; i++ {
 						responseShares = append(responseShares, *cs.Share)
 						cs = cs.Previous

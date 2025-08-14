@@ -446,7 +446,6 @@ func (sc *ShareChain) Resolve(loading bool) {
 					delete(sc.disconnectedShares, hashStr)
 					changedInLoop = true
 
-					// FIX: Broadcast the newly linked share to other peers.
 					if sc.pm != nil {
 						sc.pm.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newChainShare.Share}})
 					}
@@ -560,7 +559,6 @@ func (sc *ShareChain) Load() error {
 	// Step 2: Link the ChainShare objects together.
 	var bestTip *ChainShare
 	for _, cs := range sc.AllShares {
-		// Link children
 		if cs.Share.ShareInfo.ShareData.PreviousShareHash != nil {
 			prevHashStr := cs.Share.ShareInfo.ShareData.PreviousShareHash.String()
 			if parentCS, ok := sc.AllShares[prevHashStr]; ok {
@@ -568,8 +566,10 @@ func (sc *ShareChain) Load() error {
 				parentCS.Next = cs
 			}
 		}
+	}
 
-		// While iterating, find shares that are potential tips (have no children)
+	// Step 3: Find the true tip (the one with no 'Next' pointer).
+	for _, cs := range sc.AllShares {
 		if cs.Next == nil {
 			if bestTip == nil {
 				bestTip = cs
@@ -592,6 +592,7 @@ func (sc *ShareChain) Load() error {
 			current = current.Previous
 		}
 		sc.Tail = current
+		// FIX: Corrected the field access from .Info to .ShareInfo
 		logging.Infof("SHARECHAIN/LOAD: Reconstructed chain from file. Tip: %s at height %d. Total shares: %d", sc.Tip.Share.Hash.String()[:12], sc.Tip.Share.ShareInfo.AbsHeight, len(sc.AllShares))
 	} else if len(sc.AllShares) > 0 {
 		logging.Warnf("SHARECHAIN/LOAD: Loaded %d shares but could not determine a chain tip. The chain may be fragmented.", len(sc.AllShares))
