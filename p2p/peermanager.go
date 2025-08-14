@@ -19,6 +19,7 @@ import (
 type PeerManager struct {
 	peers           map[string]*Peer
 	possiblePeers   map[string]bool
+	pendingPeers    map[string]bool // Add a map to track pending outbound connections
 	activeNetwork   p2pnet.Network
 	shareChain      *work.ShareChain
 	peersMutex      sync.RWMutex
@@ -28,10 +29,10 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	pm := &PeerManager{
 		peers:           make(map[string]*Peer),
 		possiblePeers:   make(map[string]bool),
+		pendingPeers:    make(map[string]bool), // Initialize the new map
 		activeNetwork:   net,
 		shareChain:      sc,
 	}
-	// Pass the peer manager to the sharechain so it can broadcast new shares
 	sc.SetPeerManager(pm)
 	for _, h := range net.SeedHosts {
 		pm.AddPossiblePeer(h)
@@ -133,17 +134,17 @@ func (pm *PeerManager) peerConnectorLoop() {
 			pm.peersMutex.Lock()
 			var peerToTry string
 			for p := range pm.possiblePeers {
-				isActive := false
-				for activeAddr := range pm.peers {
-					if activeAddr == p {
-						isActive = true
-						break
-					}
-				}
-				if !isActive {
+				_, isActive := pm.peers[p]
+				_, isPending := pm.pendingPeers[p] // Check if we are already trying to connect
+				if !isActive && !isPending {
 					peerToTry = p
 					break
 				}
+			}
+			
+			// Mark the peer as pending BEFORE starting the connection attempt.
+			if peerToTry != "" {
+				pm.pendingPeers[peerToTry] = true
 			}
 			pm.peersMutex.Unlock()
 
@@ -155,6 +156,13 @@ func (pm *PeerManager) peerConnectorLoop() {
 }
 
 func (pm *PeerManager) TryPeer(p string) {
+	// Ensure the pending status is removed when this function exits.
+	defer func() {
+		pm.peersMutex.Lock()
+		delete(pm.pendingPeers, p)
+		pm.peersMutex.Unlock()
+	}()
+
 	logging.Debugf("Trying OUTGOING connection to peer %s", p)
 
 	host, portStr, err := net.SplitHostPort(p)
@@ -208,7 +216,6 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn, originalAddr string) {
 
 	pm.handlePeerMessages(peer)
 }
-
 
 func (pm *PeerManager) handlePeerMessages(p *Peer) {
 	// Trigger for initial sync

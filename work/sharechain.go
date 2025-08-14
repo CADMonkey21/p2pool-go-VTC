@@ -590,7 +590,6 @@ func (sc *ShareChain) Load() error {
 			current = current.Previous
 		}
 		sc.Tail = current
-		// FIX: Corrected the field access from .Info to .ShareInfo
 		logging.Infof("SHARECHAIN/LOAD: Reconstructed chain from file. Tip: %s at height %d. Total shares: %d", sc.Tip.Share.Hash.String()[:12], sc.Tip.Share.ShareInfo.AbsHeight, len(sc.AllShares))
 	} else if len(sc.AllShares) > 0 {
 		logging.Warnf("SHARECHAIN/LOAD: Loaded %d shares but could not determine a chain tip. The chain may be fragmented.", len(sc.AllShares))
@@ -600,7 +599,6 @@ func (sc *ShareChain) Load() error {
 
 	return nil
 }
-
 
 func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error) {
 	sc.allSharesLock.Lock()
