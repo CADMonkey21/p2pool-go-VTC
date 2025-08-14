@@ -24,8 +24,7 @@ const (
 	maxResolvePasses = 100
 )
 
-// FIX: Define an interface for the PeerManager to avoid circular dependencies
-// and allow the ShareChain to call back to it.
+// PeerManager defines the interface the ShareChain needs to communicate back to the P2P manager.
 type PeerManager interface {
 	Broadcast(msg wire.P2PoolMessage)
 }
@@ -59,7 +58,7 @@ type ShareChain struct {
 	disconnectedShares  map[string]*orphanInfo
 	requestedParents    map[string]time.Time
 	rpcClient           *rpc.Client
-	pm                  PeerManager // FIX: Hold a reference to the peer manager
+	pm                  PeerManager // Reference to the peer manager
 	disconnectedShareLock sync.Mutex
 	allSharesLock       sync.Mutex
 }
@@ -87,7 +86,6 @@ func NewShareChain(client *rpc.Client) *ShareChain {
 	return sc
 }
 
-// FIX: Add a setter for the peer manager to be called during initialization.
 func (sc *ShareChain) SetPeerManager(pm PeerManager) {
 	sc.pm = pm
 }
@@ -560,7 +558,9 @@ func (sc *ShareChain) Load() error {
 	}
 
 	// Step 2: Link the ChainShare objects together.
+	var bestTip *ChainShare
 	for _, cs := range sc.AllShares {
+		// Link children
 		if cs.Share.ShareInfo.ShareData.PreviousShareHash != nil {
 			prevHashStr := cs.Share.ShareInfo.ShareData.PreviousShareHash.String()
 			if parentCS, ok := sc.AllShares[prevHashStr]; ok {
@@ -568,15 +568,13 @@ func (sc *ShareChain) Load() error {
 				parentCS.Next = cs
 			}
 		}
-	}
 
-	// Step 3: Find the true tip (the one with no 'Next' pointer).
-	var bestTip *ChainShare
-	for _, cs := range sc.AllShares {
+		// While iterating, find shares that are potential tips (have no children)
 		if cs.Next == nil {
 			if bestTip == nil {
 				bestTip = cs
 			} else {
+				// Compare weights to find the true tip in case of fragmentation
 				currentTipWeight, _ := sc.getChainWeight(bestTip.Share)
 				newTipWeight, _ := sc.getChainWeight(cs.Share)
 				if newTipWeight.Cmp(currentTipWeight) > 0 {
