@@ -557,7 +557,6 @@ func (sc *ShareChain) Load() error {
 	}
 
 	// Step 2: Link the ChainShare objects together.
-	var bestTip *ChainShare
 	for _, cs := range sc.AllShares {
 		if cs.Share.ShareInfo.ShareData.PreviousShareHash != nil {
 			prevHashStr := cs.Share.ShareInfo.ShareData.PreviousShareHash.String()
@@ -569,15 +568,14 @@ func (sc *ShareChain) Load() error {
 	}
 
 	// Step 3: Find the true tip (the one with no 'Next' pointer).
+	var bestTip *ChainShare
 	for _, cs := range sc.AllShares {
 		if cs.Next == nil {
 			if bestTip == nil {
 				bestTip = cs
 			} else {
-				// Compare weights to find the true tip in case of fragmentation
-				currentTipWeight, _ := sc.getChainWeight(bestTip.Share)
-				newTipWeight, _ := sc.getChainWeight(cs.Share)
-				if newTipWeight.Cmp(currentTipWeight) > 0 {
+				// Compare heights to find the true tip in case of fragmentation
+				if cs.Share.ShareInfo.AbsHeight > bestTip.Share.ShareInfo.AbsHeight {
 					bestTip = cs
 				}
 			}
@@ -602,6 +600,7 @@ func (sc *ShareChain) Load() error {
 
 	return nil
 }
+
 
 func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error) {
 	sc.allSharesLock.Lock()
