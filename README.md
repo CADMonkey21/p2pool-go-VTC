@@ -21,7 +21,7 @@ The node is functional, with all core logic for P2P networking, share processing
 
 ---
 
-## Prerequisites
+## Prerequisites (For help see PRE_SETUP_GUIDE.md)
 
 1.  A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
 2.  The **`verthash.dat`** dataset. Point your configuration file to the verthash.dat location unless it's located in default location.
@@ -68,6 +68,8 @@ The pool is configured using a single `config.yaml` file. You can create your ow
     ```
     Point your Verthash-compatible miner to your pool's IP address on the Stratum port you configured (default is `9172`). The web dashboard will also be available at this address (e.g., `http://<your-ip>:9172`).
 
+See LOG_GUIDE.md for logging overview and documentation.
+
 ---
 
 ## Status
@@ -107,6 +109,8 @@ The project is in **beta**. The core logic is complete and tested, but end-to-en
 ## Contributing
 
 Contributions are welcome! Please feel free to open an issue to discuss a bug or new feature, or submit a pull request with your improvements.
+
+See DEV_GUIDE.md for developers guide - project overview and documentation.
 
 ## Donate
 
