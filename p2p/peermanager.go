@@ -255,7 +255,7 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 				if share != nil {
 					responseShares = append(responseShares, *share)
 					cs := pm.shareChain.AllShares[h.String()]
-					for i := 0; i < 50 && cs != nil && cs.Previous != nil; i++ {
+					for i := 0; i < 1000 && cs != nil && cs.Previous != nil; i++ { // Changed from 50 to 1000
 						cs = cs.Previous
 						responseShares = append(responseShares, *cs.Share)
 					}

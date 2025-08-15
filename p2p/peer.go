@@ -77,7 +77,7 @@ func (p *Peer) InitialSync() {
 		logging.Infof("P2P: Chains are out of sync (Local: %s, Peer: %s). Starting sync with %s.", localTip.String()[:12], peerTip.String()[:12], p.RemoteIP)
 		msg := &wire.MsgGetShares{
 			Hashes:  []*chainhash.Hash{peerTip},
-			Parents: 100,
+			Parents: 1000, // Changed from 100 to 1000
 			Stops:   localTip,
 		}
 		p.Connection.Outgoing <- msg
