@@ -48,19 +48,19 @@ type ChainStats struct {
 }
 
 type ShareChain struct {
-	SharesChannel       chan []wire.Share
-	NeedShareChannel    chan *chainhash.Hash
-	FoundBlockChan      chan *wire.Share
-	Tip                 *ChainShare
-	Tail                *ChainShare
-	AllShares           map[string]*ChainShare
-	AllSharesByPrev     map[string][]*wire.Share
-	disconnectedShares  map[string]*orphanInfo
-	requestedParents    map[string]time.Time
-	rpcClient           *rpc.Client
-	pm                  PeerManager // Reference to the peer manager
+	SharesChannel         chan []wire.Share
+	NeedShareChannel      chan *chainhash.Hash
+	FoundBlockChan        chan *wire.Share
+	Tip                   *ChainShare
+	Tail                  *ChainShare
+	AllShares             map[string]*ChainShare
+	AllSharesByPrev       map[string][]*wire.Share
+	disconnectedShares    map[string]*orphanInfo
+	requestedParents      map[string]time.Time
+	rpcClient             *rpc.Client
+	pm                    PeerManager // Reference to the peer manager
 	disconnectedShareLock sync.Mutex
-	allSharesLock       sync.Mutex
+	allSharesLock         sync.Mutex
 }
 
 type ChainShare struct {
@@ -348,7 +348,9 @@ func (sc *ShareChain) attachChildren(parentHash string, parentCS *ChainShare) {
 				newlyLinkedChildren = append(newlyLinkedChildren, cs)
 			}
 		}
-		delete(sc.AllSharesByPrev, parentHash)
+		// FIX: Do not delete the parent from the AllSharesByPrev map.
+		// This map is the "road map" and needs to be complete for fork resolution.
+		// delete(sc.AllSharesByPrev, parentHash)
 	}
 
 	sc.allSharesLock.Unlock()
