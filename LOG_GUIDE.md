@@ -41,82 +41,63 @@ You can control the verbosity of the logs in two ways:
 
 ### Main Package (Startup and Shutdown)
 
-* <font color="white">**`[INFO]`**</font> `Starting p2pool-go v%s...`
-    * **Meaning**: The node is starting up. The version number is displayed.
-* <font color="white">**`[INFO]`**</font> `Loading configuration from %s...`
-    * **Meaning**: The node is loading its configuration from the specified file.
-* <font color="white">**`[INFO]`**</font> `MAIN: Startup complete – Stratum + Web UI on :%d. Press Ctrl+C to exit.`
-    * **Meaning**: The node has successfully started and is ready to accept connections from miners and web browsers.
-* <font color="white">**`[INFO]`**</font> `MAIN: Graceful shutdown initiated.`
-    * **Meaning**: The user has pressed Ctrl+C, and the node is beginning its shutdown sequence.
-* <font color="white">**`[INFO]`**</font> `MAIN: Shutdown complete.`
-    * **Meaning**: The node has successfully shut down all its components.
+* <font color="white">**`[INFO]`**</font> `🚀  p2pool-go (single-port build) starting up`
+    * **Meaning**: The node is starting up.
+* <font color="white">**`[INFO]`**</font> `Verthash: Initializing Verthasher...`
+    * **Meaning**: The node is loading the `verthash.dat` file.
+* <font color="white">**`[INFO]`**</font> `Verthash: Verthasher initialized successfully...`
+    * **Meaning**: The `verthash.dat` file was found and loaded correctly.
+* <font color="white">**`[INFO]`**</font> `MAIN: Startup complete – Stratum + Web UI on :9172. Press Ctrl+C to exit.`
+    * **Meaning**: The node has successfully started and is ready to accept connections.
+* <font color="yellow">**`[WARN]`**</font> `Shutdown signal received. Saving share chain and exiting…`
+    * **Meaning**: You have pressed Ctrl+C, and the node is saving its progress before closing.
+* <font color="white">**`[INFO]`**</font> `Sharechain committed successfully.`
+    * **Meaning**: The node has successfully saved the sharechain state to `shares.dat`.
 
 ### Stratum Server (Miner Connections)
 
-* <font color="white">**`[INFO]`**</font> `Stratum: Listening for miners on %s`
-    * **Meaning**: The Stratum server has started and is listening for incoming connections from mining software.
-* <font color="white">**`[INFO]`**</font> `Stratum: New miner connection from %s (ID: %d)`
+* <font color="white">**`[INFO]`**</font> `Stratum: Listening for miners on [::]:9172`
+    * **Meaning**: The Stratum server is running and listening for miners.
+* <font color="white">**`[INFO]`**</font> `Stratum: New miner connection from 192.168.1.100:12345 (ID: 1)`
     * **Meaning**: A new miner has connected to your node.
-* <font color="white">**`[INFO]`**</font> `Stratum: Disconnected miner %s`
-    * **Meaning**: A miner has disconnected from your node.
-* <font color="white">**`[INFO]`**</font> `Stratum: Received mining.subscribe from %s`
-    * **Meaning**: A miner has sent the initial "subscribe" message to start receiving jobs.
-* <font color="green">**`[SUCCESS]`**</font> `Stratum: SHARE ACCEPTED from %s`
-    * **Meaning**: A share submitted by a miner was valid and accepted by your node. This is the most basic confirmation that your miner is working correctly.
-* <font color="yellow">**`[WARN]`**</font> `Stratum: REJECTED SHARE from %s`
-    * **Meaning**: A share submitted by a miner was invalid and rejected. This can happen if the share is stale, a duplicate, or malformed.
-* <font color="white">**`[INFO]`**</font> `Stratum: Difficulty set to %f for %s`
-    * **Meaning**: The node has set a new difficulty for a specific miner based on its hashrate.
-* <font color="magenta">**`[NOTICE]`**</font> `Stratum: Sent job %s to worker %s`
-    * **Meaning**: A new mining job has been sent to a specific worker.
+* <font color="yellow">**`[WARN]`**</font> `Stratum: Rejecting miner authorization from 192.168.1.100:12345 - P2Pool is not synced.`
+    * **Meaning**: A miner tried to connect before your node was synced to the P2Pool network. The connection was rejected to prevent the miner from working on stale jobs. This is normal during startup.
+* <font color="magenta">**`[NOTICE]`**</font> `New job 12 sent to vtc1q... (Height: 2453431, Block Value: 12.50 VTC, Share Diff: 0.29, 6 tx, 2.9 kB)`
+    * **Meaning**: A new mining job with detailed information has been sent to a connected and authorized miner.
+* <font color="green">**`[SUCCESS]`**</font> `SHARE ACCEPTED from vtc1q... (Height: 2453431, Diff: 4.43, Hash: 4730dc414197)`
+    * **Meaning**: A share submitted by your miner was valid and accepted. This is the primary confirmation that your miner is working correctly.
+* <font color="yellow">**`[WARN]`**</font> `Stratum: Share rejected – hash is greater than target for vtc1q...`
+    * **Meaning**: A share submitted by your miner was rejected because it did not meet the required difficulty. This is normal and happens frequently.
 
 ### Peer-to-Peer (P2P) Network
 
-* <font color="white">**`[INFO]`**</font> `P2P: Listening for incoming peers on port :%d`
-    * **Meaning**: The P2P server is running and ready to accept connections from other p2pool nodes.
-* <font color="white">**`[INFO]`**</font> `Handshake successful with %s! Peer is on protocol version %d`
+* <font color="white">**`[INFO]`**</font> `P2P: Listening for incoming peers on port :9348`
+    * **Meaning**: The P2P server is ready to accept connections from other p2pool nodes.
+* <font color="white">**`[INFO]`**</font> `Handshake successful with 146.190.155.56! Peer is on protocol version 3501`
     * **Meaning**: Your node has successfully connected and "shaken hands" with another p2pool node.
-* <font color="yellow">**`[WARN]`**</font> `P2P: Handshake failed with %s: %v`
-    * **Meaning**: An attempt to connect to another peer failed. The reason for the failure is provided.
-* <font color="white">**`[INFO]`**</font> `Received addrs message from %s. Discovering %d new potential peers.`
-    * **Meaning**: A peer has sent you a list of other nodes it knows about, helping you expand your network connections.
-* <font color="cyan">**`[DEBUG]`**</font> `Trying OUTGOING connection to peer %s`
-    * **Meaning**: Your node is initiating a connection to another peer.
-* <font color="cyan">**`[DEBUG]`**</font> `Sending version message to %s`
-    * **Meaning**: Your node is sending its version information to a peer as part of the handshake process.
-* <font color="cyan">**`[DEBUG]`**</font> `Received version message from %s (v: %d, sub: %s)`
-    * **Meaning**: Your node has received a version message from a peer, showing its protocol version and sub-version string.
-* <font color="cyan">**`[DEBUG]`**</font> `Broadcasting '%s' message to %d peers`
-    * **Meaning**: Your node is sending a message (like a new share or block) to its connected peers.
+* <font color="white">**`[INFO]`**</font> `P2P: Node is now synced with the network.`
+    * **Meaning**: Your node has at least one active peer and considers itself synced. It will now allow miners to connect.
+* <font color="yellow">**`[WARN]`**</font> `P2P: Node has lost sync with the network (no peers).`
+    * **Meaning**: Your node has lost all of its peer connections and will stop accepting miners until it reconnects.
+* <font color="yellow">**`[WARN]`**</font> `Failed to connect to p2poolvtc.com:9348: ... connection refused`
+    * **Meaning**: Your node tried to connect to a peer, but the peer refused the connection. This is normal if the other node is not running.
+* <font color="white">**`[INFO]`**</font> `Received 51 new shares from 146.190.155.56 to process.`
+    * **Meaning**: Your node is catching up to the network by downloading share history from a peer.
 
-### Sharechain
+### Sharechain & Block Handling
 
-* <font color="cyan">**`[DEBUG]`**</font> `SHARECHAIN/LOAD: Opening shares.dat...`
-    * **Meaning**: The node is attempting to load the existing sharechain data from disk.
-* <font color="cyan">**`[DEBUG]`**</font> `SHARECHAIN/LOAD: shares.dat not found, starting with empty chain.`
-    * **Meaning**: No previous sharechain data was found, so the node is starting fresh.
-* <font color="cyan">**`[DEBUG]`**</font> `SHARECHAIN/AddShares: Attempting to add %d new shares.`
-    * **Meaning**: The node is beginning the process of adding new shares to its chain.
-* <font color="white">**`[INFO]`**</font> `SHARECHAIN/Resolve: Found parent %s for orphan %s. Linking now.`
-    * **Meaning**: An orphan share's missing parent has been found, and the orphan is being correctly added to the sharechain. This is the normal resolution for an orphan.
-* <font color="white">**`[INFO]`**</font> `SHARECHAIN/Resolve: Share %s is the new tip. New Tip Height: %d.`
-    * **Meaning**: A new share has been added to the top of the sharechain.
-* <font color="yellow">**`[WARN]`**</font> `SHARECHAIN/AddShares: Discarding INVALID share %s.`
-    * **Meaning**: A share received from a peer was found to be invalid and was discarded.
-* <font color="yellow">**`[WARN]`**</font> `SHARECHAIN/Resolve: Purging stale orphan %s after %d checks.`
-    * **Meaning**: An orphan share's parent could not be found after multiple attempts, so the orphan is being removed to save memory.
-
-### Block Handling
-
-* <font color="white">**`[INFO]`**</font> `New block template received for height %d`
-    * **Meaning**: Your node has received a new block template from the main Vertcoin daemon, which it will use to create new jobs for your miners.
-* <font color="green">**`[SUCCESS]`**</font> `!!!! BLOCK FOUND !!!! Share %s is a valid block!`
-    * **Meaning**: A share met the difficulty target of the main Vertcoin network.
-* <font color="white">**`[INFO]`**</font> `Submitting block %s to the network...`
-    * **Meaning**: Your node is broadcasting the newly found block to the Vertcoin network.
-* <font color="green">**`[SUCCESS]`**</font> `SUCCESS! Block %s accepted by the network! Awaiting maturity.`
-    * **Meaning**: The Vertcoin network has accepted your block.
-* <font color="yellow">**`[WARN]`**</font> `Block %s appears orphaned (not found), will not check again.`
-    * **Meaning**: A previously found block is no longer part of the main blockchain (it was on a fork). This is normal and the node will stop tracking it.
+* <font color="white">**`[INFO]`**</font> `New block template received for height 2453751`
+    * **Meaning**: Your node has received new work from the main Vertcoin daemon.
+* <font color="green">**`[SUCCESS]`**</font> `!!!! BLOCK FOUND !!!! Share ... meets network target ...!`
+    * **Meaning**: A share submitted to your node was difficult enough to be a valid Vertcoin block.
+* <font color="white">**`[INFO]`**</font> `Submitting block ... to the network...`
+    * **Meaning**: Your node is attempting to submit the new block to the Vertcoin network.
+* <font color="green">**`[SUCCESS]`**</font> `SUCCESS! Block ... accepted by the network! Awaiting maturity.`
+    * **Meaning**: The block was valid and has been accepted by the main network.
+* <font color="green">**`[SUCCESS]`**</font> `✅ Block ... is now MATURE with 101 confirmations!`
+    * **Meaning**: The block has received enough confirmations to be considered permanent, and payouts will now be processed.
+* <font color="white">**`[INFO]`**</font> `Triggering PPLNS payout for block ...`
+    * **Meaning**: The node is starting the payout process for a mature block.
+* <font color="green">**`[SUCCESS]`**</font> `Payout for block ... completed successfully. TXID: ...`
+    * **Meaning**: The `sendmany` transaction to pay the miners and the pool operator has been successfully broadcast.
 
