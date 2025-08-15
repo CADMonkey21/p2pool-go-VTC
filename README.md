@@ -11,7 +11,7 @@ This project is currently in a **beta testing phase**. It is functional, connect
 The node is functional, with all core logic for P2P networking, share processing, and payouts implemented.
 
 * **Full Stratum Server:** Allows any standard Verthash mining software to connect.
-* **P2P Networking:** Connects to legacy Python peers and other nodes to form a decentralized mining network.
+* **P2P Networking:** Connects to Go nodes to form a decentralized mining network.
 * **Live Web Dashboard:** A built-in web interface automatically refreshes every 5 seconds to display real-time pool and miner statistics in a clean, pretty-printed JSON format.
 * **Color-Coded Logging:** Important events like finding blocks, receiving new work, and warnings are color-coded in the console for easy monitoring at a glance.
 * **Automatic PPLNS Payouts:** Automatically calculates and distributes block rewards based on the Pay-Per-Last-N-Shares model.
@@ -24,9 +24,9 @@ The node is functional, with all core logic for P2P networking, share processing
 ## Prerequisites
 
 1.  A **synced `vertcoind`** with RPC enabled in `vertcoin.conf`.
-2.  The **`verthash.dat`** dataset. Copy it from `~/.vertcoin/` or let the node download on first start.
+2.  The **`verthash.dat`** dataset. Point your configuration file to the verthash.dat location unless it's located in default location.
 3.  **Go 1.18+** (Go 1.22 recommended).
-4.  An **open P2P port** on your router/firewall forwarded to the machine running the node.
+4.  An **open P2P port** on your router/firewall forwarded to the machine running the node. See default port settings below.
 
 ---
 
