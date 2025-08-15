@@ -1,4 +1,3 @@
-
 # p2pool-go-VTC Personal Configuration
 
 # The network to run on. For Vertcoin mainnet, this must be "vertcoin".
@@ -33,11 +32,24 @@ pplns_window: 8640
 
 
 # --- Port Settings ---
-# The port your miners will connect to. Rememeber to open ports firewall & router settings.
+# The port your miners will connect to. Remember to open ports in firewall & router settings.
 stratumPort: 9172
 
 # The port that other p2pool nodes will connect to.
 p2pPort: 9348
+
+
+# --- General Settings ---
+# The level of detail for logging.
+# Options: "debug", "info", "warn", "error"
+# This can be overridden at startup with the -loglevel flag.
+loglevel: "info"
+
+# --- Verthash Settings ---
+# (Optional) The full path to your verthash.dat file.
+# If you leave this blank, the node will check default locations,
+# such as ~/.vertcoin/verthash.dat
+verthash_dat_file: ""
 
 
 # --- Variable Difficulty Settings ---

@@ -63,7 +63,6 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 		stats := sc.GetStats()
 		localHashrate := ss.GetLocalHashrate()
 
-		// CORRECTED: Updated logging labels to match the new dashboard for consistency
 		logging.Infof("================================= Stats Update =================================")
 		logging.Infof("Peers: %d  |  GoRoutines: %d", pm.GetPeerCount(), runtime.NumGoroutine())
 		logging.Infof("--------------------------------------------------------------------------------")
@@ -84,9 +83,8 @@ func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServe
 func main() {
 	startTime := time.Now()
 
-	/* ----- start‑up & logging ---------------------------------------- */
-	logging.Infof("🚀  p2pool-go (single‑port build) starting up")
-	logging.SetLogLevel(int(logging.LogLevelDebug))
+	/* ----- start-up & logging ---------------------------------------- */
+	logging.Infof("🚀  p2pool-go (single-port build) starting up")
 
 	logFile, _ := os.OpenFile("p2pool.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
 	defer logFile.Close()
@@ -94,19 +92,31 @@ func main() {
 
 	/* ----- configuration -------------------------------------------- */
 	config.LoadConfig()
+
+	// FIX: Use correct integer log levels that are defined in your logging package
+	switch config.Active.LogLevel {
+	case "debug":
+		logging.SetLogLevel(3)
+	case "info":
+		logging.SetLogLevel(2)
+	case "warn":
+		logging.SetLogLevel(1)
+	case "error":
+		logging.SetLogLevel(0)
+	default:
+		logging.SetLogLevel(2) // Default to Info
+	}
+
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
 
 	/* ----- RPC, share chain, work manager --------------------------- */
 	rpcClient := rpc.NewClient(config.Active)
 	sc := work.NewShareChain(rpcClient)
 
-	// **FIX:** The Peer Manager is now created and started BEFORE the sharechain is loaded.
 	/* ----- peer network --------------------------------------------- */
 	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
 	go pm.ListenForPeers()
 
-	// **FIX:** Now that the Peer Manager is running, we can safely load the sharechain.
-	// It will be able to resolve any orphans by asking its new peers.
 	if err := sc.Load(); err != nil {
 		logging.Fatalf("MAIN: Failed to load sharechain: %v", err)
 	}
@@ -120,7 +130,7 @@ func main() {
 	stratumSrv := stratum.NewStratumServer(workManager, pm)
 
 	/* =================================================================
-	   Single TCP listener on :9172, multiplexed via cmux
+	   Single TCP listener, multiplexed via cmux
 	   ================================================================= */
 	addr := fmt.Sprintf(":%d", config.Active.StratumPort)
 	baseListener, err := net.Listen("tcp", addr)

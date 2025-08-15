@@ -29,13 +29,13 @@ type Config struct {
 	Fee             float64       `yaml:"fee"`
 	PPLNSWindow     int           `yaml:"pplns_window"`
 	Vardiff         VardiffConfig `yaml:"vardiff"`
-	VerthashDatFile string        `yaml:"verthash_dat_file"` // FIX: Add this line
+	VerthashDatFile string        `yaml:"verthash_dat_file"`
+	LogLevel        string        `yaml:"loglevel"` // This can be overridden by the flag
 }
 
 var Active Config
 
 func LoadConfig() {
-	// This function remains unchanged
 	file, err := os.Open("config.yaml")
 	if err != nil {
 		logging.Warnf("No config.yaml file found.")
@@ -52,6 +52,9 @@ func LoadConfig() {
 	testnet := flag.Bool("testnet", false, "Testnet")
 	user := flag.String("u", "", "RPC Username")
 	pass := flag.String("p", "", "RPC Password")
+	// FIX: Add the loglevel flag
+	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, warn, error)")
+
 	flag.Parse()
 
 	if *net != "" {
@@ -65,5 +68,9 @@ func LoadConfig() {
 	}
 	if *pass != "" {
 		Active.RPCPass = *pass
+	}
+	// FIX: If the loglevel flag is used, it overrides the config file
+	if *logLevel != "" {
+		Active.LogLevel = *logLevel
 	}
 }
