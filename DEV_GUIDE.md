@@ -22,22 +22,27 @@ The application is architected around a few key components that run as concurren
 
 ---
 
-## File and Directory Structure
-
-The repository is organized into several packages, each with a specific responsibility:
+## Updated File and Directory Structure
 
 ```
-p2p/             # P2P networking logic
-rpc/             # RPC client for vertcoind
-stratum/         # Stratum server for miners
-work/            # Core logic for shares, sharechain, and block templates
-wire/            # P2P message definitions and serialization
-web/             # Web dashboard UI
-verthash/        # Verthash hashing implementation
-logging/         # Color-coded logging utilities
-config/          # Configuration loading and management
-main.go          # Main application entry point
-README.md
+config/           # Configuration files and templates
+debugproxy/       # Debugging proxy tools
+logging/          # Logging utilities
+net/              # Network-related functionalities
+p2p/              # Peer-to-peer networking logic
+rpc/              # RPC client for vertcoind
+stratum/          # Stratum server for miners
+util/             # Utility functions and helpers
+web/              # Web dashboard UI
+wire/             # P2P message definitions and serialization
+work/             # Core logic for shares, sharechain, and block templates
+.gitignore        # Git ignore file
+README.md         # Project documentation
+config.example.yaml # Example configuration file
+go.mod            # Go module dependencies
+go.sum            # Go module checksums
+main.go           # Main application entry point
+shares.dat        # Data file for shares
 ```
 
 ---
