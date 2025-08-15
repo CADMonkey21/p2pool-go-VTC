@@ -25,7 +25,7 @@ The application is architected around a few key components that run as concurren
 ## File and Directory Structure
 
 ```
-config/                  # Configuration files and templates
+config/                  # Centralized node configuration; loads settings from config.yaml and command-line flags
 debugproxy/              # Debugging proxy tools
 logging/                 # Logging utilities
 net/                     # Network-related functionalities
