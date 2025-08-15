@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic" // FIX: Import the atomic package for thread-safe operations
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -26,6 +27,7 @@ type PeerManager struct {
 	activeNetwork p2pnet.Network
 	shareChain    *work.ShareChain
 	peersMutex    sync.RWMutex
+	synced        atomic.Value // FIX: Add a thread-safe flag for sync status
 }
 
 func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
@@ -35,12 +37,18 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 		activeNetwork: net,
 		shareChain:    sc,
 	}
+	pm.synced.Store(false) // FIX: Initialize sync status to false
 	for _, h := range net.SeedHosts {
 		pm.AddPossiblePeer(h)
 	}
 	go pm.peerConnectorLoop()
 	go pm.shareRequester()
 	return pm
+}
+
+// FIX: Add a public method to check the sync status
+func (pm *PeerManager) IsSynced() bool {
+	return pm.synced.Load().(bool)
 }
 
 func (pm *PeerManager) ListenForPeers() {
@@ -96,7 +104,7 @@ func (pm *PeerManager) shareRequester() {
 		logging.Debugf("Broadcasting request for needed share %s with ID %d", neededHash.String()[:12], randomID)
 		msg := &wire.MsgGetShares{
 			Hashes:  []*chainhash.Hash{neededHash},
-			Parents: 10,
+			Parents: 1000,
 			ID:      randomID,
 			Stops:   &chainhash.Hash{},
 		}
@@ -145,6 +153,14 @@ func (pm *PeerManager) peerConnectorLoop() {
 		<-ticker.C
 		pm.peersMutex.RLock()
 		peerCount := len(pm.peers)
+		// FIX: Set synced status based on peer count
+		if peerCount > 0 && !pm.IsSynced() {
+			logging.Infof("P2P: Node is now synced with the network.")
+			pm.synced.Store(true)
+		} else if peerCount == 0 && pm.IsSynced() {
+			logging.Warnf("P2P: Node has lost sync with the network (no peers).")
+			pm.synced.Store(false)
+		}
 		pm.peersMutex.RUnlock()
 
 		logging.Debugf("Number of active peers: %d", peerCount)
@@ -243,7 +259,6 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			}
 		case *wire.MsgShares:
 			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP)
-			// FIX: Call AddShares with the single, correct argument.
 			pm.shareChain.AddShares(t.Shares)
 			pm.relayToOthers(msg, p)
 
@@ -255,7 +270,7 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 				if share != nil {
 					responseShares = append(responseShares, *share)
 					cs := pm.shareChain.AllShares[h.String()]
-					for i := 0; i < 99 && cs != nil && cs.Previous != nil; i++ { // Changed from 50 to 99
+					for i := 0; i < 50 && cs != nil && cs.Previous != nil; i++ {
 						cs = cs.Previous
 						responseShares = append(responseShares, *cs.Share)
 					}

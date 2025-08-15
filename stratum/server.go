@@ -51,8 +51,6 @@ func extractID(raw *json.RawMessage) interface{} {
 
 // TargetToDiff converts a target big.Int to a difficulty float64.
 func TargetToDiff(target *big.Int) float64 {
-	// The formula is: difficulty = 1 / (target / 2^256)
-	// Simplified: difficulty = 2^256 / target
 	maxTarget := new(big.Int).Lsh(big.NewInt(1), 256)
 	diff := new(big.Float).SetInt(maxTarget)
 	targetFloat := new(big.Float).SetInt(target)
@@ -372,6 +370,15 @@ func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 
 func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	id := extractID(req.ID)
+
+	// FIX: Implement the sync gate
+	if !s.peerManager.IsSynced() {
+		logging.Warnf("Stratum: Rejecting miner authorization from %s - P2Pool is not synced.", c.Conn.RemoteAddr())
+		resp := JSONRPCResponse{ID: id, Result: false, Error: []interface{}{27, "P2Pool node is not synced yet", nil}}
+		_ = c.send(resp)
+		// Don't drop the client, they will likely retry.
+		return
+	}
 
 	var params []string
 	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 1 {
