@@ -1,3 +1,5 @@
+# p2pool-go-VTC: A Developer's Guide
+
 This guide provides a deep dive into the architecture and codebase of `p2pool-go-VTC`. It's intended for developers who want to contribute to the project, understand its inner workings, or fork it for their own purposes.
 
 ---
@@ -24,22 +26,19 @@ The application is architected around a few key components that run as concurren
 
 The repository is organized into several packages, each with a specific responsibility:
 
-p2p/ # P2P networking logic
-rpc/ # RPC client for vertcoind
-stratum/ # Stratum server for miners
-work/ # Core logic for shares, sharechain, and block templates
-wire/ # P2P message definitions and serialization
-web/ # Web dashboard UI
-verthash/ # Verthash hashing implementation
-logging/ # Color-coded logging utilities
-config/ # Configuration loading and management
-main.go # Main application entry point
+```
+p2p/             # P2P networking logic
+rpc/             # RPC client for vertcoind
+stratum/         # Stratum server for miners
+work/            # Core logic for shares, sharechain, and block templates
+wire/            # P2P message definitions and serialization
+web/             # Web dashboard UI
+verthash/        # Verthash hashing implementation
+logging/         # Color-coded logging utilities
+config/          # Configuration loading and management
+main.go          # Main application entry point
 README.md
-
-markdown
-Always show details
-
-Copy
+```
 
 ---
 
@@ -100,4 +99,4 @@ Ensures share chain survives restarts.
 ---
 
 I hope this guide is helpful for future developers.
-"""
+
