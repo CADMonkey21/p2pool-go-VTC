@@ -36,7 +36,7 @@ The pool is configured using a single `config.yaml` file. You can create your ow
 
 | Port         | Setting in `config.yaml` | Default | Purpose                                                          | Firewall / Port Forwarding Action                                                              |
 | :----------- | :----------------------- | :------ | :--------------------------------------------------------------- | :--------------------------------------------------------------------------------------------- |
-| **P2P Port** | `p2pPort`                | `9348`  | For your node to talk to other p2pool nodes.                     | **Required:** Must be **port-forwarded**. The default is `9346`. If running multiple nodes on one machine, you must assign a unique port to each in your `config.yaml`. |
+| **P2P Port** | `p2pPort`                | `9348`  | For your node to talk to other p2pool nodes.                     | **Required:** Must be **port-forwarded**. The default is `9348`. If running multiple nodes on one machine, you must assign a unique port to each in your `config.yaml`. |
 | **Stratum Port** | `stratumPort`            | `9172`  | For your miners to connect to your node. Also serves the web UI. | **Allow on local firewall.** Only forward from your router if you want to run a public pool. |
 | **RPC Port** | `rpcPort`                | `5888`  | For your node to talk to your local Vertcoin daemon.             | **No action needed.** This is a local connection and should **not** be exposed to the internet. |
 
