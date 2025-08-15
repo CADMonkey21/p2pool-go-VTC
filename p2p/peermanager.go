@@ -72,7 +72,6 @@ func (pm *PeerManager) ListenForPeers() {
 	}
 }
 
-// FIX: Corrected the type mismatch by calling the .String() method on the IP.
 func (pm *PeerManager) isAlreadyConnected(ip string) bool {
 	pm.peersMutex.RLock()
 	defer pm.peersMutex.RUnlock()
@@ -244,7 +243,8 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			}
 		case *wire.MsgShares:
 			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP)
-			pm.shareChain.AddShares(t.Shares, false)
+			// FIX: Call AddShares with the single, correct argument.
+			pm.shareChain.AddShares(t.Shares)
 			pm.relayToOthers(msg, p)
 
 		case *wire.MsgGetShares:

@@ -263,95 +263,95 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 /* -------------------------------------------------------------------- */
 
 func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
-    id := extractID(req.ID)
+	id := extractID(req.ID)
 
-    var params []string
-    if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
-        logging.Warnf("Stratum: Malformed submit params from %s", c.Conn.RemoteAddr())
-        resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{25, "Malformed submission", nil}}
-        _ = c.send(resp)
-        return
-    }
+	var params []string
+	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
+		logging.Warnf("Stratum: Malformed submit params from %s", c.Conn.RemoteAddr())
+		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{25, "Malformed submission", nil}}
+		_ = c.send(resp)
+		return
+	}
 
-    workerName, jobID, extraNonce2, nTime, nonceHex := params[0], params[1], params[2], params[3], params[4]
-    logging.Debugf("Stratum: Received mining.submit from %s for job %s", workerName, jobID)
+	workerName, jobID, extraNonce2, nTime, nonceHex := params[0], params[1], params[2], params[3], params[4]
+	logging.Debugf("Stratum: Received mining.submit from %s for job %s", workerName, jobID)
 
-    c.Mutex.Lock()
-    job, jobExists := c.ActiveJobs[jobID]
-    payoutAddr := c.WorkerName
-    currentDiff := c.CurrentDifficulty
-    c.Mutex.Unlock()
+	c.Mutex.Lock()
+	job, jobExists := c.ActiveJobs[jobID]
+	payoutAddr := c.WorkerName
+	currentDiff := c.CurrentDifficulty
+	c.Mutex.Unlock()
 
-    if !jobExists {
-        logging.Warnf("Stratum: Stale share for unknown jobID %s from %s", jobID, c.WorkerName)
-        resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{21, "Stale share", nil}}
-        _ = c.send(resp)
-        return
-    }
+	if !jobExists {
+		logging.Warnf("Stratum: Stale share for unknown jobID %s from %s", jobID, c.WorkerName)
+		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{21, "Stale share", nil}}
+		_ = c.send(resp)
+		return
+	}
 
-    newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
-    if err != nil {
-        logging.Errorf("Stratum: Could not create share object: %v", err)
-        resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{26, "Internal error creating share", nil}}
-        _ = c.send(resp)
-        return
-    }
+	newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
+	if err != nil {
+		logging.Errorf("Stratum: Could not create share object: %v", err)
+		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{26, "Internal error creating share", nil}}
+		_ = c.send(resp)
+		return
+	}
 
-    shareTarget := work.DiffToTarget(currentDiff)
-    newShare.Target = shareTarget
-    
-    accepted, reason := newShare.IsValid()
-    if accepted {
-        powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
-        shareDiff := TargetToDiff(powInt)
-        logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
-            c.WorkerName,
-            job.BlockTemplate.Height,
-            shareDiff,
-            newShare.Hash.String()[:12],
-        )
+	shareTarget := work.DiffToTarget(currentDiff)
+	newShare.Target = shareTarget
 
-        c.Mutex.Lock()
-        c.AcceptedShares++
-        c.Mutex.Unlock()
+	accepted, reason := newShare.IsValid()
+	if accepted {
+		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
+		shareDiff := TargetToDiff(powInt)
+		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
+			c.WorkerName,
+			job.BlockTemplate.Height,
+			shareDiff,
+			newShare.Hash.String()[:12],
+		)
 
-        c.LocalRateMonitor.AddDatum(ShareDatum{
-            Work:        currentDiff,
-            IsDead:      false,
-            WorkerName:  c.WorkerName,
-            ShareTarget: shareTarget,
-        })
+		c.Mutex.Lock()
+		c.AcceptedShares++
+		c.Mutex.Unlock()
 
-        s.workManager.ShareChain.AddShares([]wire.Share{*newShare}, true)
+		c.LocalRateMonitor.AddDatum(ShareDatum{
+			Work:        currentDiff,
+			IsDead:      false,
+			WorkerName:  c.WorkerName,
+			ShareTarget: shareTarget,
+		})
 
-        s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
+		// FIX: Call AddShares with the single, correct argument.
+		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
 
-        nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
-        if err != nil {
-            logging.Errorf("Could not parse bits from block template: %v", err)
-        } else {
-            nBits := uint32(nBits64)
-            netTarget := blockchain.CompactToBig(nBits)
-            if powInt.Cmp(netTarget) <= 0 {
-                netDiff := TargetToDiff(netTarget)
-                logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
-                go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
-            }
-        }
-    } else {
-        logging.Warnf("Stratum: Share rejected – %s for %s", reason, c.WorkerName)
-        c.Mutex.Lock()
-        c.RejectedShares++
-        c.Mutex.Unlock()
-    }
+		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-    resp := JSONRPCResponse{ID: id, Result: accepted, Error: nil}
-    if err := c.send(resp); err != nil {
-        logging.Warnf("Stratum: failed to send submit response: %v", err)
-        s.dropClient(c)
-    }
+		nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
+		if err != nil {
+			logging.Errorf("Could not parse bits from block template: %v", err)
+		} else {
+			nBits := uint32(nBits64)
+			netTarget := blockchain.CompactToBig(nBits)
+			if powInt.Cmp(netTarget) <= 0 {
+				netDiff := TargetToDiff(netTarget)
+				logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
+				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
+			}
+		}
+	} else {
+		logging.Warnf("Stratum: Share rejected – %s for %s", reason, c.WorkerName)
+		c.Mutex.Lock()
+		c.RejectedShares++
+		c.Mutex.Unlock()
+	}
+
+	resp := JSONRPCResponse{ID: id, Result: accepted, Error: nil}
+	if err := c.send(resp); err != nil {
+		logging.Warnf("Stratum: failed to send submit response: %v", err)
+		s.dropClient(c)
+	}
 }
-
 
 func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 	id := extractID(req.ID)
@@ -488,9 +488,9 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 
 	job := &Job{
 		ID:            jobID,
-		BlockTemplate:   tmpl,
-		ExtraNonce1:     c.ExtraNonce1,
-		Difficulty:      c.CurrentDifficulty,
+		BlockTemplate: tmpl,
+		ExtraNonce1:   c.ExtraNonce1,
+		Difficulty:    c.CurrentDifficulty,
 	}
 	if clean {
 		c.ActiveJobs = make(map[string]*Job)
