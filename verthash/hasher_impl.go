@@ -1,105 +1,105 @@
-package verthash 
+package verthash
 
 import (
-	"crypto/rand" 
+	"crypto/rand"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	// Vendored code (verthash.go, graph.go) is in this package directly
 )
 
 // Verthasher is an interface for a Verthash implementation.
 type Verthasher interface {
 	Hash(headerData []byte) ([]byte, error)
-	Close() 
+	Close()
 }
 
-// RealVerthasher now uses the Verthash struct and functions
-// from the vendored files (verthash.go, graph.go) in this same package.
-type RealVerthasher struct {
-	hasherInstance *Verthash 
+// implementation is the primary Verthasher that uses the vendored functions.
+type implementation struct {
+	hasherInstance *Verthash
 }
 
-// NewRealVerthasher creates a Verthasher using the local (vendored) Verthash code.
-func NewRealVerthasher(configuredDatFilePath string) (Verthasher, error) {
-	log.Println("Verthash: Initializing REAL Verthasher (using local/vendored code)...")
-	
+// New creates a Verthasher using the local (vendored) Verthash code.
+func New(configuredDatFilePath string) (Verthasher, error) {
+	logging.Infof("Verthash: Initializing Verthasher...")
+
 	finalPathToUse := configuredDatFilePath
 	found := false
 
 	if configuredDatFilePath != "" {
 		if _, err := os.Stat(configuredDatFilePath); err == nil {
-			log.Printf("Verthash: Found verthash.dat at configured path: %s", configuredDatFilePath)
+			logging.Debugf("Verthash: Found verthash.dat at configured path: %s", configuredDatFilePath)
 			found = true
 		} else if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("error accessing configured verthash.dat at %s: %w", configuredDatFilePath, err)
 		} else {
-			log.Printf("Verthash: Configured path '%s' for verthash.dat not found.", configuredDatFilePath)
+			logging.Debugf("Verthash: Configured path '%s' for verthash.dat not found.", configuredDatFilePath)
 		}
 	} else {
-		log.Println("Verthash: verthash_dat_file not specified in configuration.")
+		logging.Debugf("Verthash: verthash_dat_file not specified in configuration.")
 	}
 
 	if !found {
 		homeDir, err := os.UserHomeDir()
-		if err == nil { 
+		if err == nil {
 			defaultUserPath := filepath.Join(homeDir, ".vertcoin", "verthash.dat")
-			log.Printf("Verthash: Trying default user path: %s", defaultUserPath)
+			logging.Debugf("Verthash: Trying default user path: %s", defaultUserPath)
 			if _, err := os.Stat(defaultUserPath); err == nil {
-				log.Printf("Verthash: Found verthash.dat at default user path: %s", defaultUserPath)
-				finalPathToUse = defaultUserPath 
+				logging.Infof("Verthash: Found verthash.dat at default user path: %s", defaultUserPath)
+				finalPathToUse = defaultUserPath
 				found = true
 			} else if !os.IsNotExist(err) {
-				log.Printf("Verthash: Error accessing default verthash.dat at %s: %v", defaultUserPath, err)
+				logging.Warnf("Verthash: Error accessing default verthash.dat at %s: %v", defaultUserPath, err)
 			}
 		} else {
-			log.Printf("Verthash: Could not determine user home directory to check default path.")
+			logging.Warnf("Verthash: Could not determine user home directory to check default path.")
 		}
 	}
-	
+
 	if !found {
-		log.Printf("Verthash: CRITICAL ERROR - verthash.dat NOT FOUND. Last path checked: %s", finalPathToUse)
-		return nil, fmt.Errorf("verthash.dat not found. RealVerthasher cannot operate without it. Last path checked: %s", finalPathToUse)
-	}
-	
-	keepInRam := false 
-	hasher, err := NewVerthash(finalPathToUse, keepInRam) 
-	if err != nil {
-		return nil, fmt.Errorf("RealVerthasher: failed to initialize with verthash.dat '%s': %w", finalPathToUse, err)
+		logging.Fatalf("Verthash: CRITICAL ERROR - verthash.dat NOT FOUND. Please ensure it is present at the configured path, or in the default location (~/.vertcoin/verthash.dat).")
+		return nil, fmt.Errorf("verthash.dat not found")
 	}
 
-	log.Printf("Verthash: REAL Verthasher (vendored) initialized, verthash.dat: %s, keepInRam: %t", finalPathToUse, keepInRam)
-	return &RealVerthasher{
+	keepInRam := false
+	hasher, err := NewVerthash(finalPathToUse, keepInRam)
+	if err != nil {
+		return nil, fmt.Errorf("verthasher: failed to initialize with verthash.dat '%s': %w", finalPathToUse, err)
+	}
+
+	logging.Infof("Verthash: Verthasher initialized successfully (verthash.dat: %s, keepInRam: %t)", finalPathToUse, keepInRam)
+	return &implementation{
 		hasherInstance: hasher,
 	}, nil
 }
 
 // Hash performs Verthash using the local (vendored) Verthash instance.
-func (rv *RealVerthasher) Hash(headerData []byte) ([]byte, error) {
-	// NEW Log line for clarity
-	log.Println("Verthash: RealVerthasher.Hash() CALLED (using vendored code).")
-	if rv.hasherInstance == nil {
-		return nil, fmt.Errorf("RealVerthasher not properly initialized (hasher instance is nil)")
+func (v *implementation) Hash(headerData []byte) ([]byte, error) {
+	logging.Debugf("Verthash: Hashing share header.")
+	if v.hasherInstance == nil {
+		return nil, fmt.Errorf("verthasher not properly initialized (hasher instance is nil)")
 	}
 	if len(headerData) != 80 {
-		return nil, fmt.Errorf("real verthash: headerData must be 80 bytes, got %d", len(headerData))
+		return nil, fmt.Errorf("verthash: headerData must be 80 bytes, got %d", len(headerData))
 	}
-	
-	hashArray, err := rv.hasherInstance.SumVerthash(headerData) 
+
+	hashArray, err := v.hasherInstance.SumVerthash(headerData)
 	if err != nil {
-		return nil, fmt.Errorf("RealVerthasher: SumVerthash failed: %w", err)
+		return nil, fmt.Errorf("verthasher: SumVerthash failed: %w", err)
 	}
-	
+
 	hashSlice := make([]byte, 32)
-	copy(hashSlice, hashArray[:]) 
+	copy(hashSlice, hashArray[:])
 	return hashSlice, nil
 }
 
-func (rv *RealVerthasher) Close() {
-    if rv.hasherInstance != nil {
-        rv.hasherInstance.Close() 
-    }
+func (v *implementation) Close() {
+	if v.hasherInstance != nil {
+		v.hasherInstance.Close()
+	}
 }
 
 // --- DummyVerthasher ---
@@ -107,19 +107,29 @@ type DummyVerthasher struct {
 	datFilePath string
 	initialized bool
 }
+
 func NewDummyVerthasher(configuredDatFilePath string) (Verthasher, error) {
 	log.Println("Verthash: Initializing DUMMY Verthasher...")
-	finalPathToUse := configuredDatFilePath 
-	if configuredDatFilePath == "" { /* ... path checking ... */ } else { /* ... path checking ... */ }
+	finalPathToUse := configuredDatFilePath
+	if configuredDatFilePath == "" { /* ... path checking ... */
+	} else { /* ... path checking ... */
+	}
 	return &DummyVerthasher{datFilePath: finalPathToUse, initialized: true}, nil
 }
 func (dv *DummyVerthasher) Hash(headerData []byte) ([]byte, error) {
-	if !dv.initialized { return nil, fmt.Errorf("dummy verthasher not initialized") }
-	if len(headerData) != 80 { return nil, fmt.Errorf("dummy verthash: headerData must be 80 bytes, got %d", len(headerData)) }
+	if !dv.initialized {
+		return nil, fmt.Errorf("dummy verthasher not initialized")
+	}
+	if len(headerData) != 80 {
+		return nil, fmt.Errorf("dummy verthash: headerData must be 80 bytes, got %d", len(headerData))
+	}
 	log.Printf("Verthash: DUMMY Hash called for header (first 8 bytes): %x...", headerData[:8])
-	dummyHash := make([]byte, 32); _, randErr := rand.Read(dummyHash) 
-	if randErr != nil { return nil, fmt.Errorf("failed to generate dummy hash: %w", randErr) }
+	dummyHash := make([]byte, 32)
+	_, randErr := rand.Read(dummyHash)
+	if randErr != nil {
+		return nil, fmt.Errorf("failed to generate dummy hash: %w", randErr)
+	}
 	log.Printf("Verthash: DUMMY Hash produced (first 8 bytes): %x...", dummyHash[:8])
-	return dummyHash, nil 
+	return dummyHash, nil
 }
 func (dv *DummyVerthasher) Close() { /* Nothing to close */ }

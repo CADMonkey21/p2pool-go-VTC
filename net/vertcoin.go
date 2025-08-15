@@ -5,17 +5,16 @@ import (
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	"github.com/CADMonkey21/p2pool-go-VTC/verthash" // Use your new local package
+	"github.com/CADMonkey21/p2pool-go-VTC/verthash"
 )
 
 // Use the Verthasher interface from your new package
 var verthashEngine verthash.Verthasher
 
-// The init function now uses NewRealVerthasher
+// The init function now uses the renamed New() function
 func init() {
 	logging.Infof("Initializing Verthash engine from local package...")
-	// The hasher_impl.go will find verthash.dat in default locations if "" is passed
-	vh, err := verthash.NewRealVerthasher("verthash.dat")
+	vh, err := verthash.New(config.Active.VerthashDatFile)
 	if err != nil {
 		logging.Fatalf("CRITICAL: Failed to initialize Verthash. Make sure 'verthash.dat' is present. Error: %v", err)
 		return

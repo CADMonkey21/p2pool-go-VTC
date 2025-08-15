@@ -16,19 +16,20 @@ type VardiffConfig struct {
 }
 
 type Config struct {
-	Network     string        `yaml:"network"`
-	Peers       []string      `yaml:"peers"`
-	RPCUser     string        `yaml:"rpcUser"`
-	RPCPass     string        `yaml:"rpcPass"`
-	Testnet     bool          `yaml:"testnet"`
-	RPCHost     string        `yaml:"rpcHost"`
-	RPCPort     int           `yaml:"rpcPort"`
-	PoolAddress string        `yaml:"poolAddress"`
-	P2PPort     int           `yaml:"p2pPort"`
-	StratumPort int           `yaml:"stratumPort"`
-	Fee         float64       `yaml:"fee"`
-	PPLNSWindow int           `yaml:"pplns_window"` // <-- ADDED: For PPLNS payout logic
-	Vardiff     VardiffConfig `yaml:"vardiff"`
+	Network         string        `yaml:"network"`
+	Peers           []string      `yaml:"peers"`
+	RPCUser         string        `yaml:"rpcUser"`
+	RPCPass         string        `yaml:"rpcPass"`
+	Testnet         bool          `yaml:"testnet"`
+	RPCHost         string        `yaml:"rpcHost"`
+	RPCPort         int           `yaml:"rpcPort"`
+	PoolAddress     string        `yaml:"poolAddress"`
+	P2PPort         int           `yaml:"p2pPort"`
+	StratumPort     int           `yaml:"stratumPort"`
+	Fee             float64       `yaml:"fee"`
+	PPLNSWindow     int           `yaml:"pplns_window"`
+	Vardiff         VardiffConfig `yaml:"vardiff"`
+	VerthashDatFile string        `yaml:"verthash_dat_file"` // FIX: Add this line
 }
 
 var Active Config
