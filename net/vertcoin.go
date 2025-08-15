@@ -5,25 +5,10 @@ import (
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	"github.com/CADMonkey21/p2pool-go-VTC/verthash"
+	// "github.com/CADMonkey21/p2pool-go-VTC/verthash" // FIX: This import is no longer needed here
 )
 
-// Use the Verthasher interface from your new package
-var verthashEngine verthash.Verthasher
-
-// The init function now uses the renamed New() function
-func init() {
-	logging.Infof("Initializing Verthash engine from local package...")
-	vh, err := verthash.New(config.Active.VerthashDatFile)
-	if err != nil {
-		logging.Fatalf("CRITICAL: Failed to initialize Verthash. Make sure 'verthash.dat' is present. Error: %v", err)
-		return
-	}
-	verthashEngine = vh
-	logging.Successf("Verthash engine initialized successfully.")
-}
-
-// The Vertcoin function now correctly calls the Hash method
+// The Vertcoin function now correctly calls the Hash method from the passed-in engine
 func Vertcoin(testnet bool) Network {
 	n := Network{
 		P2PPort:         config.Active.P2PPort,
@@ -32,7 +17,7 @@ func Vertcoin(testnet bool) Network {
 		RPCPort:         config.Active.RPCPort,
 		WorkerPort:      config.Active.StratumPort,
 		ChainLength:     5100,
-		Verthash:        verthashEngine, // Assign the engine
+		// Verthash engine is now set in main after config is loaded
 	}
 
 	n.POWHash = func(data []byte) []byte {

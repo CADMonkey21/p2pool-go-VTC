@@ -18,6 +18,7 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/stratum"
+	"github.com/CADMonkey21/p2pool-go-VTC/verthash"
 	"github.com/CADMonkey21/p2pool-go-VTC/web"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 )
@@ -93,7 +94,6 @@ func main() {
 	/* ----- configuration -------------------------------------------- */
 	config.LoadConfig()
 
-	// FIX: Use correct integer log levels that are defined in your logging package
 	switch config.Active.LogLevel {
 	case "debug":
 		logging.SetLogLevel(3)
@@ -107,7 +107,14 @@ func main() {
 		logging.SetLogLevel(2) // Default to Info
 	}
 
-	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet)
+	// FIX: Initialize Verthasher AFTER config is loaded
+	verthashEngine, err := verthash.New(config.Active.VerthashDatFile)
+	if err != nil {
+		logging.Fatalf("CRITICAL: Failed to initialize Verthash: %v", err)
+	}
+
+	// FIX: Set the network and pass the initialized verthasher to it
+	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet, verthashEngine)
 
 	/* ----- RPC, share chain, work manager --------------------------- */
 	rpcClient := rpc.NewClient(config.Active)
