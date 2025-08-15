@@ -17,6 +17,26 @@ The logs use a color-coded system to indicate the importance of each message.
 
 ---
 
+## Setting the Log Level
+
+You can control the verbosity of the logs in two ways:
+
+1.  **In `config.yaml`**: Set the `loglevel` property to one of the following values: `"error"`, `"warn"`, `"info"`, or `"debug"`.
+
+    ```yaml
+    # config.yaml
+    loglevel: "info"
+    ```
+
+2.  **Via Command-Line Flag**: You can use the `-loglevel` flag when starting the node. **This will override the value in your `config.yaml` file.** This is useful for temporarily enabling more detailed logging without editing your configuration.
+
+    ```bash
+    # Example: Start the node with debug logging
+    go run . -loglevel debug
+    ```
+
+---
+
 ## Log Message Guide
 
 ### Main Package (Startup and Shutdown)
@@ -99,3 +119,4 @@ The logs use a color-coded system to indicate the importance of each message.
     * **Meaning**: The Vertcoin network has accepted your block.
 * <font color="yellow">**`[WARN]`**</font> `Block %s appears orphaned (not found), will not check again.`
     * **Meaning**: A previously found block is no longer part of the main blockchain (it was on a fork). This is normal and the node will stop tracking it.
+
