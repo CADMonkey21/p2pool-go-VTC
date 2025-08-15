@@ -16,24 +16,25 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
+const (
+	defaultMaxPeers = 35
+)
+
 type PeerManager struct {
-	peers           map[string]*Peer
-	possiblePeers   map[string]bool
-	pendingPeers    map[string]bool // FIX: Add a map to track pending outbound connections
-	activeNetwork   p2pnet.Network
-	shareChain      *work.ShareChain
-	peersMutex      sync.RWMutex
+	peers         map[string]*Peer
+	possiblePeers map[string]bool
+	activeNetwork p2pnet.Network
+	shareChain    *work.ShareChain
+	peersMutex    sync.RWMutex
 }
 
 func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	pm := &PeerManager{
-		peers:           make(map[string]*Peer),
-		possiblePeers:   make(map[string]bool),
-		pendingPeers:    make(map[string]bool), // FIX: Initialize the new map
-		activeNetwork:   net,
-		shareChain:      sc,
+		peers:         make(map[string]*Peer),
+		possiblePeers: make(map[string]bool),
+		activeNetwork: net,
+		shareChain:    sc,
 	}
-	sc.SetPeerManager(pm)
 	for _, h := range net.SeedHosts {
 		pm.AddPossiblePeer(h)
 	}
@@ -59,9 +60,28 @@ func (pm *PeerManager) ListenForPeers() {
 			continue
 		}
 
+		remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		if pm.isAlreadyConnected(remoteIP) {
+			logging.Warnf("P2P: Rejecting new connection from %s, peer already connected.", remoteIP)
+			conn.Close()
+			continue
+		}
+
 		logging.Infof("P2P: New INCOMING connection from %s", conn.RemoteAddr().String())
-		go pm.handleNewPeer(conn, conn.RemoteAddr().String())
+		go pm.handleNewPeer(conn)
 	}
+}
+
+// FIX: Corrected the type mismatch by calling the .String() method on the IP.
+func (pm *PeerManager) isAlreadyConnected(ip string) bool {
+	pm.peersMutex.RLock()
+	defer pm.peersMutex.RUnlock()
+	for _, p := range pm.peers {
+		if p.RemoteIP.String() == ip {
+			return true
+		}
+	}
+	return false
 }
 
 func (pm *PeerManager) shareRequester() {
@@ -101,7 +121,7 @@ func (pm *PeerManager) Broadcast(msg wire.P2PoolMessage) {
 	defer pm.peersMutex.RUnlock()
 
 	if len(pm.peers) > 0 {
-		// logging.Debugf("P2P: Broadcasting '%s' message to %d peers", msg.Command(), len(pm.peers))
+		logging.Debugf("P2P: Broadcasting '%s' message to %d peers", msg.Command(), len(pm.peers))
 		for _, p := range pm.peers {
 			if p.IsConnected() {
 				p.Connection.Outgoing <- msg
@@ -134,18 +154,12 @@ func (pm *PeerManager) peerConnectorLoop() {
 			pm.peersMutex.Lock()
 			var peerToTry string
 			for p := range pm.possiblePeers {
-				_, isActive := pm.peers[p]
-				_, isPending := pm.pendingPeers[p] // FIX: Check if we are already trying to connect
-				if !isActive && !isPending {
+				if _, active := pm.peers[p]; !active {
 					peerToTry = p
 					break
 				}
 			}
-			
-			// FIX: Mark the peer as pending BEFORE starting the connection attempt.
-			if peerToTry != "" {
-				pm.pendingPeers[peerToTry] = true
-			}
+			delete(pm.possiblePeers, peerToTry)
 			pm.peersMutex.Unlock()
 
 			if peerToTry != "" {
@@ -156,14 +170,6 @@ func (pm *PeerManager) peerConnectorLoop() {
 }
 
 func (pm *PeerManager) TryPeer(p string) {
-	// FIX: Ensure the pending status is removed when this function exits,
-	// regardless of whether the connection was successful or not.
-	defer func() {
-		pm.peersMutex.Lock()
-		delete(pm.pendingPeers, p)
-		pm.peersMutex.Unlock()
-	}()
-
 	logging.Debugf("Trying OUTGOING connection to peer %s", p)
 
 	host, portStr, err := net.SplitHostPort(p)
@@ -171,64 +177,55 @@ func (pm *PeerManager) TryPeer(p string) {
 		host = p
 		portStr = fmt.Sprintf("%d", pm.activeNetwork.StandardP2PPort)
 	}
+
+	if pm.isAlreadyConnected(host) {
+		logging.Debugf("P2P: Aborting connection to %s, peer already connected.", host)
+		return
+	}
+
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		logging.Warnf("Invalid port for peer %s: %v", p, err)
+		pm.AddPossiblePeer(p)
 		return
 	}
 
 	remoteAddr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	pm.peersMutex.RLock()
-	_, active := pm.peers[remoteAddr]
-	pm.peersMutex.RUnlock()
-	if active {
-		return
-	}
-
 	conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
 	if err != nil {
 		logging.Warnf("Failed to connect to %s: %v", remoteAddr, err)
+		pm.AddPossiblePeer(p)
 		return
 	}
 
-	go pm.handleNewPeer(conn, p)
+	pm.handleNewPeer(conn)
 }
 
-func (pm *PeerManager) handleNewPeer(conn net.Conn, originalAddr string) {
+func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	peer, err := NewPeer(conn, pm.activeNetwork, pm.shareChain)
 	if err != nil {
 		logging.Warnf("P2P: Handshake with %s failed: %v", conn.RemoteAddr(), err)
 		return
 	}
-	
-	peerKey := conn.RemoteAddr().String()
+
+	originalAddr := conn.RemoteAddr().String()
 
 	pm.peersMutex.Lock()
-	pm.peers[peerKey] = peer
+	pm.peers[originalAddr] = peer
 	pm.peersMutex.Unlock()
 
 	defer func() {
 		pm.peersMutex.Lock()
-		delete(pm.peers, peerKey)
+		delete(pm.peers, originalAddr)
 		pm.peersMutex.Unlock()
 		pm.AddPossiblePeer(originalAddr)
-		logging.Warnf("Peer %s has disconnected.", peerKey)
+		logging.Warnf("Peer %s has disconnected.", peer.RemoteIP)
 	}()
 
 	pm.handlePeerMessages(peer)
 }
 
 func (pm *PeerManager) handlePeerMessages(p *Peer) {
-	// Trigger for initial sync
-	logging.Infof("Requesting share chain tip from new peer %s", p.RemoteIP.String())
-	initialGetShares := &wire.MsgGetShares{
-		Hashes:  []*chainhash.Hash{},
-		Parents: 0,
-		ID:      0,
-		Stops:   &chainhash.Hash{},
-	}
-	p.Connection.Outgoing <- initialGetShares
-
 	for msg := range p.Connection.Incoming {
 		switch t := msg.(type) {
 		case *wire.MsgPing:
@@ -238,7 +235,7 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			// No action needed.
 
 		case *wire.MsgAddrs:
-			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP.String(), len(t.Addresses))
+			logging.Infof("Received addrs message from %s. Discovering %d new potential peers.", p.RemoteIP, len(t.Addresses))
 			for _, addrRecord := range t.Addresses {
 				ip := addrRecord.Address.String()
 				port := addrRecord.Port
@@ -246,43 +243,31 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 				pm.AddPossiblePeer(peerAddr)
 			}
 		case *wire.MsgShares:
-			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP.String())
+			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP)
 			pm.shareChain.AddShares(t.Shares, false)
-			// relayToOthers is removed to prevent broadcast loops.
+			pm.relayToOthers(msg, p)
 
 		case *wire.MsgGetShares:
-			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP.String(), len(t.Hashes))
+			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
 			var responseShares []wire.Share
-
-			if len(t.Hashes) == 0 {
-				tip := pm.shareChain.Tip
-				if tip != nil {
-					cs := tip
-					for i := 0; i < 500 && cs != nil; i++ {
-						responseShares = append(responseShares, *cs.Share)
+			for _, h := range t.Hashes {
+				share := pm.shareChain.GetShare(h.String())
+				if share != nil {
+					responseShares = append(responseShares, *share)
+					cs := pm.shareChain.AllShares[h.String()]
+					for i := 0; i < 50 && cs != nil && cs.Previous != nil; i++ {
 						cs = cs.Previous
-					}
-				}
-			} else {
-				for _, h := range t.Hashes {
-					share := pm.shareChain.GetShare(h.String())
-					if share != nil {
-						responseShares = append(responseShares, *share)
-						cs := pm.shareChain.AllShares[h.String()]
-						for i := 0; i < 50 && cs != nil && cs.Previous != nil; i++ {
-							cs = cs.Previous
-							responseShares = append(responseShares, *cs.Share)
-						}
+						responseShares = append(responseShares, *cs.Share)
 					}
 				}
 			}
 
 			if len(responseShares) > 0 {
-				logging.Debugf("Found %d requested shares, sending to peer %s", len(responseShares), p.RemoteIP.String())
+				logging.Debugf("Found %d requested shares, sending to peer %s", len(responseShares), p.RemoteIP)
 				p.Connection.Outgoing <- &wire.MsgShares{Shares: responseShares}
 			}
 		default:
-			logging.Debugf("Received unhandled message of type %T from %s", t, p.RemoteIP.String())
+			logging.Debugf("Received unhandled message of type %T from %s", t, p.RemoteIP)
 		}
 	}
 }
