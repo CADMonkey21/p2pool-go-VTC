@@ -26,18 +26,7 @@ The application is architected around a few key components that run as concurren
 
 The repository is organized into several packages, each with a specific responsibility:
 
-├── p2p/             # P2P networking logic
-├── rpc/             # RPC client for vertcoind
-├── stratum/         # Stratum server for miners
-├── work/            # Core logic for shares, sharechain, and block templates
-├── wire/            # P2P message definitions and serialization
-├── web/             # Web dashboard UI
-├── verthash/        # Verthash hashing implementation
-├── logging/         # Color-coded logging utilities
-├── config/          # Configuration loading and management
-├── main.go          # Main application entry point
-└── README.md
-
+├── p2p/             # P2P networking logic├── rpc/             # RPC client for vertcoind├── stratum/         # Stratum server for miners├── work/            # Core logic for shares, sharechain, and block templates├── wire/            # P2P message definitions and serialization├── web/             # Web dashboard UI├── verthash/        # Verthash hashing implementation├── logging/         # Color-coded logging utilities├── config/          # Configuration loading and management├── main.go          # Main application entry point└── README.md
 ---
 
 ## Deep Dive into Core Components
@@ -48,7 +37,7 @@ The P2P layer is responsible for the node's communication with other p2pool node
 
 * **`p2p/peermanager.go`**: This is the heart of the P2P system. It manages a pool of connected peers, discovers new peers, and handles incoming connections. It also contains the `peerConnectorLoop` which periodically tries to connect to new peers if the number of active connections is low. The `PeerManager` is also responsible for broadcasting messages to all connected peers, such as new shares that your miners have found.
 * **`p2p/peer.go`**: This file defines the `Peer` struct, which represents a single connection to another p2pool node. It handles the initial handshake process, which involves exchanging `version` and `verack` messages. Each `Peer` has its own goroutines for monitoring the connection, sending periodic pings, and handling the initial synchronization of the share chain.
-* **`wire/`**: This package contains the definitions for all the P2P messages, such as `MsgVersion`, `MsgShares`, `MsgGetShares`, etc.. It also handles the serialization and deserialization of these messages for sending over the network. The `P2PoolConnection` struct in `wire/conn.go` is a wrapper around a `net.Conn` that uses `gob` for encoding and decoding messages.
+* **`wire/`**: This package contains the definitions for all the P2P messages, such as `MsgVersion`, `MsgShares`, `MsgGetShares`, etc. It also handles the serialization and deserialization of these messages for sending over the network. The `P2PoolConnection` struct in `wire/conn.go` is a wrapper around a `net.Conn` that uses `gob` for encoding and decoding messages.
 
 ### 2. RPC Client (`rpc/`)
 
@@ -97,3 +86,4 @@ Based on the `README.md` and the current state of the code, here are some potent
 * **Improved Peer Discovery:** The current peer discovery mechanism is based on a list of seed hosts and the `addrs` message. More advanced peer discovery mechanisms could be implemented to make the network more resilient.
 
 I hope this guide is helpful for future developers.
+
