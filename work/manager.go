@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -274,7 +275,13 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 			continue
 		}
 
-		address, err := bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, share.ShareInfo.ShareData.PubKeyHash...))
+		var address string
+		var err error
+		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x06 || share.ShareInfo.ShareData.PubKeyHashVersion == 0x0A {
+			address, err = bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, share.ShareInfo.ShareData.PubKeyHash...))
+		} else {
+			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
+		}
 		if err != nil {
 			logging.Warnf("Could not re-encode address for pubkeyhash, skipping share for payout: %v", err)
 			continue
@@ -327,12 +334,12 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 	nBits := binary.LittleEndian.Uint32(nBitsBytes)
 
 	header := &wire.BlockHeader{
-		Version:   share.MinHeader.Version,
-		PrevBlock: *share.MinHeader.PreviousBlock,
+		Version:    share.MinHeader.Version,
+		PrevBlock:  *share.MinHeader.PreviousBlock,
 		MerkleRoot: *merkleRoot,
-		Timestamp: time.Unix(int64(share.MinHeader.Timestamp), 0),
-		Bits:      nBits,
-		Nonce:     share.MinHeader.Nonce,
+		Timestamp:  time.Unix(int64(share.MinHeader.Timestamp), 0),
+		Bits:       nBits,
+		Nonce:      share.MinHeader.Nonce,
 	}
 
 	var coinbaseTx wire.MsgTx

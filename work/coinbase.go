@@ -5,15 +5,17 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript" // CORRECTED: Use txscript for opcodes
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
 
 // CreateCoinbaseTx constructs the special coinbase transaction for a block.
-// It now includes the witness commitment hash for SegWit compliance.
+// It now correctly handles both Bech32 and legacy Base58 addresses.
 func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, extraNonce2 string, witnessCommitment []byte) ([]byte, error) {
 	extraNonce, err := hex.DecodeString(extraNonce1 + extraNonce2)
 	if err != nil {
@@ -25,18 +27,29 @@ func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, ex
 
 	coinbaseScript := NewScriptBuilder().AddData(heightBytes).AddData(extraNonce).Script()
 
-	hrp, decoded, err := bech32.Decode(payoutAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode bech32 address '%s': %v", payoutAddress, err)
+	var payoutScriptPubKey []byte
+	if strings.HasPrefix(strings.ToLower(payoutAddress), "vtc1") {
+		hrp, decoded, err := bech32.Decode(payoutAddress)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode bech32 address '%s': %v", payoutAddress, err)
+		}
+		if hrp != "vtc" {
+			return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
+		}
+		witnessVersion := decoded[0]
+		witnessProgram, err := bech32.ConvertBits(decoded[1:], 5, 8, false)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert witness program for address '%s': %v", payoutAddress, err)
+		}
+		payoutScriptPubKey = NewScriptBuilder().AddOp(witnessVersion).AddData(witnessProgram).Script()
+	} else {
+		decoded := base58.Decode(payoutAddress)
+		if len(decoded) < 5 {
+			return nil, fmt.Errorf("invalid base58 address length for '%s'", payoutAddress)
+		}
+		pkh := decoded[1 : len(decoded)-4]
+		payoutScriptPubKey = NewScriptBuilder().AddOp(txscript.OP_DUP).AddOp(txscript.OP_HASH160).AddData(pkh).AddOp(txscript.OP_EQUALVERIFY).AddOp(txscript.OP_CHECKSIG).Script()
 	}
-	if hrp != "vtc" {
-		return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
-	}
-
-	witnessVersion := decoded[0]
-	witnessProgram := decoded[1:]
-
-	payoutScriptPubKey := NewScriptBuilder().AddOp(witnessVersion).AddData(witnessProgram).Script()
 
 	// Build the transaction
 	tx := wire.NewMsgTx(2) // Version 2 transaction
@@ -51,15 +64,13 @@ func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, ex
 
 	// Add the witness commitment output if there's a commitment to add
 	if witnessCommitment != nil && len(witnessCommitment) > 0 {
-		// Create the witness commitment output script as per BIP141
 		commitmentHeader := []byte{0xaa, 0x21, 0xa9, 0xed}
-		commitmentScriptPubKey := NewScriptBuilder().AddOp(txscript.OP_RETURN).AddData(append(commitmentHeader, witnessCommitment...)).Script() // CORRECTED
+		commitmentScriptPubKey := NewScriptBuilder().AddOp(txscript.OP_RETURN).AddData(append(commitmentHeader, witnessCommitment...)).Script()
 		txOutCommitment := wire.NewTxOut(0, commitmentScriptPubKey)
 		tx.AddTxOut(txOutCommitment)
 	}
 
 	// Add witness data
-	// The witness nonce is the 32-byte hash of the extranonce
 	witnessNonceHash := chainhash.HashH(extraNonce)
 	tx.TxIn[0].Witness = wire.TxWitness{witnessNonceHash[:]}
 
@@ -82,17 +93,17 @@ func NewScriptBuilder() *ScriptBuilder {
 }
 func (b *ScriptBuilder) AddData(data []byte) *ScriptBuilder {
 	lenData := len(data)
-	if lenData < txscript.OP_PUSHDATA1 { // CORRECTED
+	if lenData < txscript.OP_PUSHDATA1 {
 		b.script = append(b.script, byte(lenData))
 	} else if lenData <= 0xff {
-		b.script = append(b.script, txscript.OP_PUSHDATA1, byte(lenData)) // CORRECTED
+		b.script = append(b.script, txscript.OP_PUSHDATA1, byte(lenData))
 	} else if lenData <= 0xffff {
-		b.script = append(b.script, txscript.OP_PUSHDATA2) // CORRECTED
+		b.script = append(b.script, txscript.OP_PUSHDATA2)
 		buf := make([]byte, 2)
 		binary.LittleEndian.PutUint16(buf, uint16(lenData))
 		b.script = append(b.script, buf...)
 	} else {
-		b.script = append(b.script, txscript.OP_PUSHDATA4) // CORRECTED
+		b.script = append(b.script, txscript.OP_PUSHDATA4)
 		buf := make([]byte, 4)
 		binary.LittleEndian.PutUint32(buf, uint32(lenData))
 		b.script = append(b.script, buf...)

@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,10 +43,13 @@ func doubleSHA256(data []byte) []byte {
 // isValidVtcAddress now validates both Bech32 and legacy Base58 addresses with checksums.
 func isValidVtcAddress(addr string) bool {
 	// --- Try bech32 first ---
-	if hrp, _, err := bech32.Decode(addr); err == nil {
-		if hrp == "vtc" || hrp == "tvtc" {
-			return true
+	if strings.HasPrefix(strings.ToLower(addr), "vtc1") || strings.HasPrefix(strings.ToLower(addr), "tvtc1") {
+		if hrp, _, err := bech32.Decode(addr); err == nil {
+			if hrp == "vtc" || hrp == "tvtc" {
+				return true
+			}
 		}
+		return false
 	}
 
 	// --- Try legacy Base58 (with checksum) ---
@@ -68,13 +72,7 @@ func isValidVtcAddress(addr string) bool {
 	// version byte
 	version := payload[0]
 	switch version {
-	case 0x47: // mainnet P2PKH (starts with V…)
-		return true
-	case 0x05: // mainnet P2SH (starts with 3…)
-		return true
-	case 0x6f: // testnet P2PKH (starts with m/n…)
-		return true
-	case 0xc4: // testnet P2SH (starts with 2…)
+	case 0x47, 0x05, 0x6f, 0xc4: // mainnet P2PKH, P2SH, testnet P2PKH, P2SH
 		return true
 	default:
 		return false
