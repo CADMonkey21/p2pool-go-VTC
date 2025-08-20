@@ -7,7 +7,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"sync/atomic" // FIX: Import the atomic package for thread-safe operations
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -27,7 +27,7 @@ type PeerManager struct {
 	activeNetwork p2pnet.Network
 	shareChain    *work.ShareChain
 	peersMutex    sync.RWMutex
-	synced        atomic.Value // FIX: Add a thread-safe flag for sync status
+	synced        atomic.Value
 }
 
 func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
@@ -37,7 +37,7 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 		activeNetwork: net,
 		shareChain:    sc,
 	}
-	pm.synced.Store(false) // FIX: Initialize sync status to false
+	pm.synced.Store(false)
 	for _, h := range net.SeedHosts {
 		pm.AddPossiblePeer(h)
 	}
@@ -46,7 +46,6 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	return pm
 }
 
-// FIX: Add a public method to check the sync status
 func (pm *PeerManager) IsSynced() bool {
 	return pm.synced.Load().(bool)
 }
@@ -153,11 +152,7 @@ func (pm *PeerManager) peerConnectorLoop() {
 		<-ticker.C
 		pm.peersMutex.RLock()
 		peerCount := len(pm.peers)
-		// FIX: Set synced status based on peer count
-		if peerCount > 0 && !pm.IsSynced() {
-			logging.Infof("P2P: Node is now synced with the network.")
-			pm.synced.Store(true)
-		} else if peerCount == 0 && pm.IsSynced() {
+		if peerCount == 0 && pm.IsSynced() {
 			logging.Warnf("P2P: Node has lost sync with the network (no peers).")
 			pm.synced.Store(false)
 		}
@@ -217,7 +212,7 @@ func (pm *PeerManager) TryPeer(p string) {
 }
 
 func (pm *PeerManager) handleNewPeer(conn net.Conn) {
-	peer, err := NewPeer(conn, pm.activeNetwork, pm.shareChain)
+	peer, err := NewPeer(conn, pm.activeNetwork, pm.shareChain, pm)
 	if err != nil {
 		logging.Warnf("P2P: Handshake with %s failed: %v", conn.RemoteAddr(), err)
 		return
@@ -261,7 +256,10 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP)
 			pm.shareChain.AddShares(t.Shares)
 			pm.relayToOthers(msg, p)
-
+			if len(pm.shareChain.GetNeededHashes()) == 0 && !pm.IsSynced() {
+				logging.Infof("P2P: Node is now synced with the network.")
+				pm.synced.Store(true)
+			}
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
 			var responseShares []wire.Share

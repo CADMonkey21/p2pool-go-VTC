@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strings"
 
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -52,15 +54,34 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	}
 	nTimeUint32 := binary.BigEndian.Uint32(nTimeBytes)
 
-	hrp, decoded, err := bech32.Decode(payoutAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode bech32 payout address '%s': %v", payoutAddress, err)
+	// Patched Address Handling
+	var pkh []byte
+	var pkhVersion byte
+
+	if strings.HasPrefix(strings.ToLower(payoutAddress), "vtc1") || strings.HasPrefix(strings.ToLower(payoutAddress), "tvtc1") {
+		// Handle modern Bech32 address
+		hrp, decodedBech32, err := bech32.Decode(payoutAddress)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode bech32 payout address '%s': %v", payoutAddress, err)
+		}
+		if hrp != "vtc" && hrp != "tvtc" {
+			return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
+		}
+		pkhVersion = decodedBech32[0]
+		pkh, err = bech32.ConvertBits(decodedBech32[1:], 5, 8, false)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert bits for bech32 address '%s': %v", payoutAddress, err)
+		}
+	} else {
+		// Handle legacy Base58 address
+		decoded58 := base58.Decode(payoutAddress)
+		if len(decoded58) < 5 { // Base58 addresses are longer than 4 bytes
+			return nil, fmt.Errorf("invalid base58 address length for '%s'", payoutAddress)
+		}
+		pkhVersion = decoded58[0]
+		pkh = decoded58[1 : len(decoded58)-4] // Exclude version and 4-byte checksum
 	}
-	if hrp != "vtc" && hrp != "tvtc" {
-		return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
-	}
-	pkhVersion := decoded[0]
-	pkh := decoded[1:]
+	// End Patched Address Handling
 
 	nBitsBytes, err := hex.DecodeString(job.Bits)
 	if err != nil {
@@ -145,7 +166,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 		RefMerkleLink: p2pwire.MerkleLink{Branch: []*chainhash.Hash{}, Index: 0},
 	}
 
-	// Calculate hashes immediately after creation
 	err = share.CalculateHashes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate hashes for new share: %v", err)

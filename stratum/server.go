@@ -1,6 +1,7 @@
 package stratum
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
@@ -30,12 +32,53 @@ var jobCounter uint64
 /* Helpers                                                              */
 /* -------------------------------------------------------------------- */
 
+// doubleSHA256 computes sha256(sha256(data))
+func doubleSHA256(data []byte) []byte {
+	h := sha256.Sum256(data)
+	h2 := sha256.Sum256(h[:])
+	return h2[:]
+}
+
+// isValidVtcAddress now validates both Bech32 and legacy Base58 addresses with checksums.
 func isValidVtcAddress(addr string) bool {
-	hrp, _, err := bech32.Decode(addr)
-	if err != nil {
+	// --- Try bech32 first ---
+	if hrp, _, err := bech32.Decode(addr); err == nil {
+		if hrp == "vtc" || hrp == "tvtc" {
+			return true
+		}
+	}
+
+	// --- Try legacy Base58 (with checksum) ---
+	decoded := base58.Decode(addr)
+	if len(decoded) < 5 {
 		return false
 	}
-	return hrp == "vtc" || hrp == "tvtc"
+
+	// split into payload + checksum
+	payload := decoded[:len(decoded)-4]
+	checksum := decoded[len(decoded)-4:]
+
+	expected := doubleSHA256(payload)[:4]
+	for i := 0; i < 4; i++ {
+		if checksum[i] != expected[i] {
+			return false
+		}
+	}
+
+	// version byte
+	version := payload[0]
+	switch version {
+	case 0x47: // mainnet P2PKH (starts with V…)
+		return true
+	case 0x05: // mainnet P2SH (starts with 3…)
+		return true
+	case 0x6f: // testnet P2PKH (starts with m/n…)
+		return true
+	case 0xc4: // testnet P2SH (starts with 2…)
+		return true
+	default:
+		return false
+	}
 }
 
 func extractID(raw *json.RawMessage) interface{} {
@@ -320,9 +363,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			ShareTarget: shareTarget,
 		})
 
-		// FIX: Call AddShares with the single, correct argument.
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
-
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
 		nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
@@ -371,12 +412,10 @@ func (s *StratumServer) handleSubscribe(c *Client, req *JSONRPCRequest) {
 func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	id := extractID(req.ID)
 
-	// FIX: Implement the sync gate
-	if !s.peerManager.IsSynced() {
+	if !s.workManager.IsSynced() || !s.peerManager.IsSynced() {
 		logging.Warnf("Stratum: Rejecting miner authorization from %s - P2Pool is not synced.", c.Conn.RemoteAddr())
 		resp := JSONRPCResponse{ID: id, Result: false, Error: []interface{}{27, "P2Pool node is not synced yet", nil}}
 		_ = c.send(resp)
-		// Don't drop the client, they will likely retry.
 		return
 	}
 
@@ -387,7 +426,9 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	}
 
 	addr := params[0]
+	logging.Debugf("Stratum: Miner %s trying to authorize with address: %s", c.Conn.RemoteAddr(), addr)
 	if !isValidVtcAddress(addr) {
+		logging.Warnf("Stratum: Miner %s failed authorization with INVALID address: %s", c.Conn.RemoteAddr(), addr)
 		resp := JSONRPCResponse{ID: id, Result: false, Error: []interface{}{24, "Invalid VTC address", nil}}
 		_ = c.send(resp)
 		s.dropClient(c)

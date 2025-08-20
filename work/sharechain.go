@@ -434,3 +434,30 @@ func (sc *ShareChain) GetShare(hashStr string) *wire.Share {
 	}
 	return nil
 }
+
+func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
+	sc.allSharesLock.Lock()
+	defer sc.allSharesLock.Unlock()
+	sc.disconnectedShareLock.Lock()
+	defer sc.disconnectedShareLock.Unlock()
+
+	needed := make(map[chainhash.Hash]bool)
+	for _, s := range sc.disconnectedShares {
+		if s.ShareInfo.ShareData.PreviousShareHash != nil {
+			if _, exists := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]; !exists {
+				needed[*s.ShareInfo.ShareData.PreviousShareHash] = true
+			}
+		}
+	}
+
+	if len(needed) == 0 {
+		return nil
+	}
+
+	hashes := make([]*chainhash.Hash, 0, len(needed))
+	for h := range needed {
+		hashCopy := h
+		hashes = append(hashes, &hashCopy)
+	}
+	return hashes
+}

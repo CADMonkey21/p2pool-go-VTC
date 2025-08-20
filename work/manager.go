@@ -19,6 +19,7 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
+	"github.com/CADMonkey21/p2pool-go-VTC/verthash"
 	p2pwire "github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
@@ -27,9 +28,9 @@ type BlockState int
 
 const (
 	StatePending BlockState = iota // Newly found, awaiting maturity
-	StateMature                     // 100+ confirmations, ready for payout
-	StatePaid                       // Payout transaction sent
-	StateOrphan                     // Confirmed to not be on the main chain
+	StateMature                    // 100+ confirmations, ready for payout
+	StatePaid                      // Payout transaction sent
+	StateOrphan                    // Confirmed to not be on the main chain
 )
 
 type PayoutBlock struct {
@@ -41,18 +42,21 @@ type PayoutBlock struct {
 }
 
 type WorkManager struct {
-	rpcClient        *rpc.Client
-	ShareChain       *ShareChain
-	Templates        map[string]*BlockTemplate
-	PendingBlocks    []*PayoutBlock
-	TemplateMutex    sync.RWMutex
-	PendingMutex     sync.Mutex
-	NewBlockChan     chan *BlockTemplate
-	ForceNewTemplate chan bool
+	rpcClient          *rpc.Client
+	ShareChain         *ShareChain
+	Templates          map[string]*BlockTemplate
+	PendingBlocks      []*PayoutBlock
+	TemplateMutex      sync.RWMutex
+	PendingMutex       sync.Mutex
+	NewBlockChan       chan *BlockTemplate
+	ForceNewTemplate   chan bool
+	lastBlockUpdate    time.Time
+	lastBlockUpdateMux sync.RWMutex
+	verthasher         verthash.Verthasher
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
-	return &WorkManager{
+	wm := &WorkManager{
 		rpcClient:        rpcClient,
 		ShareChain:       sc,
 		Templates:        make(map[string]*BlockTemplate),
@@ -60,6 +64,19 @@ func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 		NewBlockChan:     make(chan *BlockTemplate, 10),
 		ForceNewTemplate: make(chan bool, 1),
 	}
+
+	var err error
+	wm.verthasher, err = verthash.New(config.Active.VerthashDatFile)
+	if err != nil {
+		logging.Fatalf("Could not initialize verthasher: %v", err)
+	}
+	return wm
+}
+
+func (wm *WorkManager) IsSynced() bool {
+	wm.lastBlockUpdateMux.RLock()
+	defer wm.lastBlockUpdateMux.RUnlock()
+	return time.Since(wm.lastBlockUpdate) < 5*time.Minute
 }
 
 func (wm *WorkManager) WatchFoundBlocks() {
@@ -128,6 +145,10 @@ func (wm *WorkManager) fetchBlockTemplate() {
 		wm.Templates = make(map[string]*BlockTemplate) // Clear old templates
 		wm.Templates[tmpl.PreviousBlockHash] = &tmpl
 
+		wm.lastBlockUpdateMux.Lock()
+		wm.lastBlockUpdate = time.Now()
+		wm.lastBlockUpdateMux.Unlock()
+
 		select {
 		case wm.NewBlockChan <- &tmpl:
 		default:
@@ -187,7 +208,6 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 					logging.Successf("✅ Block %s at height %d is now MATURE with %d confirmations!", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
 					pb.State = StateMature
 				} else {
-					// CORRECTED: Added missing pb.BlockHash.String() argument
 					logging.Debugf("Block %s at height %d is still pending maturity (%d confirmations)", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
 				}
 			case StateMature:
@@ -307,12 +327,12 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 	nBits := binary.LittleEndian.Uint32(nBitsBytes)
 
 	header := &wire.BlockHeader{
-		Version:    share.MinHeader.Version,
-		PrevBlock:  *share.MinHeader.PreviousBlock,
+		Version:   share.MinHeader.Version,
+		PrevBlock: *share.MinHeader.PreviousBlock,
 		MerkleRoot: *merkleRoot,
-		Timestamp:  time.Unix(int64(share.MinHeader.Timestamp), 0),
-		Bits:       nBits,
-		Nonce:      share.MinHeader.Nonce,
+		Timestamp: time.Unix(int64(share.MinHeader.Timestamp), 0),
+		Bits:      nBits,
+		Nonce:     share.MinHeader.Nonce,
 	}
 
 	var coinbaseTx wire.MsgTx
@@ -356,7 +376,7 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 		State:              StatePending,
 	})
 	wm.PendingMutex.Unlock()
-	
+
 	wm.TemplateMutex.Lock()
 	delete(wm.Templates, template.PreviousBlockHash)
 	wm.TemplateMutex.Unlock()

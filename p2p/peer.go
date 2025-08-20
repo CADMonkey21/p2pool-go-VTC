@@ -39,9 +39,10 @@ type Peer struct {
 	versionInfo *wire.MsgVersion
 	connected   bool
 	connMutex   sync.RWMutex
+	manager     *PeerManager
 }
 
-func NewPeer(conn net.Conn, n p2pnet.Network, sc *work.ShareChain) (*Peer, error) {
+func NewPeer(conn net.Conn, n p2pnet.Network, sc *work.ShareChain, pm *PeerManager) (*Peer, error) {
 	p := Peer{
 		Network:    n,
 		RemoteIP:   conn.RemoteAddr().(*net.TCPAddr).IP,
@@ -49,6 +50,7 @@ func NewPeer(conn net.Conn, n p2pnet.Network, sc *work.ShareChain) (*Peer, error
 		Connection: wire.NewP2PoolConnection(conn, n),
 		ShareChain: sc,
 		connected:  false,
+		manager:    pm,
 	}
 
 	err := p.Handshake()
@@ -77,12 +79,13 @@ func (p *Peer) InitialSync() {
 		logging.Infof("P2P: Chains are out of sync (Local: %s, Peer: %s). Starting sync with %s.", localTip.String()[:12], peerTip.String()[:12], p.RemoteIP)
 		msg := &wire.MsgGetShares{
 			Hashes:  []*chainhash.Hash{peerTip},
-			Parents: 1000, // Changed from 100 to 1000
+			Parents: 1000,
 			Stops:   localTip,
 		}
 		p.Connection.Outgoing <- msg
 	} else {
 		logging.Infof("P2P: Chains are already in sync with %s.", p.RemoteIP)
+		p.manager.synced.Store(true)
 	}
 }
 
@@ -91,7 +94,6 @@ func (p *Peer) monitorDisconnect() {
 	p.connMutex.Lock()
 	p.connected = false
 	p.connMutex.Unlock()
-	logging.Warnf("Peer %s has disconnected.", p.RemoteIP)
 }
 
 func (p *Peer) IsConnected() bool {
@@ -126,7 +128,7 @@ func (p *Peer) PingLoop() {
 
 func (p *Peer) Handshake() error {
 	localAddr := p.Connection.Connection.LocalAddr().(*net.TCPAddr)
-	
+
 	addrFrom := localAddr.IP
 	if !p.RemoteIP.IsLoopback() && getPublicIP() != nil {
 		addrFrom = getPublicIP()
@@ -138,7 +140,7 @@ func (p *Peer) Handshake() error {
 		AddrTo:        wire.P2PoolAddress{Address: p.RemoteIP, Port: int16(p.RemotePort)},
 		AddrFrom:      wire.P2PoolAddress{Address: addrFrom, Port: int16(p.Network.P2PPort)},
 		Nonce:         int64(rand.Uint64()),
-		SubVersion:    "p2pool-go/0.1.0",
+		SubVersion:    "p2pool-go/0.2.0",
 		Mode:          1,
 		BestShareHash: p.ShareChain.GetTipHash(),
 	}
