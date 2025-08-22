@@ -20,19 +20,12 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	if err != nil {
 		return err
 	}
-
-	// --- START OF FIX ---
-	// The chainhash.Hash.CloneBytes() method already returns the hash in the correct
-	// little-endian byte order required for the block header. The previous calls to
-	// util.ReverseBytes were incorrectly flipping these to big-endian.
 	if _, err := w.Write(header.PrevBlock.CloneBytes()); err != nil {
 		return err
 	}
 	if _, err := w.Write(header.MerkleRoot.CloneBytes()); err != nil {
 		return err
 	}
-	// --- END OF FIX ---
-
 	if err := binary.Write(w, binary.LittleEndian, uint32(header.Timestamp.Unix())); err != nil {
 		return err
 	}
@@ -92,14 +85,18 @@ func (s *Share) CalculateHashes() error {
 		return fmt.Errorf("verthash failed during PoW recalculation: %v", err)
 	}
 
-	// The PoW hash from Verthash is little-endian, so it must be reversed for the big.Int comparison.
-	// The block hash (SHA256d of the header) is also stored reversed to match Bitcoin convention.
-	s.POWHash, _ = chainhash.NewHash(util.ReverseBytes(powBytesLE))
+	// --- START OF NEW FIX ---
+	// The Verthash function returns a little-endian hash. The `chainhash.Hash` type
+	// also stores data internally as little-endian. We must store the raw little-endian
+	// result directly in POWHash. The reversal should ONLY happen in the stratum server
+	// right before the big.Int comparison.
+	s.POWHash, _ = chainhash.NewHash(powBytesLE)
+	// --- END OF NEW FIX ---
+
 	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
 	s.Hash, _ = chainhash.NewHash(blockHashBytes)
 	return nil
 }
-
 
 func (s *Share) IsValid() (bool, string) {
 	if s.POWHash == nil {
