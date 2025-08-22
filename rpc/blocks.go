@@ -70,6 +70,35 @@ func (c *Client) GetBlock(hash *chainhash.Hash) (*BlockInfo, error) {
 	return &blockInfo, nil
 }
 
+// ProposeBlock performs a "dry run" of submitting a block to get a reason for rejection.
+func (c *Client) ProposeBlock(block *wire.MsgBlock) (string, error) {
+	var blockBuf bytes.Buffer
+	if err := block.Serialize(&blockBuf); err != nil {
+		return "", err
+	}
+	blockHex := hex.EncodeToString(blockBuf.Bytes())
+
+	params := []interface{}{
+		blockHex,
+		"proposal",
+	}
+
+	resp, err := c.Call("submitblock", params)
+	if err != nil {
+		// If the RPC call itself fails, return that error.
+		return "", err
+	}
+	// If the block is valid, the result will be null.
+	if resp.Result == nil || string(resp.Result) == "null" {
+		return "accepted", nil
+	}
+	// Otherwise, the result contains the rejection reason string.
+	var reason string
+	if err := json.Unmarshal(resp.Result, &reason); err != nil {
+		return "", err
+	}
+	return reason, nil
+}
 
 // SubmitBlock sends a serialized block to the RPC server.
 func (c *Client) SubmitBlock(block *wire.MsgBlock) error {

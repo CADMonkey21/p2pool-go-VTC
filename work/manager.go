@@ -2,12 +2,12 @@ package work
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -277,11 +277,17 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 
 		var address string
 		var err error
-		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x06 || share.ShareInfo.ShareData.PubKeyHashVersion == 0x0A {
-			address, err = bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, share.ShareInfo.ShareData.PubKeyHash...))
-		} else {
+		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 { // Bech32 P2WPKH or P2WSH
+			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
+			if err != nil {
+				logging.Warnf("Could not convert bits for bech32 payout: %v", err)
+				continue
+			}
+			address, err = bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
+		} else { // Legacy Base58
 			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
 		}
+
 		if err != nil {
 			logging.Warnf("Could not re-encode address for pubkeyhash, skipping share for payout: %v", err)
 			continue
@@ -327,11 +333,11 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
 	merkleRoot := util.ComputeMerkleRootFromLink(coinbaseTxHash, share.MerkleLink.Branch, share.MerkleLink.Index)
 
-	nBitsBytes, err := hex.DecodeString(template.Bits)
+	nBits64, err := strconv.ParseUint(template.Bits, 16, 32)
 	if err != nil {
-		return fmt.Errorf("could not decode network bits from template: %v", err)
+		return fmt.Errorf("could not parse network bits from template: %v", err)
 	}
-	nBits := binary.LittleEndian.Uint32(nBitsBytes)
+	nBits := uint32(nBits64)
 
 	header := &wire.BlockHeader{
 		Version:    share.MinHeader.Version,
@@ -364,7 +370,18 @@ func (wm *WorkManager) SubmitBlock(share *p2pwire.Share, template *BlockTemplate
 		block.AddTransaction(&msgTx)
 	}
 
-	logging.Infof("Submitting block %s to the network...", block.BlockHash().String())
+	logging.Infof("Proposing block %s for validation...", block.BlockHash().String())
+	reason, err := wm.rpcClient.ProposeBlock(block)
+	if err != nil {
+		logging.Errorf("Block proposal failed: %v", err)
+		return err
+	}
+	if reason != "accepted" {
+		logging.Errorf("Block proposal REJECTED, reason: %s", reason)
+		return fmt.Errorf("block rejected by daemon: %s", reason)
+	}
+	logging.Successf("Block proposal accepted! Submitting to the network...")
+
 	err = wm.rpcClient.SubmitBlock(block)
 	if err != nil {
 		logging.Errorf("Block submission failed: %v", err)
