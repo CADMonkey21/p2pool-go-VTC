@@ -40,6 +40,18 @@ func doubleSHA256(data []byte) []byte {
 	return h2[:]
 }
 
+// HashLEToBig converts a 32-byte little-endian hash to a big.Int (big-endian) value.
+func HashLEToBig(h []byte) *big.Int {
+	if len(h) != 32 {
+		return big.NewInt(0)
+	}
+	be := make([]byte, 32)
+	for i := 0; i < 32; i++ {
+		be[i] = h[31-i]
+	}
+	return new(big.Int).SetBytes(be)
+}
+
 // isValidVtcAddress now validates both Bech32 and legacy Base58 addresses with checksums.
 func isValidVtcAddress(addr string) bool {
 	// --- Try bech32 first ---
@@ -341,7 +353,11 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	accepted, reason := newShare.IsValid()
 	if accepted {
-		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
+		// --- Start of Fix ---
+		// Correctly convert the little-endian PoW hash to a big-endian big.Int for comparison
+		powInt := HashLEToBig(newShare.POWHash.CloneBytes())
+		// --- End of Fix ---
+
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
 			c.WorkerName,
@@ -364,18 +380,30 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
+		// --- Start of Fix & Diagnostics ---
+		logging.Debugf("[DIAG] shareHash.print=%s", newShare.Hash.String())
+		logging.Debugf("[DIAG] powInt(H^LE->big)=%s", powInt.Text(16))
+
 		nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		if err != nil {
 			logging.Errorf("Could not parse bits from block template: %v", err)
 		} else {
 			nBits := uint32(nBits64)
 			netTarget := blockchain.CompactToBig(nBits)
+
+			logging.Debugf("[DIAG] nBits=0x%08x netTarget=%s", nBits, netTarget.Text(16))
+			rt := blockchain.BigToCompact(netTarget)
+			if rt != nBits {
+				logging.Warnf("[DIAG] bits round-trip mismatch: in=0x%08x out=0x%08x", nBits, rt)
+			}
+
 			if powInt.Cmp(netTarget) <= 0 {
 				netDiff := TargetToDiff(netTarget)
 				logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
 				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
 			}
 		}
+		// --- End of Fix & Diagnostics ---
 	} else {
 		logging.Warnf("Stratum: Share rejected – %s for %s", reason, c.WorkerName)
 		c.Mutex.Lock()
