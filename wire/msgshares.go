@@ -85,18 +85,19 @@ func (s *Share) CalculateHashes() error {
 		return fmt.Errorf("verthash failed during PoW recalculation: %v", err)
 	}
 
-	// --- START OF NEW FIX ---
+	// --- START OF FIX ---
 	// The Verthash function returns a little-endian hash. The `chainhash.Hash` type
 	// also stores data internally as little-endian. We must store the raw little-endian
 	// result directly in POWHash. The reversal should ONLY happen in the stratum server
 	// right before the big.Int comparison.
 	s.POWHash, _ = chainhash.NewHash(powBytesLE)
-	// --- END OF NEW FIX ---
+	// --- END OF FIX ---
 
 	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
 	s.Hash, _ = chainhash.NewHash(blockHashBytes)
 	return nil
 }
+
 
 func (s *Share) IsValid() (bool, string) {
 	if s.POWHash == nil {
