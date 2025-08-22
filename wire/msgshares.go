@@ -86,11 +86,10 @@ func (s *Share) CalculateHashes() error {
 	}
 
 	// --- START OF FIX ---
-	// The Verthash function returns a little-endian hash. The `chainhash.Hash` type
-	// also stores data internally as little-endian. We must store the raw little-endian
-	// result directly in POWHash. The reversal should ONLY happen in the stratum server
-	// right before the big.Int comparison.
-	s.POWHash, _ = chainhash.NewHash(powBytesLE)
+	// The chainhash.NewHash function expects a big-endian byte slice. We must
+	// reverse the little-endian result from the Verthash function before creating
+	// the chainhash.Hash object to ensure it's stored correctly.
+	s.POWHash, _ = chainhash.NewHash(util.ReverseBytes(powBytesLE))
 	// --- END OF FIX ---
 
 	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
