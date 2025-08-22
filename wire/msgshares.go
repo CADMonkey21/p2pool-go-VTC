@@ -14,17 +14,25 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
 )
 
+// legacyHeaderSerialize constructs the 80-byte block header for hashing.
 func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	err := binary.Write(w, binary.LittleEndian, header.Version)
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write(util.ReverseBytes(header.PrevBlock.CloneBytes())); err != nil {
+
+	// --- START OF FIX ---
+	// The chainhash.Hash.CloneBytes() method already returns the hash in the correct
+	// little-endian byte order required for the block header. The previous calls to
+	// util.ReverseBytes were incorrectly flipping these to big-endian.
+	if _, err := w.Write(header.PrevBlock.CloneBytes()); err != nil {
 		return err
 	}
-	if _, err := w.Write(util.ReverseBytes(header.MerkleRoot.CloneBytes())); err != nil {
+	if _, err := w.Write(header.MerkleRoot.CloneBytes()); err != nil {
 		return err
 	}
+	// --- END OF FIX ---
+
 	if err := binary.Write(w, binary.LittleEndian, uint32(header.Timestamp.Unix())); err != nil {
 		return err
 	}
@@ -84,8 +92,11 @@ func (s *Share) CalculateHashes() error {
 		return fmt.Errorf("verthash failed during PoW recalculation: %v", err)
 	}
 
+	// The PoW hash from Verthash is little-endian, so it must be reversed for the big.Int comparison.
+	// The block hash (SHA256d of the header) is also stored reversed to match Bitcoin convention.
 	s.POWHash, _ = chainhash.NewHash(util.ReverseBytes(powBytesLE))
-	s.Hash, _ = chainhash.NewHash(util.Sha256d(hdrBuf.Bytes()))
+	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
+	s.Hash, _ = chainhash.NewHash(blockHashBytes)
 	return nil
 }
 
@@ -173,6 +184,6 @@ type MsgShares struct {
 }
 
 
-func (m *MsgShares) FromBytes(b []byte) error { return nil } 
-func (m *MsgShares) ToBytes() ([]byte, error) { return nil, nil } 
+func (m *MsgShares) FromBytes(b []byte) error { return nil }
+func (m *MsgShares) ToBytes() ([]byte, error) { return nil, nil }
 func (m *MsgShares) Command() string { return "shares" }
