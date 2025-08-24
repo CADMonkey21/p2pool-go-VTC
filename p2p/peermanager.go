@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.comcom/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
@@ -283,7 +283,14 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 				if share != nil {
 					responseShares = append(responseShares, *share)
 					cs := pm.shareChain.AllShares[h.String()]
-					for i := 0; i < 50 && cs != nil && cs.Previous != nil; i++ {
+
+					// Respect the number of parents the peer is requesting, up to a sane limit.
+					limit := int(t.Parents)
+					if limit > 5000 {
+						limit = 5000 // Prevent abuse from malicious peers requesting the whole chain.
+					}
+
+					for i := 0; i < limit && cs != nil && cs.Previous != nil; i++ {
 						cs = cs.Previous
 						responseShares = append(responseShares, *cs.Share)
 					}
