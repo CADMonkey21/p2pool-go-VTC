@@ -37,18 +37,17 @@ type ChainStats struct {
 }
 
 type ShareChain struct {
-	SharesChannel         chan []wire.Share
-	NeedShareChannel      chan *chainhash.Hash
-	FoundBlockChan        chan *wire.Share
-	Tip                   *ChainShare
-	Tail                  *ChainShare
-	AllShares             map[string]*ChainShare
-	AllSharesByPrev       map[string]*ChainShare
-	disconnectedShares    []*wire.Share
-	rpcClient             *rpc.Client
-	pm                    PeerManager
-	disconnectedShareLock sync.Mutex
-	allSharesLock         sync.Mutex
+	SharesChannel      chan []wire.Share
+	NeedShareChannel   chan *chainhash.Hash
+	FoundBlockChan     chan *wire.Share
+	Tip                *ChainShare
+	Tail               *ChainShare
+	AllShares          map[string]*ChainShare
+	AllSharesByPrev    map[string]*ChainShare
+	disconnectedShares []*wire.Share
+	rpcClient          *rpc.Client
+	pm                 PeerManager
+	chainLock          sync.Mutex // Unified mutex for all share chain operations
 }
 
 type ChainShare struct {
@@ -59,15 +58,13 @@ type ChainShare struct {
 
 func NewShareChain(client *rpc.Client) *ShareChain {
 	sc := &ShareChain{
-		disconnectedShares:    make([]*wire.Share, 0),
-		allSharesLock:         sync.Mutex{},
-		AllSharesByPrev:       make(map[string]*ChainShare),
-		AllShares:             make(map[string]*ChainShare),
-		disconnectedShareLock: sync.Mutex{},
-		SharesChannel:         make(chan []wire.Share, 10),
-		NeedShareChannel:      make(chan *chainhash.Hash, 10),
-		FoundBlockChan:        make(chan *wire.Share, 10),
-		rpcClient:             client,
+		disconnectedShares: make([]*wire.Share, 0),
+		AllSharesByPrev:    make(map[string]*ChainShare),
+		AllShares:          make(map[string]*ChainShare),
+		SharesChannel:      make(chan []wire.Share, 10),
+		NeedShareChannel:   make(chan *chainhash.Hash, 10),
+		FoundBlockChan:     make(chan *wire.Share, 10),
+		rpcClient:          client,
 	}
 	go sc.ReadShareChan()
 	return sc
@@ -83,41 +80,37 @@ func (sc *ShareChain) ReadShareChan() {
 	}
 }
 
-func (sc *ShareChain) AddChainShare(newChainShare *ChainShare) {
-	sc.allSharesLock.Lock()
+func (sc *ShareChain) addChainShare(newChainShare *ChainShare) {
+	// This is an internal helper and assumes the caller holds the lock.
 	sc.AllShares[newChainShare.Share.Hash.String()] = newChainShare
 	if newChainShare.Share.ShareInfo.ShareData.PreviousShareHash != nil {
 		sc.AllSharesByPrev[newChainShare.Share.ShareInfo.ShareData.PreviousShareHash.String()] = newChainShare
 	}
-	sc.allSharesLock.Unlock()
 }
 
-func (sc *ShareChain) Resolve(skipCommit bool) {
+func (sc *ShareChain) resolve(skipCommit bool) {
+	// This is an internal helper and assumes the caller holds the lock.
 	logging.Debugf("Resolving sharechain")
 	if len(sc.disconnectedShares) == 0 {
 		return
 	}
 
 	if sc.Tip == nil {
-		sc.disconnectedShareLock.Lock()
 		if len(sc.disconnectedShares) > 0 {
 			newChainShare := &ChainShare{Share: sc.disconnectedShares[0]}
 			sc.Tip = newChainShare
 			sc.disconnectedShares = sc.disconnectedShares[1:]
-			sc.AddChainShare(newChainShare)
+			sc.addChainShare(newChainShare)
 			sc.Tail = sc.Tip
 		}
-		sc.disconnectedShareLock.Unlock()
 	}
 
 	for {
 		extended := false
-		sc.disconnectedShareLock.Lock()
 		newDisconnectedShares := make([]*wire.Share, 0)
 		for _, s := range sc.disconnectedShares {
-			_, ok := sc.AllShares[s.Hash.String()]
-			if ok {
-				// Duplicate
+			if _, ok := sc.AllShares[s.Hash.String()]; ok {
+				// Duplicate share, drop it.
 				continue
 			}
 
@@ -126,33 +119,28 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 				continue
 			}
 
-			es, ok := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]
-			if ok {
+			if es, ok := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]; ok {
 				newChainShare := &ChainShare{Share: s, Previous: es}
 				es.Next = newChainShare
 				if es.Share.Hash.IsEqual(sc.Tip.Share.Hash) {
 					sc.Tip = newChainShare
 				}
-				sc.AddChainShare(newChainShare)
+				sc.addChainShare(newChainShare)
+				extended = true
+			} else if es, ok := sc.AllSharesByPrev[s.Hash.String()]; ok {
+				newChainShare := &ChainShare{Share: s, Next: es}
+				es.Previous = newChainShare
+				if es.Share.Hash.IsEqual(sc.Tail.Share.Hash) {
+					sc.Tail = newChainShare
+				}
+				sc.addChainShare(newChainShare)
 				extended = true
 			} else {
-				es, ok := sc.AllSharesByPrev[s.Hash.String()]
-				if ok {
-					newChainShare := &ChainShare{Share: s, Next: es}
-					es.Previous = newChainShare
-					if es.Share.Hash.IsEqual(sc.Tail.Share.Hash) {
-						sc.Tail = newChainShare
-					}
-					sc.AddChainShare(newChainShare)
-					extended = true
-				} else {
-					newDisconnectedShares = append(newDisconnectedShares, s)
-				}
+				newDisconnectedShares = append(newDisconnectedShares, s)
 			}
 		}
 
 		sc.disconnectedShares = newDisconnectedShares
-		sc.disconnectedShareLock.Unlock()
 		if !extended || len(sc.disconnectedShares) == 0 {
 			break
 		}
@@ -166,15 +154,13 @@ func (sc *ShareChain) Resolve(skipCommit bool) {
 		sc.NeedShareChannel <- sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash
 	}
 	if !skipCommit {
-		sc.Commit()
+		sc.commit()
 	}
 }
 
-func (sc *ShareChain) Commit() error {
-	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
-
-	shares := make([]wire.Share, 0)
+func (sc *ShareChain) commit() error {
+	// This is an internal helper and assumes the caller holds the lock.
+	shares := make([]wire.Share, 0, len(sc.AllShares))
 	s := sc.Tip
 	for s != nil {
 		shares = append(shares, *(s.Share))
@@ -200,9 +186,18 @@ func (sc *ShareChain) Commit() error {
 	return os.Rename("sharechain-new.dat", "sharechain.dat")
 }
 
+func (sc *ShareChain) Commit() error {
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
+	return sc.commit()
+}
+
 func (sc *ShareChain) Load() error {
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
+
 	if _, err := os.Stat("sharechain.dat"); os.IsNotExist(err) {
-		return nil // Sharechain data absent, no need to do anything then.
+		return nil
 	}
 
 	f, err := os.Open("sharechain.dat")
@@ -218,24 +213,23 @@ func (sc *ShareChain) Load() error {
 
 	for i := range shares {
 		s := &shares[i]
-		s.CalculateHashes() // Recalculate hashes on load
+		s.CalculateHashes()
 	}
 
-	sc.disconnectedShareLock.Lock()
 	sc.disconnectedShares = make([]*wire.Share, len(shares))
 	for i := range shares {
 		sc.disconnectedShares[i] = &shares[i]
 	}
-	sc.disconnectedShareLock.Unlock()
 
 	logging.Debugf("Loaded %d shares from disk", len(sc.disconnectedShares))
-
-	sc.Resolve(true)
+	sc.resolve(true)
 	return nil
 }
 
 func (sc *ShareChain) AddShares(s []wire.Share) {
-	sc.disconnectedShareLock.Lock()
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
+
 	for i := range s {
 		share := s[i]
 		share.CalculateHashes()
@@ -243,14 +237,13 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 			sc.disconnectedShares = append(sc.disconnectedShares, &share)
 		}
 	}
-	sc.disconnectedShareLock.Unlock()
 
-	sc.Resolve(false)
+	sc.resolve(false)
 }
 
 func (sc *ShareChain) GetTipHash() *chainhash.Hash {
-	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
 
 	if sc.Tip != nil {
 		return sc.Tip.Share.Hash
@@ -259,15 +252,13 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 }
 
 func (sc *ShareChain) GetStats() ChainStats {
-	stats := ChainStats{}
-	sc.disconnectedShareLock.Lock()
-	stats.SharesOrphan = len(sc.disconnectedShares)
-	sc.disconnectedShareLock.Unlock()
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
 
-	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
-
-	stats.SharesTotal = len(sc.AllShares)
+	stats := ChainStats{
+		SharesOrphan: len(sc.disconnectedShares),
+		SharesTotal:  len(sc.AllShares),
+	}
 
 	netInfo, err := sc.rpcClient.GetMiningInfo()
 	if err != nil {
@@ -324,8 +315,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 }
 
 func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*wire.Share, error) {
-	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
 
 	startShare, ok := sc.AllShares[blockFindShareHash.String()]
 	if !ok {
@@ -343,8 +334,8 @@ func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, win
 }
 
 func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error) {
-	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
 
 	tip := sc.Tip
 	if tip == nil {
@@ -427,8 +418,8 @@ func (sc *ShareChain) GetProjectedPayoutForAddress(address string) (float64, err
 }
 
 func (sc *ShareChain) GetShare(hashStr string) *wire.Share {
-	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
 	if cs, ok := sc.AllShares[hashStr]; ok {
 		return cs.Share
 	}
@@ -436,10 +427,8 @@ func (sc *ShareChain) GetShare(hashStr string) *wire.Share {
 }
 
 func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
-	sc.allSharesLock.Lock()
-	defer sc.allSharesLock.Unlock()
-	sc.disconnectedShareLock.Lock()
-	defer sc.disconnectedShareLock.Unlock()
+	sc.chainLock.Lock()
+	defer sc.chainLock.Unlock()
 
 	needed := make(map[chainhash.Hash]bool)
 	for _, s := range sc.disconnectedShares {
