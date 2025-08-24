@@ -131,10 +131,18 @@ func main() {
 	go workManager.WatchMaturedBlocks()
 	go workManager.WatchFoundBlocks()
 
-	/* ----- BLOCKING LOGIC ------------------------------------------- */
-	logging.Infof("MAIN: Waiting for P2P manager to sync with the network...")
-	<-pm.SyncedChannel() // This will block until the syncedChan is closed.
-	logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
+	/* ----- BLOCKING LOGIC WITH TIMEOUT ------------------------------ */
+	logging.Infof("MAIN: Waiting for P2P manager to sync with the network (30s timeout for new networks)...")
+	select {
+	case <-pm.SyncedChannel():
+		logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
+	case <-time.After(30 * time.Second):
+		if pm.GetPeerCount() > 0 {
+			logging.Warnf("MAIN: Sync timed out. Assuming new/empty network and starting Stratum server.")
+		} else {
+			logging.Fatalf("MAIN: Sync timed out and no peers found. Please check peer configuration and network connectivity.")
+		}
+	}
 	/* ---------------------------------------------------------------- */
 
 	/* ----- Stratum server instance ---------------------------------- */
