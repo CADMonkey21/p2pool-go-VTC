@@ -107,13 +107,11 @@ func main() {
 		logging.SetLogLevel(2) // Default to Info
 	}
 
-	// FIX: Initialize Verthasher AFTER config is loaded
 	verthashEngine, err := verthash.New(config.Active.VerthashDatFile)
 	if err != nil {
 		logging.Fatalf("CRITICAL: Failed to initialize Verthash: %v", err)
 	}
 
-	// FIX: Set the network and pass the initialized verthasher to it
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet, verthashEngine)
 
 	/* ----- RPC, share chain, work manager --------------------------- */
@@ -132,6 +130,12 @@ func main() {
 	go workManager.WatchBlockTemplate()
 	go workManager.WatchMaturedBlocks()
 	go workManager.WatchFoundBlocks()
+
+	/* ----- BLOCKING LOGIC ------------------------------------------- */
+	logging.Infof("MAIN: Waiting for P2P manager to sync with the network...")
+	<-pm.SyncedChannel() // This will block until the syncedChan is closed.
+	logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
+	/* ---------------------------------------------------------------- */
 
 	/* ----- Stratum server instance ---------------------------------- */
 	stratumSrv := stratum.NewStratumServer(workManager, pm)

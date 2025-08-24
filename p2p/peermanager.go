@@ -22,20 +22,24 @@ const (
 )
 
 type PeerManager struct {
-	peers         map[string]*Peer
-	possiblePeers map[string]bool
-	activeNetwork p2pnet.Network
-	shareChain    *work.ShareChain
-	peersMutex    sync.RWMutex
-	synced        atomic.Value
+	peers          map[string]*Peer
+	possiblePeers  map[string]bool
+	activeNetwork  p2pnet.Network
+	shareChain     *work.ShareChain
+	peersMutex     sync.RWMutex
+	synced         atomic.Value
+	syncedChan     chan struct{} // Channel to signal when synced
+	syncSignalSent bool          // Flag to ensure the channel is closed only once
 }
 
 func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	pm := &PeerManager{
-		peers:         make(map[string]*Peer),
-		possiblePeers: make(map[string]bool),
-		activeNetwork: net,
-		shareChain:    sc,
+		peers:          make(map[string]*Peer),
+		possiblePeers:  make(map[string]bool),
+		activeNetwork:  net,
+		shareChain:     sc,
+		syncedChan:     make(chan struct{}),
+		syncSignalSent: false,
 	}
 	pm.synced.Store(false)
 	for _, h := range net.SeedHosts {
@@ -44,6 +48,11 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	go pm.peerConnectorLoop()
 	go pm.shareRequester()
 	return pm
+}
+
+// SyncedChannel returns a read-only channel that is closed when the initial sync is complete.
+func (pm *PeerManager) SyncedChannel() <-chan struct{} {
+	return pm.syncedChan
 }
 
 func (pm *PeerManager) IsSynced() bool {
@@ -256,10 +265,16 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			logging.Infof("Received %d new shares from %s to process.", len(t.Shares), p.RemoteIP)
 			pm.shareChain.AddShares(t.Shares)
 			pm.relayToOthers(msg, p)
-			if len(pm.shareChain.GetNeededHashes()) == 0 && !pm.IsSynced() {
+
+			pm.peersMutex.Lock()
+			if len(pm.shareChain.GetNeededHashes()) == 0 && !pm.syncSignalSent {
 				logging.Infof("P2P: Node is now synced with the network.")
 				pm.synced.Store(true)
+				close(pm.syncedChan) // Signal that sync is complete
+				pm.syncSignalSent = true
 			}
+			pm.peersMutex.Unlock()
+
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
 			var responseShares []wire.Share
