@@ -13,7 +13,7 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
-	"github.comcom/CADMonkey21/p2pool-go-VTC/wire"
+	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 // Each unit of VertHash difficulty represents 2^32 hashes.
