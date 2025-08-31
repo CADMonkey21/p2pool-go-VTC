@@ -353,11 +353,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	accepted, reason := newShare.IsValid()
 	if accepted {
-		// --- Start of Fix ---
-		// Correctly convert the little-endian PoW hash to a big-endian big.Int for comparison
-		powInt := HashLEToBig(newShare.POWHash.CloneBytes())
-		// --- End of Fix ---
-
+		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes()) // Use the correct PoW hash
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
 			c.WorkerName,
@@ -380,30 +376,19 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-		// --- Start of Fix & Diagnostics ---
-		logging.Debugf("[DIAG] shareHash.print=%s", newShare.Hash.String())
-		logging.Debugf("[DIAG] powInt(H^LE->big)=%s", powInt.Text(16))
-
+		// CORRECTED: Block finding logic now correctly uses the PoW hash
 		nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		if err != nil {
 			logging.Errorf("Could not parse bits from block template: %v", err)
 		} else {
 			nBits := uint32(nBits64)
 			netTarget := blockchain.CompactToBig(nBits)
-
-			logging.Debugf("[DIAG] nBits=0x%08x netTarget=%s", nBits, netTarget.Text(16))
-			rt := blockchain.BigToCompact(netTarget)
-			if rt != nBits {
-				logging.Warnf("[DIAG] bits round-trip mismatch: in=0x%08x out=0x%08x", nBits, rt)
-			}
-
 			if powInt.Cmp(netTarget) <= 0 {
 				netDiff := TargetToDiff(netTarget)
 				logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
 				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
 			}
 		}
-		// --- End of Fix & Diagnostics ---
 	} else {
 		logging.Warnf("Stratum: Share rejected – %s for %s", reason, c.WorkerName)
 		c.Mutex.Lock()
