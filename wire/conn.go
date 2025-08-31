@@ -1,8 +1,8 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
 	"sync"
