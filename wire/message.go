@@ -33,11 +33,6 @@ func MakeMessage(command string) (P2PoolMessage, error) {
 		msg = &MsgShares{}
 	case "best_block":
 		msg = &MsgBestBlock{}
-	// Legacy messages we don't use but need for compilation
-	case "sharereq":
-		msg = &MsgShareReq{}
-	case "sharereply":
-		msg = &MsgShareReply{}
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", command)
 	}

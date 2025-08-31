@@ -1,13 +1,12 @@
 package wire
 
 import (
-	"encoding/gob"
+	"encoding/binary"
+	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"sync"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 )
@@ -19,8 +18,6 @@ type P2PoolConnection struct {
 	Incoming     chan P2PoolMessage
 	Outgoing     chan P2PoolMessage
 	closeOnce    sync.Once
-	gobEncoder   *gob.Encoder
-	gobDecoder   *gob.Decoder
 }
 
 func NewP2PoolConnection(conn net.Conn, n p2pnet.Network) *P2PoolConnection {
@@ -30,56 +27,89 @@ func NewP2PoolConnection(conn net.Conn, n p2pnet.Network) *P2PoolConnection {
 		Disconnected: make(chan bool),
 		Incoming:     make(chan P2PoolMessage, 100),
 		Outgoing:     make(chan P2PoolMessage, 100),
-		gobEncoder:   gob.NewEncoder(conn),
-		gobDecoder:   gob.NewDecoder(conn),
 	}
-	// Register all message types with gob
-	gob.Register(&chainhash.Hash{})
-	gob.Register(&big.Int{})
-	gob.Register(&MsgVersion{})
-	gob.Register(&MsgVerAck{})
-	gob.Register(&MsgPing{})
-	gob.Register(&MsgPong{})
-	gob.Register(&MsgAddrs{})
-	gob.Register(&MsgGetShares{})
-	gob.Register(&MsgShares{})
-	gob.Register(&MsgBestBlock{})
 
 	go p.readLoop()
 	go p.writeLoop()
 	return p
 }
 
-// CORRECTED Close function to ensure all channels are properly shut down.
 func (p *P2PoolConnection) Close() {
 	p.closeOnce.Do(func() {
 		p.Connection.Close()
 		close(p.Disconnected)
-		// CRITICAL FIX: Closing the Incoming channel is what allows the
-		// peer message handler to exit, which in turn triggers the
-		// deferred cleanup logic in the PeerManager.
 		close(p.Incoming)
 	})
 }
 
 func (p *P2PoolConnection) readLoop() {
+	defer p.Close()
 	for {
-		var msg P2PoolMessage
-		err := p.gobDecoder.Decode(&msg)
+		// Read message length (4 bytes)
+		lenBytes := make([]byte, 4)
+		_, err := io.ReadFull(p.Connection, lenBytes)
 		if err != nil {
 			if err != io.EOF {
-				logging.Errorf("Gob decoding error: %v", err)
+				logging.Errorf("P2P Read Error (length): %v", err)
 			}
-			p.Close()
 			return
 		}
+		msgLen := binary.LittleEndian.Uint32(lenBytes)
+
+		// Read command (12 bytes, null-padded)
+		cmdBytes := make([]byte, 12)
+		_, err = io.ReadFull(p.Connection, cmdBytes)
+		if err != nil {
+			logging.Errorf("P2P Read Error (command): %v", err)
+			return
+		}
+		command := string(bytes.TrimRight(cmdBytes, "\x00"))
+
+		// Read payload
+		payloadLen := msgLen
+		payload := make([]byte, payloadLen)
+		_, err = io.ReadFull(p.Connection, payload)
+		if err != nil {
+			logging.Errorf("P2P Read Error (payload for %s): %v", command, err)
+			return
+		}
+
+		msg, err := MakeMessage(command)
+		if err != nil {
+			logging.Warnf("Received unknown message command: %s", command)
+			continue
+		}
+
+		if err := msg.FromBytes(payload); err != nil {
+			logging.Errorf("Failed to decode message %s: %v", command, err)
+			continue
+		}
+
 		p.Incoming <- msg
 	}
 }
 
 func (p *P2PoolConnection) writeLoop() {
 	for msg := range p.Outgoing {
-		err := p.gobEncoder.Encode(&msg)
+		payload, err := msg.ToBytes()
+		if err != nil {
+			logging.Errorf("Failed to serialize message %s: %v", msg.Command(), err)
+			continue
+		}
+
+		// Prepare command (12 bytes, null-padded)
+		cmdBytes := make([]byte, 12)
+		copy(cmdBytes, msg.Command())
+
+		// Prepare length (4 bytes)
+		lenBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(lenBytes, uint32(len(payload)))
+
+		// Write full message to the socket
+		fullMessage := append(lenBytes, cmdBytes...)
+		fullMessage = append(fullMessage, payload...)
+
+		_, err = p.Connection.Write(fullMessage)
 		if err != nil {
 			logging.Errorf("Failed to write message %s: %v", msg.Command(), err)
 		}
