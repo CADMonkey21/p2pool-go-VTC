@@ -139,6 +139,7 @@ func main() {
 	case <-time.After(30 * time.Second):
 		if pm.GetPeerCount() > 0 {
 			logging.Warnf("MAIN: Sync timed out. Assuming new/empty network and starting Stratum server.")
+			pm.ForceSyncState(true) // Force the sync status to true
 		} else {
 			logging.Fatalf("MAIN: Sync timed out and no peers found. Please check peer configuration and network connectivity.")
 		}
