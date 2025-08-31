@@ -230,15 +230,19 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 	sc.chainLock.Lock()
 	defer sc.chainLock.Unlock()
 
+	newlyAdded := 0
 	for i := range s {
 		share := s[i]
 		share.CalculateHashes()
 		if _, ok := sc.AllShares[share.Hash.String()]; !ok {
 			sc.disconnectedShares = append(sc.disconnectedShares, &share)
+			newlyAdded++
 		}
 	}
 
-	sc.resolve(false)
+	if newlyAdded > 0 {
+		sc.resolve(false)
+	}
 }
 
 func (sc *ShareChain) GetTipHash() *chainhash.Hash {
