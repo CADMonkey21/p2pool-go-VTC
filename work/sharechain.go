@@ -13,7 +13,7 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
-	"github.com/CADMonkey21/p2pool-go-VTC/wire"
+	"github.comcom/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 // Each unit of VertHash difficulty represents 2^32 hashes.
@@ -230,19 +230,17 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 	sc.chainLock.Lock()
 	defer sc.chainLock.Unlock()
 
-	newlyAdded := 0
 	for i := range s {
 		share := s[i]
 		share.CalculateHashes()
 		if _, ok := sc.AllShares[share.Hash.String()]; !ok {
 			sc.disconnectedShares = append(sc.disconnectedShares, &share)
-			newlyAdded++
 		}
 	}
 
-	if newlyAdded > 0 {
-		sc.resolve(false)
-	}
+	// Always attempt to resolve the chain, as the arrival of any share (even a duplicate)
+	// might allow previously disconnected shares to be linked.
+	sc.resolve(false)
 }
 
 func (sc *ShareChain) GetTipHash() *chainhash.Hash {
