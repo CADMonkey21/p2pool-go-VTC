@@ -12,11 +12,12 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net" // Import the net package
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
-// Each unit of VertHash difficulty represents 2^32 hashes.
+// CORRECTED: This constant is now the standard for Bitcoin-style hashrate calculation.
 const hashrateConstant = 4294967296 // 2^32
 
 // PeerManager defines the interface the ShareChain needs to communicate back to the P2P manager.
@@ -276,6 +277,9 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
+	// CORRECTED: Use the network's actual powLimit for difficulty calculations.
+	powLimit := p2pnet.ActiveChainConfig.PowLimit
+
 	current := sc.Tip
 	for current != nil && time.Unix(int64(current.Share.ShareInfo.Timestamp), 0).After(startTime) {
 		sharesInWindow++
@@ -288,8 +292,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-		difficulty := new(big.Int).Div(maxTarget, shareTarget)
+		// CORRECTED: Calculate difficulty relative to the network's powLimit.
+		difficulty := new(big.Int).Div(powLimit, shareTarget)
 		totalDifficulty.Add(totalDifficulty, difficulty)
 
 		current = current.Previous
@@ -366,14 +370,15 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
-	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	// CORRECTED: Use the network's actual powLimit for payout calculations.
+	powLimit := p2pnet.ActiveChainConfig.PowLimit
 
 	for _, share := range payoutShares {
 		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
+		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
 		totalWorkInWindow.Add(totalWorkInWindow, difficulty)
 	}
 
@@ -395,7 +400,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
+		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
 
 		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), difficulty)
 		payoutAmount.Div(payoutAmount, totalWorkInWindow)
