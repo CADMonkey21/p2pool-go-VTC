@@ -85,18 +85,11 @@ func (s *Share) CalculateHashes() error {
 		return fmt.Errorf("verthash failed during PoW recalculation: %v", err)
 	}
 
-	// --- START OF FIX ---
-	// The chainhash.NewHash function expects a big-endian byte slice. We must
-	// reverse the little-endian result from the Verthash function before creating
-	// the chainhash.Hash object to ensure it's stored correctly.
 	s.POWHash, _ = chainhash.NewHash(util.ReverseBytes(powBytesLE))
-	// --- END OF FIX ---
-
 	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
 	s.Hash, _ = chainhash.NewHash(blockHashBytes)
 	return nil
 }
-
 
 func (s *Share) IsValid() (bool, string) {
 	if s.POWHash == nil {
@@ -180,7 +173,20 @@ type MsgShares struct {
 	Shares []Share
 }
 
+func (m *MsgShares) FromBytes(b []byte) error {
+	r := bytes.NewReader(b)
+	shares, err := ReadShares(r)
+	if err != nil {
+		return err
+	}
+	m.Shares = shares
+	return nil
+}
 
-func (m *MsgShares) FromBytes(b []byte) error { return nil }
-func (m *MsgShares) ToBytes() ([]byte, error) { return nil, nil }
+func (m *MsgShares) ToBytes() ([]byte, error) {
+	var buf bytes.Buffer
+	err := WriteShares(&buf, m.Shares)
+	return buf.Bytes(), err
+}
+
 func (m *MsgShares) Command() string { return "shares" }

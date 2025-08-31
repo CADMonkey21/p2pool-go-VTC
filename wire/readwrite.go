@@ -2,7 +2,7 @@ package wire
 
 import (
 	"encoding/binary"
-	"encoding/gob" // CORRECTED: Added this import for proper serialization
+	"encoding/gob"
 	"io"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -137,19 +137,13 @@ func WriteChainHashList(w io.Writer, list []*chainhash.Hash) error {
 	return nil
 }
 
-// ReadShares is now fully implemented to read all share data from the file.
 func ReadShares(r io.Reader) ([]Share, error) {
-	// First, read the number of shares that were saved.
 	count, err := ReadVarInt(r)
 	if err != nil {
-		// If there's an error reading the count (e.g., empty file), return.
 		return nil, err
 	}
 
-	// Create a slice to hold the shares.
 	shares := make([]Share, count)
-
-	// Use the gob decoder to read the entire slice of share structs from the file.
 	decoder := gob.NewDecoder(r)
 	if err := decoder.Decode(&shares); err != nil {
 		return nil, err
@@ -158,16 +152,12 @@ func ReadShares(r io.Reader) ([]Share, error) {
 	return shares, nil
 }
 
-// WriteShares is now fully implemented to write all share data to the file.
 func WriteShares(w io.Writer, shares []Share) error {
-	// First, write the total number of shares as a variable-length integer.
 	err := WriteVarInt(w, uint64(len(shares)))
 	if err != nil {
 		return err
 	}
 
-	// Then, use the gob encoder to write the entire slice of shares to the file.
-	// This handles the complex structure of each share automatically.
 	encoder := gob.NewEncoder(w)
 	if err := encoder.Encode(shares); err != nil {
 		return err
