@@ -50,6 +50,12 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	return pm
 }
 
+// ForceSyncState allows external packages (like main) to set the sync status.
+func (pm *PeerManager) ForceSyncState(state bool) {
+	pm.synced.Store(state)
+	logging.Debugf("P2P: Sync state forced to %v", state)
+}
+
 // SyncedChannel returns a read-only channel that is closed when the initial sync is complete.
 func (pm *PeerManager) SyncedChannel() <-chan struct{} {
 	return pm.syncedChan
