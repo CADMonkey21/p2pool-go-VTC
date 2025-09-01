@@ -42,9 +42,8 @@ func SetNetwork(net string, testnet bool, vh verthash.Verthasher) {
 func getVtcChainConfig(testnet bool) chaincfg.Params {
 	if testnet {
 		params := chaincfg.TestNet3Params
-		// CORRECTED: Set the actual Vertcoin Testnet PoW Limit
-		params.PowLimit = new(big.Int).SetUint64(0x00000000ffffffff)
-		params.PowLimit.Lsh(params.PowLimit, 192)
+		// CORRECTED: Set the actual Vertcoin Testnet PoW Limit from your logs
+		params.PowLimit = blockchain.CompactToBig(0x1f01670c)
 		return params
 	}
 
