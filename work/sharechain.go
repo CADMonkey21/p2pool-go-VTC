@@ -272,7 +272,7 @@ func (sc *ShareChain) GetStats() ChainStats {
 	powLimit := p2pnet.ActiveChainConfig.PowLimit
 	if powLimit == nil || powLimit.Sign() == 0 {
 		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to compact 0x1d00ffff")
-		powLimit = blockchain.CompactToBig(0x1d00ffff)
+		powLimit = blockchain.CompactToBig(0x1d00ffff) // Fallback for safety
 	}
 
 	var earliestShareTime time.Time = time.Now()
