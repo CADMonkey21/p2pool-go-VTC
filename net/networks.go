@@ -1,6 +1,9 @@
 package net
 
 import (
+	"math/big"
+
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/verthash" // Import your new local verthash package
@@ -38,7 +41,11 @@ func SetNetwork(net string, testnet bool, vh verthash.Verthasher) {
 
 func getVtcChainConfig(testnet bool) chaincfg.Params {
 	if testnet {
-		return chaincfg.TestNet3Params
+		params := chaincfg.TestNet3Params
+		// CORRECTED: Set the actual Vertcoin Testnet PoW Limit
+		params.PowLimit = new(big.Int).SetUint64(0x00000000ffffffff)
+		params.PowLimit.Lsh(params.PowLimit, 192)
+		return params
 	}
 
 	params := chaincfg.MainNetParams
@@ -48,6 +55,8 @@ func getVtcChainConfig(testnet bool) chaincfg.Params {
 	params.Bech32HRPSegwit = "vtc"
 	params.WitnessPubKeyHashAddrID = 0x06
 	params.WitnessScriptHashAddrID = 0x0A
+	// CORRECTED: Set the actual Vertcoin Mainnet PoW Limit
+	params.PowLimit = blockchain.CompactToBig(0x1e0ffff0)
 
 	return params
 }
