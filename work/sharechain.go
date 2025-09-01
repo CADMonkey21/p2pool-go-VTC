@@ -12,15 +12,13 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net" // Import the net package
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
-// CORRECTED: This constant is now the standard for Bitcoin-style hashrate calculation.
 const hashrateConstant = 4294967296 // 2^32
 
-// PeerManager defines the interface the ShareChain needs to communicate back to the P2P manager.
 type PeerManager interface {
 	Broadcast(msg wire.P2PoolMessage)
 }
@@ -48,7 +46,7 @@ type ShareChain struct {
 	disconnectedShares []*wire.Share
 	rpcClient          *rpc.Client
 	pm                 PeerManager
-	chainLock          sync.Mutex // Unified mutex for all share chain operations
+	chainLock          sync.Mutex
 }
 
 type ChainShare struct {
@@ -82,7 +80,6 @@ func (sc *ShareChain) ReadShareChan() {
 }
 
 func (sc *ShareChain) addChainShare(newChainShare *ChainShare) {
-	// This is an internal helper and assumes the caller holds the lock.
 	sc.AllShares[newChainShare.Share.Hash.String()] = newChainShare
 	if newChainShare.Share.ShareInfo.ShareData.PreviousShareHash != nil {
 		sc.AllSharesByPrev[newChainShare.Share.ShareInfo.ShareData.PreviousShareHash.String()] = newChainShare
@@ -90,7 +87,6 @@ func (sc *ShareChain) addChainShare(newChainShare *ChainShare) {
 }
 
 func (sc *ShareChain) resolve(skipCommit bool) {
-	// This is an internal helper and assumes the caller holds the lock.
 	logging.Debugf("Resolving sharechain")
 	if len(sc.disconnectedShares) == 0 {
 		return
@@ -111,7 +107,6 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 		newDisconnectedShares := make([]*wire.Share, 0)
 		for _, s := range sc.disconnectedShares {
 			if _, ok := sc.AllShares[s.Hash.String()]; ok {
-				// Duplicate share, drop it.
 				continue
 			}
 
@@ -160,7 +155,6 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 }
 
 func (sc *ShareChain) commit() error {
-	// This is an internal helper and assumes the caller holds the lock.
 	shares := make([]wire.Share, 0, len(sc.AllShares))
 	s := sc.Tip
 	for s != nil {
@@ -239,8 +233,6 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 		}
 	}
 
-	// Always attempt to resolve the chain, as the arrival of any share (even a duplicate)
-	// might allow previously disconnected shares to be linked.
 	sc.resolve(false)
 }
 
@@ -277,8 +269,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	// CORRECTED: Use the network's actual powLimit for difficulty calculations.
 	powLimit := p2pnet.ActiveChainConfig.PowLimit
+	if powLimit == nil || powLimit.Sign() == 0 {
+		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to compact 0x1d00ffff")
+		powLimit = blockchain.CompactToBig(0x1d00ffff)
+	}
+
+	var earliestShareTime time.Time = time.Now()
 
 	current := sc.Tip
 	for current != nil && time.Unix(int64(current.Share.ShareInfo.Timestamp), 0).After(startTime) {
@@ -292,9 +289,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		// CORRECTED: Calculate difficulty relative to the network's powLimit.
-		difficulty := new(big.Int).Div(powLimit, shareTarget)
+		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
 		totalDifficulty.Add(totalDifficulty, difficulty)
+
+		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
+		if t.Before(earliestShareTime) {
+			earliestShareTime = t
+		}
 
 		current = current.Previous
 	}
@@ -306,15 +307,40 @@ func (sc *ShareChain) GetStats() ChainStats {
 		stats.Efficiency = 100.0
 	}
 
+	elapsedSeconds := lookbackDuration.Seconds()
+	if sharesInWindow > 0 {
+		measured := time.Since(earliestShareTime).Seconds()
+		if measured < 1.0 {
+			measured = 1.0
+		} else if measured > lookbackDuration.Seconds() {
+			measured = lookbackDuration.Seconds()
+		}
+		elapsedSeconds = measured
+	}
+
+	const hrConst = float64(4294967296) // 2^32
+
 	if totalDifficulty.Sign() > 0 {
 		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
-		hashrateFloat := new(big.Float).Quo(new(big.Float).Mul(totalDifficultyFloat, big.NewFloat(hashrateConstant)), big.NewFloat(lookbackDuration.Seconds()))
+		hashrateFloat := new(big.Float).Quo(
+			new(big.Float).Mul(totalDifficultyFloat, big.NewFloat(hrConst)),
+			big.NewFloat(elapsedSeconds),
+		)
 		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		stats.TimeToBlock = (stats.NetworkDifficulty * hashrateConstant) / stats.PoolHashrate
+		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
 	}
+
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s poolHashrate=%.6f H/s",
+		sharesInWindow,
+		earliestShareTime.Format(time.RFC3339),
+		elapsedSeconds,
+		totalDifficulty.String(),
+		powLimit.Text(16),
+		stats.PoolHashrate,
+	)
 
 	stats.CurrentPayout = 0.0
 	return stats
@@ -348,7 +374,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		return nil, fmt.Errorf("sharechain has no tip, cannot calculate payouts")
 	}
 
-	totalPayout := uint64(12.5 * 1e8) // 12.5 VTC in satoshis
+	totalPayout := uint64(12.5 * 1e8)
 	if tip.Share != nil && tip.Share.ShareInfo.ShareData.Subsidy > 0 {
 		totalPayout = tip.Share.ShareInfo.ShareData.Subsidy
 	}
@@ -370,7 +396,6 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
-	// CORRECTED: Use the network's actual powLimit for payout calculations.
 	powLimit := p2pnet.ActiveChainConfig.PowLimit
 
 	for _, share := range payoutShares {
