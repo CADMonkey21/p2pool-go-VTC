@@ -1,8 +1,6 @@
 package net
 
 import (
-	"math/big"
-
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
