@@ -316,7 +316,7 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	// FIX: Verthash difficulty scales with 2^24, not 2^32.
+	// Each unit of Verthash difficulty represents 2^24 hashes, not 2^32.
 	const hrConst = float64(16777216) // 2^24
 
 	if totalDifficulty.Sign() > 0 {
