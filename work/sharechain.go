@@ -316,20 +316,22 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	// Each unit of Verthash difficulty represents 2^24 hashes, not 2^32.
-	const hrConst = float64(16777216) // 2^24
-
 	if totalDifficulty.Sign() > 0 {
 		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
+		// Hashrate is the total work divided by the time it took.
+		// The 'totalDifficulty' variable is actually the total work done.
 		hashrateFloat := new(big.Float).Quo(
-			new(big.Float).Mul(totalDifficultyFloat, big.NewFloat(hrConst)),
+			totalDifficultyFloat,
 			big.NewFloat(elapsedSeconds),
 		)
 		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
+		// Each unit of VertHash difficulty represents 2^24 hashes.
+		const verthashHashrateConstant = 16777216 // 2^24
+		// Time to block = (Network Difficulty * Hashes per Diff 1) / Pool Hashrate
+		stats.TimeToBlock = (stats.NetworkDifficulty * verthashHashrateConstant) / stats.PoolHashrate
 	}
 
 	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s poolHashrate=%.6f H/s",
