@@ -17,8 +17,6 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
-const hashrateConstant = 4294967296 // 2^32
-
 type PeerManager interface {
 	Broadcast(msg wire.P2PoolMessage)
 }
@@ -318,7 +316,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	const hrConst = float64(4294967296) // 2^32
+	// FIX: Verthash difficulty scales with 2^24, not 2^32.
+	const hrConst = float64(16777216) // 2^24
 
 	if totalDifficulty.Sign() > 0 {
 		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
