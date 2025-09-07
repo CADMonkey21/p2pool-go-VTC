@@ -85,7 +85,7 @@ func (p *Peer) InitialSync() {
 		p.Connection.Outgoing <- msg
 	} else {
 		logging.Infof("P2P: Chains are already in sync with %s.", p.RemoteIP)
-		p.manager.synced.Store(true)
+		p.manager.ForceSyncState(true)
 	}
 }
 

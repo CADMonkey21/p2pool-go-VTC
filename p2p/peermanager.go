@@ -50,10 +50,20 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	return pm
 }
 
-// ForceSyncState allows external packages (like main) to set the sync status.
+// ForceSyncState now correctly handles closing the sync channel.
 func (pm *PeerManager) ForceSyncState(state bool) {
-	pm.synced.Store(state)
-	logging.Debugf("P2P: Sync state forced to %v", state)
+	if state && !pm.IsSynced() { // Only act on the transition to synced
+		pm.peersMutex.Lock()
+		defer pm.peersMutex.Unlock()
+		if !pm.syncSignalSent {
+			logging.Infof("P2P: Node is now synced with the network.")
+			pm.synced.Store(true)
+			close(pm.syncedChan) // Signal that sync is complete
+			pm.syncSignalSent = true
+		}
+	} else if !state {
+		pm.synced.Store(state)
+	}
 }
 
 // SyncedChannel returns a read-only channel that is closed when the initial sync is complete.
@@ -62,7 +72,11 @@ func (pm *PeerManager) SyncedChannel() <-chan struct{} {
 }
 
 func (pm *PeerManager) IsSynced() bool {
-	return pm.synced.Load().(bool)
+	val := pm.synced.Load()
+	if val == nil {
+		return false
+	}
+	return val.(bool)
 }
 
 func (pm *PeerManager) ListenForPeers() {
@@ -272,14 +286,9 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 			pm.shareChain.AddShares(t.Shares)
 			pm.relayToOthers(msg, p)
 
-			pm.peersMutex.Lock()
-			if len(pm.shareChain.GetNeededHashes()) == 0 && !pm.syncSignalSent {
-				logging.Infof("P2P: Node is now synced with the network.")
-				pm.synced.Store(true)
-				close(pm.syncedChan) // Signal that sync is complete
-				pm.syncSignalSent = true
+			if len(pm.shareChain.GetNeededHashes()) == 0 {
+				pm.ForceSyncState(true)
 			}
-			pm.peersMutex.Unlock()
 
 		case *wire.MsgGetShares:
 			logging.Debugf("Received get_shares request from %s for %d hashes", p.RemoteIP, len(t.Hashes))
