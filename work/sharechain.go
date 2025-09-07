@@ -264,10 +264,10 @@ func (sc *ShareChain) GetStats() ChainStats {
 	lookbackDuration := 30 * time.Minute
 	startTime := time.Now().Add(-lookbackDuration)
 
-	totalWork := new(big.Int) // Changed from totalDifficulty to totalWork
+	totalWork := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	maxTarget := new(big.Int).Lsh(big.NewInt(1), 256) // This is 2**256
+	maxTarget := new(big.Int).Lsh(big.NewInt(1), 256)
 
 	var earliestShareTime time.Time = time.Now()
 
@@ -283,7 +283,6 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		// Calculate work as (2**256 / target)
 		workForShare := new(big.Int).Div(maxTarget, shareTarget)
 		totalWork.Add(totalWork, workForShare)
 
@@ -320,12 +319,10 @@ func (sc *ShareChain) GetStats() ChainStats {
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		// Each unit of Verthash difficulty represents 2^24 hashes.
 		const verthashHashrateConstant = 16777216 // 2^24
 		stats.TimeToBlock = (stats.NetworkDifficulty * verthashHashrateConstant) / stats.PoolHashrate
 	}
-	
-	// DIAG log now shows totalWork instead of totalDifficulty
+
 	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalWork=%s poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
