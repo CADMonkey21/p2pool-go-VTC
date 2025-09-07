@@ -144,7 +144,8 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 		logging.Debugf("Tip is now %s - disconnected: %d - Length: %d", sc.Tip.Share.Hash.String(), len(sc.disconnectedShares), len(sc.AllShares))
 	}
 
-	if len(sc.AllShares) < config.Active.PPLNSWindow && sc.Tail != nil && sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash != nil {
+	// FIX #1: Added check to ensure we don't request a zero-hash from peers, which happens on a new chain.
+	if len(sc.AllShares) < config.Active.PPLNSWindow && sc.Tail != nil && sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash != nil && !sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash.IsEqual(&chainhash.Hash{}) {
 		sc.NeedShareChannel <- sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash
 	}
 	if !skipCommit {
@@ -267,11 +268,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	powLimit := p2pnet.ActiveChainConfig.PowLimit
-	if powLimit == nil || powLimit.Sign() == 0 {
-		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
-		powLimit = blockchain.CompactToBig(0x1e0ffff0)
-	}
+	// FIX #2: Replaced powLimit with the universal diff1 target for correct hashrate math.
+	diff1, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	var earliestShareTime time.Time = time.Now()
 
@@ -287,7 +285,7 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
+		difficulty := new(big.Int).Div(new(big.Int).Set(diff1), shareTarget)
 		totalDifficulty.Add(totalDifficulty, difficulty)
 
 		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
@@ -331,12 +329,12 @@ func (sc *ShareChain) GetStats() ChainStats {
 		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
 	}
 
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s hrConst=%.0f poolHashrate=%.6f H/s",
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s diff1=%s hrConst=%.0f poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
 		totalDifficulty.String(),
-		powLimit.Text(16),
+		diff1.Text(16),
 		hrConst,
 		stats.PoolHashrate,
 	)
@@ -395,14 +393,15 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
-	powLimit := p2pnet.ActiveChainConfig.PowLimit
+	// FIX #2 (consistency): Also using diff1 here for payout calculation to match the hashrate logic.
+	diff1, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, share := range payoutShares {
 		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
+		difficulty := new(big.Int).Div(new(big.Int).Set(diff1), shareTarget)
 		totalWorkInWindow.Add(totalWorkInWindow, difficulty)
 	}
 
@@ -424,7 +423,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
+		difficulty := new(big.Int).Div(new(big.Int).Set(diff1), shareTarget)
 
 		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), difficulty)
 		payoutAmount.Div(payoutAmount, totalWorkInWindow)
