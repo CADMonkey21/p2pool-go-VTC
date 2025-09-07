@@ -264,10 +264,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 	lookbackDuration := 30 * time.Minute
 	startTime := time.Now().Add(-lookbackDuration)
 
-	totalWork := new(big.Int)
+	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	maxTarget := new(big.Int).Lsh(big.NewInt(1), 256)
+	// This is the universal max target of 2^256-1, used to calculate difficulty units.
+	maxTarget := new(big.Int)
+	maxTarget.SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+
 
 	var earliestShareTime time.Time = time.Now()
 
@@ -283,8 +286,9 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		workForShare := new(big.Int).Div(maxTarget, shareTarget)
-		totalWork.Add(totalWork, workForShare)
+		// Correctly calculate difficulty units based on the universal max target.
+		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
+		totalDifficulty.Add(totalDifficulty, difficulty)
 
 		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
 		if t.Before(earliestShareTime) {
@@ -312,22 +316,27 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	if totalWork.Sign() > 0 {
-		totalWorkFloat := new(big.Float).SetInt(totalWork)
-		hashrateFloat := new(big.Float).Quo(totalWorkFloat, big.NewFloat(elapsedSeconds))
+	// Each unit of Verthash difficulty represents 2^24 hashes.
+	const hrConst = float64(16777216)
+
+	if totalDifficulty.Sign() > 0 {
+		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
+		hashrateFloat := new(big.Float).Quo(
+			new(big.Float).Mul(totalDifficultyFloat, big.NewFloat(hrConst)),
+			big.NewFloat(elapsedSeconds),
+		)
 		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		const verthashHashrateConstant = 16777216 // 2^24
-		stats.TimeToBlock = (stats.NetworkDifficulty * verthashHashrateConstant) / stats.PoolHashrate
+		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
 	}
 
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalWork=%s poolHashrate=%.6f H/s",
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
-		totalWork.String(),
+		totalDifficulty.String(),
 		stats.PoolHashrate,
 	)
 
