@@ -1,3 +1,4 @@
+
 package web
 
 import (
@@ -74,14 +75,16 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.0f seconds", d.Seconds())
 }
 
-// formatHashrate is a helper to make hashrate values human-readable.
+// CORRECTED: This function now matches the one in main.go and includes TH/s.
 func formatHashrate(hr float64) string {
 	switch {
-	case hr >= 1e9:
+	case hr > 1e12:
+		return fmt.Sprintf("%.2f TH/s", hr/1e12)
+	case hr > 1e9:
 		return fmt.Sprintf("%.2f GH/s", hr/1e9)
-	case hr >= 1e6:
+	case hr > 1e6:
 		return fmt.Sprintf("%.2f MH/s", hr/1e6)
-	case hr >= 1e3:
+	case hr > 1e3:
 		return fmt.Sprintf("%.2f kH/s", hr/1e3)
 	default:
 		return fmt.Sprintf("%.2f H/s", hr)
