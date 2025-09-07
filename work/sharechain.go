@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
@@ -266,7 +267,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
+	// Define the correct 'difficulty 1' target here, locally, so it does not conflict with other funcs.
 	diff1, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	powLimit := p2pnet.ActiveChainConfig.PowLimit
+	if powLimit == nil || powLimit.Sign() == 0 {
+		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
+		powLimit = blockchain.CompactToBig(0x1e0ffff0)
+	}
 
 	var earliestShareTime time.Time = time.Now()
 
@@ -282,6 +289,7 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
+		// Use the locally defined diff1 for this calculation
 		difficulty := new(big.Int).Div(new(big.Int).Set(diff1), shareTarget)
 		totalDifficulty.Add(totalDifficulty, difficulty)
 
@@ -326,12 +334,12 @@ func (sc *ShareChain) GetStats() ChainStats {
 		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
 	}
 
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s diff1=%s hrConst=%.0f poolHashrate=%.6f H/s",
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s hrConst=%.0f poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
 		totalDifficulty.String(),
-		diff1.Text(16),
+		powLimit.Text(16),
 		hrConst,
 		stats.PoolHashrate,
 	)
