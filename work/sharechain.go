@@ -264,14 +264,10 @@ func (sc *ShareChain) GetStats() ChainStats {
 	lookbackDuration := 30 * time.Minute
 	startTime := time.Now().Add(-lookbackDuration)
 
-	totalDifficulty := new(big.Int)
+	totalWork := new(big.Int) // Changed from totalDifficulty to totalWork
 	var deadShares, sharesInWindow int
 
-	powLimit := p2pnet.ActiveChainConfig.PowLimit
-	if powLimit == nil || powLimit.Sign() == 0 {
-		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
-		powLimit = blockchain.CompactToBig(0x1e0ffff0) // Vertcoin mainnet PoW limit
-	}
+	maxTarget := new(big.Int).Lsh(big.NewInt(1), 256) // This is 2**256
 
 	var earliestShareTime time.Time = time.Now()
 
@@ -287,8 +283,9 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
-		totalDifficulty.Add(totalDifficulty, difficulty)
+		// Calculate work as (2**256 / target)
+		workForShare := new(big.Int).Div(maxTarget, shareTarget)
+		totalWork.Add(totalWork, workForShare)
 
 		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
 		if t.Before(earliestShareTime) {
@@ -316,30 +313,24 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	// Each unit of Verthash difficulty represents 2^24 hashes.
-	const hrConst = float64(16777216) 
-
-	if totalDifficulty.Sign() > 0 {
-		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
-		hashrateFloat := new(big.Float).Quo(
-			new(big.Float).Mul(totalDifficultyFloat, big.NewFloat(hrConst)),
-			big.NewFloat(elapsedSeconds),
-		)
+	if totalWork.Sign() > 0 {
+		totalWorkFloat := new(big.Float).SetInt(totalWork)
+		hashrateFloat := new(big.Float).Quo(totalWorkFloat, big.NewFloat(elapsedSeconds))
 		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
+		// Each unit of Verthash difficulty represents 2^24 hashes.
+		const verthashHashrateConstant = 16777216 // 2^24
+		stats.TimeToBlock = (stats.NetworkDifficulty * verthashHashrateConstant) / stats.PoolHashrate
 	}
-
-	// UPDATED: Added hrConst to the diagnostic log output
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s hrConst=%.0f poolHashrate=%.6f H/s",
+	
+	// DIAG log now shows totalWork instead of totalDifficulty
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalWork=%s poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
-		totalDifficulty.String(),
-		powLimit.Text(16),
-		hrConst,
+		totalWork.String(),
 		stats.PoolHashrate,
 	)
 
