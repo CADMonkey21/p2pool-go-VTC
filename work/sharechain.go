@@ -267,10 +267,11 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	// This is the universal max target of 2^256-1, used to calculate difficulty units.
-	maxTarget := new(big.Int)
-	maxTarget.SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-
+	powLimit := p2pnet.ActiveChainConfig.PowLimit
+	if powLimit == nil || powLimit.Sign() == 0 {
+		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
+		powLimit = blockchain.CompactToBig(0x1e0ffff0)
+	}
 
 	var earliestShareTime time.Time = time.Now()
 
@@ -286,8 +287,7 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		// Correctly calculate difficulty units based on the universal max target.
-		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
+		difficulty := new(big.Int).Div(new(big.Int).Set(powLimit), shareTarget)
 		totalDifficulty.Add(totalDifficulty, difficulty)
 
 		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
@@ -316,8 +316,7 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	// Each unit of Verthash difficulty represents 2^24 hashes.
-	const hrConst = float64(16777216)
+	const hrConst = float64(16777216) // 2^24 for Verthash
 
 	if totalDifficulty.Sign() > 0 {
 		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
@@ -332,11 +331,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
 	}
 
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s poolHashrate=%.6f H/s",
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s hrConst=%.0f poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
 		totalDifficulty.String(),
+		powLimit.Text(16),
+		hrConst,
 		stats.PoolHashrate,
 	)
 
