@@ -267,8 +267,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	// Define the correct 'difficulty 1' target here, locally, so it does not conflict with other funcs.
-	diff1, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	// THIS IS THE FIX: This value represents 2^256 and mirrors the legacy Python code's logic for calculating "work".
+	maxWork := new(big.Int).Lsh(big.NewInt(1), 256)
 	powLimit := p2pnet.ActiveChainConfig.PowLimit
 	if powLimit == nil || powLimit.Sign() == 0 {
 		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
@@ -289,9 +289,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
-		// Use the locally defined diff1 for this calculation
-		difficulty := new(big.Int).Div(new(big.Int).Set(diff1), shareTarget)
-		totalDifficulty.Add(totalDifficulty, difficulty)
+		work := new(big.Int).Div(maxWork, shareTarget)
+		totalDifficulty.Add(totalDifficulty, work)
 
 		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
 		if t.Before(earliestShareTime) {
@@ -398,15 +397,15 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
-	diff1, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	maxWork, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, share := range payoutShares {
 		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(diff1), shareTarget)
-		totalWorkInWindow.Add(totalWorkInWindow, difficulty)
+		work := new(big.Int).Div(new(big.Int).Set(maxWork), shareTarget)
+		totalWorkInWindow.Add(totalWorkInWindow, work)
 	}
 
 	if totalWorkInWindow.Sign() <= 0 {
@@ -427,9 +426,9 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(diff1), shareTarget)
+		work := new(big.Int).Div(new(big.Int).Set(maxWork), shareTarget)
 
-		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), difficulty)
+		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), work)
 		payoutAmount.Div(payoutAmount, totalWorkInWindow)
 
 		payouts[address] += payoutAmount.Uint64()
