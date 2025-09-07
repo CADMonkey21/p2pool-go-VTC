@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	"github.comcom/CADMonkey21/p2pool-go-VTC/logging"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
@@ -28,18 +28,18 @@ type PeerManager struct {
 	shareChain     *work.ShareChain
 	peersMutex     sync.RWMutex
 	synced         atomic.Value
-	syncedChan     chan struct{} // Channel to signal when synced
-	syncSignalSent bool          // Flag to ensure the channel is closed only once
+	syncedChan     chan struct{}
+	syncSignalSent bool
+	syncMutex      sync.Mutex // Mutex to protect the sync channel closing
 }
 
 func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	pm := &PeerManager{
-		peers:          make(map[string]*Peer),
-		possiblePeers:  make(map[string]bool),
-		activeNetwork:  net,
-		shareChain:     sc,
-		syncedChan:     make(chan struct{}),
-		syncSignalSent: false,
+		peers:         make(map[string]*Peer),
+		possiblePeers: make(map[string]bool),
+		activeNetwork: net,
+		shareChain:    sc,
+		syncedChan:    make(chan struct{}),
 	}
 	pm.synced.Store(false)
 	for _, h := range net.SeedHosts {
@@ -50,23 +50,27 @@ func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	return pm
 }
 
-// ForceSyncState now correctly handles closing the sync channel.
 func (pm *PeerManager) ForceSyncState(state bool) {
-	if state && !pm.IsSynced() { // Only act on the transition to synced
-		pm.peersMutex.Lock()
-		defer pm.peersMutex.Unlock()
+	pm.syncMutex.Lock()
+	defer pm.syncMutex.Unlock()
+
+	if state && !pm.IsSynced() {
 		if !pm.syncSignalSent {
 			logging.Infof("P2P: Node is now synced with the network.")
 			pm.synced.Store(true)
-			close(pm.syncedChan) // Signal that sync is complete
+			close(pm.syncedChan)
 			pm.syncSignalSent = true
 		}
 	} else if !state {
 		pm.synced.Store(state)
+		// Re-open the channel if we lose sync, for restarts or reconnections
+		if pm.syncSignalSent {
+			pm.syncedChan = make(chan struct{})
+			pm.syncSignalSent = false
+		}
 	}
 }
 
-// SyncedChannel returns a read-only channel that is closed when the initial sync is complete.
 func (pm *PeerManager) SyncedChannel() <-chan struct{} {
 	return pm.syncedChan
 }
@@ -183,7 +187,7 @@ func (pm *PeerManager) peerConnectorLoop() {
 		peerCount := len(pm.peers)
 		if peerCount == 0 && pm.IsSynced() {
 			logging.Warnf("P2P: Node has lost sync with the network (no peers).")
-			pm.synced.Store(false)
+			pm.ForceSyncState(false)
 		}
 		pm.peersMutex.RUnlock()
 
@@ -198,7 +202,6 @@ func (pm *PeerManager) peerConnectorLoop() {
 					break
 				}
 			}
-			delete(pm.possiblePeers, peerToTry)
 			pm.peersMutex.Unlock()
 
 			if peerToTry != "" {
@@ -225,7 +228,6 @@ func (pm *PeerManager) TryPeer(p string) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		logging.Warnf("Invalid port for peer %s: %v", p, err)
-		pm.AddPossiblePeer(p)
 		return
 	}
 
@@ -233,7 +235,6 @@ func (pm *PeerManager) TryPeer(p string) {
 	conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
 	if err != nil {
 		logging.Warnf("Failed to connect to %s: %v", remoteAddr, err)
-		pm.AddPossiblePeer(p)
 		return
 	}
 
@@ -299,10 +300,9 @@ func (pm *PeerManager) handlePeerMessages(p *Peer) {
 					responseShares = append(responseShares, *share)
 					cs := pm.shareChain.AllShares[h.String()]
 
-					// Respect the number of parents the peer is requesting, up to a sane limit.
 					limit := int(t.Parents)
 					if limit > 5000 {
-						limit = 5000 // Prevent abuse from malicious peers requesting the whole chain.
+						limit = 5000
 					}
 
 					for i := 0; i < limit && cs != nil && cs.Previous != nil; i++ {

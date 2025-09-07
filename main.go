@@ -133,10 +133,7 @@ func main() {
 
 	/* ----- BLOCKING LOGIC WITHOUT TIMEOUT --------------------------- */
 	logging.Infof("MAIN: Waiting for P2P manager to sync with the network...")
-	for !pm.IsSynced() {
-		// Wait for the initial sync to complete. This loop replaces the timeout.
-		<-pm.SyncedChannel()
-	}
+	<-pm.SyncedChannel() // This will now block until the sync is complete
 	logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
 	/* ---------------------------------------------------------------- */
 
