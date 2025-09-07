@@ -332,12 +332,14 @@ func (sc *ShareChain) GetStats() ChainStats {
 		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
 	}
 
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s poolHashrate=%.6f H/s",
+	// UPDATED: Added hrConst to the diagnostic log output
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s hrConst=%.0f poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
 		totalDifficulty.String(),
 		powLimit.Text(16),
+		hrConst,
 		stats.PoolHashrate,
 	)
 
