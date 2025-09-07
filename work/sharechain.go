@@ -12,7 +12,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
@@ -144,7 +143,6 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 		logging.Debugf("Tip is now %s - disconnected: %d - Length: %d", sc.Tip.Share.Hash.String(), len(sc.disconnectedShares), len(sc.AllShares))
 	}
 
-	// FIX #1: Added check to ensure we don't request a zero-hash from peers, which happens on a new chain.
 	if len(sc.AllShares) < config.Active.PPLNSWindow && sc.Tail != nil && sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash != nil && !sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash.IsEqual(&chainhash.Hash{}) {
 		sc.NeedShareChannel <- sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash
 	}
@@ -268,7 +266,6 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	// FIX #2: Replaced powLimit with the universal diff1 target for correct hashrate math.
 	diff1, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	var earliestShareTime time.Time = time.Now()
@@ -393,7 +390,6 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
-	// FIX #2 (consistency): Also using diff1 here for payout calculation to match the hashrate logic.
 	diff1, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, share := range payoutShares {
