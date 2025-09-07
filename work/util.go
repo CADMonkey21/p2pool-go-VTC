@@ -25,11 +25,8 @@ func ReverseBytes(b []byte) []byte {
 
 // DiffToTarget converts a stratum difficulty float into a 256-bit target.
 func DiffToTarget(diff float64) *big.Int {
-	// The universally recognized "difficulty 1" target for most coins.
-	// 0x00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-	diff1 := "00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
 	maxTarget := new(big.Int)
-	maxTarget.SetString(diff1, 16)
+	maxTarget.SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	// Use big.Float for precise division to avoid rounding errors
 	maxTargetFloat := new(big.Float).SetInt(maxTarget)
