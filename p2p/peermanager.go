@@ -22,24 +22,26 @@ const (
 )
 
 type PeerManager struct {
-	peers          map[string]*Peer
-	possiblePeers  map[string]bool
-	activeNetwork  p2pnet.Network
-	shareChain     *work.ShareChain
-	peersMutex     sync.RWMutex
-	synced         atomic.Value
-	syncedChan     chan struct{}
-	syncSignalSent bool
-	syncMutex      sync.Mutex // Mutex to protect the sync channel closing
+	peers            map[string]*Peer
+	possiblePeers    map[string]bool
+	connectingPeers  map[string]bool // NEW: Track peers currently being connected to
+	activeNetwork    p2pnet.Network
+	shareChain       *work.ShareChain
+	peersMutex       sync.RWMutex
+	synced           atomic.Value
+	syncedChan       chan struct{}
+	syncSignalSent   bool
+	syncMutex        sync.Mutex
 }
 
 func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	pm := &PeerManager{
-		peers:         make(map[string]*Peer),
-		possiblePeers: make(map[string]bool),
-		activeNetwork: net,
-		shareChain:    sc,
-		syncedChan:    make(chan struct{}),
+		peers:           make(map[string]*Peer),
+		possiblePeers:   make(map[string]bool),
+		connectingPeers: make(map[string]bool), // NEW: Initialize the map
+		activeNetwork:   net,
+		shareChain:      sc,
+		syncedChan:      make(chan struct{}),
 	}
 	pm.synced.Store(false)
 	for _, h := range net.SeedHosts {
@@ -63,7 +65,6 @@ func (pm *PeerManager) ForceSyncState(state bool) {
 		}
 	} else if !state {
 		pm.synced.Store(state)
-		// Re-open the channel if we lose sync, for restarts or reconnections
 		if pm.syncSignalSent {
 			pm.syncedChan = make(chan struct{})
 			pm.syncSignalSent = false
@@ -112,6 +113,7 @@ func (pm *PeerManager) ListenForPeers() {
 	}
 }
 
+// isAlreadyConnected now checks active and connecting peers.
 func (pm *PeerManager) isAlreadyConnected(ip string) bool {
 	pm.peersMutex.RLock()
 	defer pm.peersMutex.RUnlock()
@@ -119,6 +121,9 @@ func (pm *PeerManager) isAlreadyConnected(ip string) bool {
 		if p.RemoteIP.String() == ip {
 			return true
 		}
+	}
+	if _, connecting := pm.connectingPeers[ip]; connecting {
+		return true
 	}
 	return false
 }
@@ -197,7 +202,9 @@ func (pm *PeerManager) peerConnectorLoop() {
 			pm.peersMutex.Lock()
 			var peerToTry string
 			for p := range pm.possiblePeers {
-				if _, active := pm.peers[p]; !active {
+				// Don't try to connect if we are already connected or connecting
+				host, _, _ := net.SplitHostPort(p)
+				if _, active := pm.peers[p]; !active && !pm.connectingPeers[host] {
 					peerToTry = p
 					break
 				}
@@ -212,8 +219,6 @@ func (pm *PeerManager) peerConnectorLoop() {
 }
 
 func (pm *PeerManager) TryPeer(p string) {
-	logging.Debugf("Trying OUTGOING connection to peer %s", p)
-
 	host, portStr, err := net.SplitHostPort(p)
 	if err != nil {
 		host = p
@@ -221,9 +226,23 @@ func (pm *PeerManager) TryPeer(p string) {
 	}
 
 	if pm.isAlreadyConnected(host) {
-		logging.Debugf("P2P: Aborting connection to %s, peer already connected.", host)
+		logging.Debugf("P2P: Aborting connection to %s, peer already connected or connecting.", host)
 		return
 	}
+
+	logging.Debugf("Trying OUTGOING connection to peer %s", p)
+	
+	// Mark this peer as "connecting"
+	pm.peersMutex.Lock()
+	pm.connectingPeers[host] = true
+	pm.peersMutex.Unlock()
+	
+	// Ensure we remove from connectingPeers on any exit path
+	defer func() {
+		pm.peersMutex.Lock()
+		delete(pm.connectingPeers, host)
+		pm.peersMutex.Unlock()
+	}()
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
@@ -242,6 +261,8 @@ func (pm *PeerManager) TryPeer(p string) {
 }
 
 func (pm *PeerManager) handleNewPeer(conn net.Conn) {
+	remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	
 	peer, err := NewPeer(conn, pm.activeNetwork, pm.shareChain, pm)
 	if err != nil {
 		logging.Warnf("P2P: Handshake with %s failed: %v", conn.RemoteAddr(), err)
@@ -252,6 +273,7 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 
 	pm.peersMutex.Lock()
 	pm.peers[originalAddr] = peer
+	delete(pm.connectingPeers, remoteIP) // Successfully connected, remove from connecting list
 	pm.peersMutex.Unlock()
 
 	defer func() {
