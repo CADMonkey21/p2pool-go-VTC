@@ -28,13 +28,11 @@ func CreateCoinbaseTx(tmpl *BlockTemplate, payoutAddress string, extraNonce1, ex
 	coinbaseScript := NewScriptBuilder().AddData(heightBytes).AddData(extraNonce).Script()
 
 	var payoutScriptPubKey []byte
-	// CORRECTED: Added check for "tvtc1" prefix
 	if strings.HasPrefix(strings.ToLower(payoutAddress), "vtc1") || strings.HasPrefix(strings.ToLower(payoutAddress), "tvtc1") {
 		hrp, decoded, err := bech32.Decode(payoutAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode bech32 address '%s': %v", payoutAddress, err)
 		}
-		// CORRECTED: Added check for "tvtc" hrp
 		if hrp != "vtc" && hrp != "tvtc" {
 			return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
 		}
