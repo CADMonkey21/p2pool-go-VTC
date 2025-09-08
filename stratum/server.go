@@ -390,11 +390,13 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			logging.Debugf("[DIAG] nBits=0x%08x netTarget=%s", nBits, netTarget.Text(16))
 			logging.Debugf("[DIAG] powInt=%s", powInt.Text(16))
 			logging.Debugf("[DIAG] netTarget=%s", netTarget.Text(16))
-
+			logging.Debugf("[DIAG] Checking if share is a valid block...")
 			if powInt.Cmp(netTarget) <= 0 {
 				netDiff := TargetToDiff(netTarget)
 				logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
 				go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
+			} else {
+				logging.Debugf("[DIAG] Share is not a valid block.")
 			}
 		}
 	} else {
