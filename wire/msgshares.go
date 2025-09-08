@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
 )
@@ -20,6 +21,7 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	if err != nil {
 		return err
 	}
+	// CORRECTED: Reverse the byte order of PrevBlock and MerkleRoot
 	if _, err := w.Write(util.ReverseBytes(header.PrevBlock.CloneBytes())); err != nil {
 		return err
 	}
@@ -79,6 +81,7 @@ func (s *Share) CalculateHashes() error {
 	if err != nil {
 		return fmt.Errorf("could not serialize header for PoW: %v", err)
 	}
+	logging.Debugf("[DIAG] Serialized Header for Hashing: %x", hdrBuf.Bytes())
 
 	powBytesLE, err := p2pnet.ActiveNetwork.Verthash.Hash(hdrBuf.Bytes())
 	if err != nil {
