@@ -87,7 +87,6 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	if err != nil {
 		return nil, fmt.Errorf("could not decode bits from template: %v", err)
 	}
-	// CORRECTED: The hex string from the RPC is big-endian.
 	shareBits := binary.BigEndian.Uint32(nBitsBytes)
 
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
@@ -118,6 +117,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	txHashesForLink := [][]byte{ReverseBytes(coinbaseTxHash)}
 	for _, tx := range job.Transactions {
 		txHashBytes, _ := hex.DecodeString(tx.Hash)
+		// CORRECTED: Reverse the byte order of the transaction hashes
 		txHashesForLink = append(txHashesForLink, ReverseBytes(txHashBytes))
 	}
 	merkleLinkBranches := CalculateMerkleLink(txHashesForLink, 0)
