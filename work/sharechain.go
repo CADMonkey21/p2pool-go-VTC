@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
@@ -268,7 +267,8 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	maxWork := new(big.Int).Lsh(big.NewInt(1), 224)
+	// CORRECTED: This value represents 2^256, which is the correct value for calculating work.
+	maxWork := new(big.Int).Lsh(big.NewInt(1), 256)
 	powLimit := p2pnet.ActiveChainConfig.PowLimit
 	if powLimit == nil || powLimit.Sign() == 0 {
 		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
@@ -417,18 +417,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 			continue
 		}
 
-		var address string
-		var err error
-		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 { // Bech32 P2WPKH or P2WSH
-			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
-			if err != nil {
-				continue
-			}
-			address, err = bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
-		} else { // Legacy Base58
-			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
-		}
-
+		address, err := bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, share.ShareInfo.ShareData.PubKeyHash...))
 		if err != nil {
 			continue
 		}
