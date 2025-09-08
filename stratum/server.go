@@ -353,6 +353,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	accepted, reason := newShare.IsValid()
 	if accepted {
+		// CORRECTED: Use the BigInt representation of the hash for comparison
 		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
