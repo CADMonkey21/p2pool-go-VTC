@@ -87,7 +87,8 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	if err != nil {
 		return nil, fmt.Errorf("could not decode bits from template: %v", err)
 	}
-	shareBits := binary.LittleEndian.Uint32(nBitsBytes)
+	// CORRECTED: The hex string from the RPC is big-endian.
+	shareBits := binary.BigEndian.Uint32(nBitsBytes)
 
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
 	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
