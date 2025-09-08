@@ -20,10 +20,10 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write(header.PrevBlock.CloneBytes()); err != nil {
+	if _, err := w.Write(util.ReverseBytes(header.PrevBlock.CloneBytes())); err != nil {
 		return err
 	}
-	if _, err := w.Write(header.MerkleRoot.CloneBytes()); err != nil {
+	if _, err := w.Write(util.ReverseBytes(header.MerkleRoot.CloneBytes())); err != nil {
 		return err
 	}
 	if err := binary.Write(w, binary.LittleEndian, uint32(header.Timestamp.Unix())); err != nil {
