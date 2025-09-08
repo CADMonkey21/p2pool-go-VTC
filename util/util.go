@@ -32,8 +32,8 @@ func GetMyPublicIP() (net.IP, error) {
 
 func Sha256d(b []byte) []byte {
 	h := sha256.Sum256(b)
-	h = sha256.Sum256(h[:])
-	return h[:]
+	h2 := sha256.Sum256(h[:])
+	return h2[:]
 }
 
 func GetRandomId() *chainhash.Hash {
