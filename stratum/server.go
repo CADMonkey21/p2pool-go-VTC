@@ -353,7 +353,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	accepted, reason := newShare.IsValid()
 	if accepted {
-		// CORRECTED: Use the BigInt representation of the hash for comparison
 		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
@@ -389,7 +388,8 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			netTarget := blockchain.CompactToBig(nBits)
 
 			logging.Debugf("[DIAG] nBits=0x%08x netTarget=%s", nBits, netTarget.Text(16))
-
+			logging.Debugf("[DIAG] powInt=%s", powInt.Text(16))
+			logging.Debugf("[DIAG] netTarget=%s", netTarget.Text(16))
 			if powInt.Cmp(netTarget) <= 0 {
 				netDiff := TargetToDiff(netTarget)
 				logging.Successf("!!!! BLOCK FOUND !!!! Share %s (Diff %.2f) meets network target (Diff %.2f)!", newShare.Hash.String()[:12], shareDiff, netDiff)
