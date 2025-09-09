@@ -267,13 +267,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	// CORRECTED: This value represents 2^256, which is the correct value for calculating work.
-	maxWork := new(big.Int).Lsh(big.NewInt(1), 256)
+	// Use powLimit instead of 2^256
 	powLimit := p2pnet.ActiveChainConfig.PowLimit
 	if powLimit == nil || powLimit.Sign() == 0 {
 		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
 		powLimit = blockchain.CompactToBig(0x1e0ffff0)
 	}
+	maxWork := new(big.Int).Set(powLimit)
 
 	var earliestShareTime time.Time = time.Now()
 
@@ -397,7 +397,13 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
-	maxWork, _ := new(big.Int).SetString("00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+
+	// Use powLimit instead of hardcoded hex
+	powLimit := p2pnet.ActiveChainConfig.PowLimit
+	if powLimit == nil || powLimit.Sign() == 0 {
+		powLimit = blockchain.CompactToBig(0x1e0ffff0)
+	}
+	maxWork := new(big.Int).Set(powLimit)
 
 	for _, share := range payoutShares {
 		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
@@ -483,3 +489,4 @@ func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
 	}
 	return hashes
 }
+
