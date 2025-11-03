@@ -21,11 +21,12 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	if err != nil {
 		return err
 	}
-	// CORRECTED: Reverse the byte order of PrevBlock and MerkleRoot
-	if _, err := w.Write(util.ReverseBytes(header.PrevBlock.CloneBytes())); err != nil {
+	// CORRECTED: Do NOT reverse the hashes. The btcd library already stores
+	// them in the correct internal (little-endian) byte order.
+	if _, err := w.Write(header.PrevBlock.CloneBytes()); err != nil {
 		return err
 	}
-	if _, err := w.Write(util.ReverseBytes(header.MerkleRoot.CloneBytes())); err != nil {
+	if _, err := w.Write(header.MerkleRoot.CloneBytes()); err != nil {
 		return err
 	}
 	if err := binary.Write(w, binary.LittleEndian, uint32(header.Timestamp.Unix())); err != nil {
@@ -70,7 +71,26 @@ func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
 	return header, nil
 }
 
-func (s *Share) CalculateHashes() error {
+// [FIX] Create a new function that ONLY calculates the fast SHA256d hash
+func (s *Share) CalculateHash() error {
+	header, err := s.FullBlockHeader()
+	if err != nil {
+		return fmt.Errorf("could not construct header to calculate hash: %v", err)
+	}
+
+	var hdrBuf bytes.Buffer
+	err = legacyHeaderSerialize(&hdrBuf, header)
+	if err != nil {
+		return fmt.Errorf("could not serialize header for hash: %v", err)
+	}
+
+	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
+	s.Hash, _ = chainhash.NewHash(blockHashBytes)
+	return nil
+}
+
+// [FIX] Create a new function that ONLY calculates the slow Verthash POW
+func (s *Share) CalculatePOWHash() error {
 	header, err := s.FullBlockHeader()
 	if err != nil {
 		return fmt.Errorf("could not construct header to calculate PoW: %v", err)
@@ -89,8 +109,18 @@ func (s *Share) CalculateHashes() error {
 	}
 
 	s.POWHash, _ = chainhash.NewHash(util.ReverseBytes(powBytesLE))
-	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
-	s.Hash, _ = chainhash.NewHash(blockHashBytes)
+	return nil
+}
+
+// CalculateHashes now runs both fast and slow calculations.
+// This is used for new shares, while Load() will only use CalculateHash().
+func (s *Share) CalculateHashes() error {
+	if err := s.CalculateHash(); err != nil {
+		return err
+	}
+	if err := s.CalculatePOWHash(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -192,4 +222,6 @@ func (m *MsgShares) ToBytes() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-func (m *MsgShares) Command() string { return "shares" }
+func (mm *MsgShares) Command() string { return "shares" }
+
+

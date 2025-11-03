@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
@@ -56,8 +58,15 @@ func HashLEToBig(h []byte) *big.Int {
 func isValidVtcAddress(addr string) bool {
 	// --- Try bech32 first ---
 	if strings.HasPrefix(strings.ToLower(addr), "vtc1") || strings.HasPrefix(strings.ToLower(addr), "tvtc1") {
-		if hrp, _, err := bech32.Decode(addr); err == nil {
-			if hrp == "vtc" || hrp == "tvtc" {
+		hrp, _, err := bech32.Decode(addr)
+		// Use the correct HRP for the active network
+		expectedHrp := "vtc"
+		if config.Active.Testnet {
+			expectedHrp = "tvtc"
+		}
+
+		if err == nil {
+			if hrp == expectedHrp {
 				return true
 			}
 		}
@@ -83,11 +92,20 @@ func isValidVtcAddress(addr string) bool {
 
 	// version byte
 	version := payload[0]
-	switch version {
-	case 0x47, 0x05, 0x6f, 0xc4: // mainnet P2PKH, P2SH, testnet P2PKH, P2SH
-		return true
-	default:
-		return false
+	if config.Active.Testnet {
+		switch version {
+		case 0x6f, 0xc4: // testnet P2PKH, P2SH
+			return true
+		default:
+			return false
+		}
+	} else {
+		switch version {
+		case 0x47, 0x05: // mainnet P2PKH, P2SH
+			return true
+		default:
+			return false
+		}
 	}
 }
 
@@ -104,10 +122,15 @@ func extractID(raw *json.RawMessage) interface{} {
 
 // TargetToDiff converts a target big.Int to a difficulty float64.
 func TargetToDiff(target *big.Int) float64 {
-	maxTarget := new(big.Int).Lsh(big.NewInt(1), 256)
-	diff := new(big.Float).SetInt(maxTarget)
+	// [FIX] Use the correct max target (2^256 - 1)
+	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	if target == nil || target.Sign() <= 0 {
+		return 0
+	}
+
+	maxTargetFloat := new(big.Float).SetInt(maxTarget)
 	targetFloat := new(big.Float).SetInt(target)
-	resultFloat := new(big.Float).Quo(diff, targetFloat)
+	resultFloat := new(big.Float).Quo(maxTargetFloat, targetFloat)
 	f64, _ := resultFloat.Float64()
 	return f64
 }
@@ -117,12 +140,13 @@ func TargetToDiff(target *big.Int) float64 {
 /* -------------------------------------------------------------------- */
 
 type StratumServer struct {
-	workManager  *work.WorkManager
-	peerManager  *p2p.PeerManager
-	clients      map[uint64]*Client
-	clientsMutex sync.RWMutex
-	lastJob      *Job
-	lastJobMutex sync.RWMutex
+	workManager         *work.WorkManager
+	peerManager         *p2p.PeerManager
+	clients             map[uint64]*Client
+	clientsMutex        sync.RWMutex
+	lastJob             *Job
+	latestPrevBlockHash *chainhash.Hash // [FIX] Added to track the latest block hash
+	lastJobMutex        sync.RWMutex
 }
 
 func NewStratumServer(wm *work.WorkManager, pm *p2p.PeerManager) *StratumServer {
@@ -158,6 +182,29 @@ func (s *StratumServer) Serve(listener net.Listener) error {
 /* -------------------------------------------------------------------- */
 /* Share-rate helpers                                                   */
 /* -------------------------------------------------------------------- */
+
+// [NEW] GetLocalEfficiency calculates the total efficiency of all connected miners.
+func (s *StratumServer) GetLocalEfficiency() float64 {
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+
+	var totalAccepted uint64 = 0
+	var totalRejected uint64 = 0
+
+	for _, c := range s.clients {
+		c.Mutex.Lock()
+		totalAccepted += c.AcceptedShares
+		totalRejected += c.RejectedShares
+		c.Mutex.Unlock()
+	}
+
+	totalShares := totalAccepted + totalRejected
+	if totalShares == 0 {
+		return 100.0 // No shares yet, so 100% efficient
+	}
+
+	return (float64(totalAccepted) / float64(totalShares)) * 100.0
+}
 
 func (s *StratumServer) GetLocalSharesPerSecond() float64 {
 	s.clientsMutex.RLock()
@@ -252,6 +299,9 @@ func (s *StratumServer) jobBroadcaster() {
 		}
 		s.lastJobMutex.Lock()
 		s.lastJob = newJob
+		// [FIX] Store the latest previous block hash
+		prevHash, _ := chainhash.NewHashFromStr(template.PreviousBlockHash)
+		s.latestPrevBlockHash = prevHash
 		s.lastJobMutex.Unlock()
 
 		s.clientsMutex.RLock()
@@ -330,17 +380,26 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	c.Mutex.Lock()
 	job, jobExists := c.ActiveJobs[jobID]
 	payoutAddr := c.WorkerName
-	currentDiff := c.CurrentDifficulty
+	// [FIX] Get the difficulty from the job, not the client's current difficulty
+	var jobDifficulty float64
+	if jobExists {
+		jobDifficulty = job.Difficulty
+	}
 	c.Mutex.Unlock()
 
 	if !jobExists {
 		logging.Warnf("Stratum: Stale share for unknown jobID %s from %s", jobID, c.WorkerName)
 		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{21, "Stale share", nil}}
 		_ = c.send(resp)
+		// [FIX] Increment rejected share count for stale shares
+		c.Mutex.Lock()
+		c.RejectedShares++
+		c.Mutex.Unlock()
 		return
 	}
 
-	newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, currentDiff)
+	// [FIX] Use the job's difficulty, not the client's current difficulty
+	newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, jobDifficulty)
 	if err != nil {
 		logging.Errorf("Stratum: Could not create share object: %v", err)
 		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{26, "Internal error creating share", nil}}
@@ -348,11 +407,26 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	shareTarget := work.DiffToTarget(currentDiff)
+	// [FIX] Use the job's difficulty to calculate the target
+	shareTarget := work.DiffToTarget(jobDifficulty)
 	newShare.Target = shareTarget
 
+	// [FIX] Add new stale check logic based on block hash
+	s.lastJobMutex.RLock()
+	latestPrevHash := s.latestPrevBlockHash
+	s.lastJobMutex.RUnlock()
+
+	isStale := false
+	if latestPrevHash != nil && !newShare.MinHeader.PreviousBlock.IsEqual(latestPrevHash) {
+		isStale = true
+		newShare.ShareInfo.ShareData.StaleInfo = wire.StaleInfoDOA // Mark as Dead on Arrival
+		logging.Warnf("Stratum: Share %s is stale (DOA), based on old block %s", newShare.Hash.String()[:12], newShare.MinHeader.PreviousBlock.String()[:12])
+	}
+	// [FIX] End new stale check
+
 	accepted, reason := newShare.IsValid()
-	if accepted {
+	// [FIX] Add !isStale to the acceptance criteria
+	if accepted && !isStale {
 		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Height: %d, Diff: %.2f, Hash: %s)",
@@ -367,7 +441,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		c.Mutex.Unlock()
 
 		c.LocalRateMonitor.AddDatum(ShareDatum{
-			Work:        currentDiff,
+			Work:        jobDifficulty, // [FIX] Use job's difficulty
 			IsDead:      false,
 			WorkerName:  c.WorkerName,
 			ShareTarget: shareTarget,
@@ -400,10 +474,21 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			}
 		}
 	} else {
+		// [FIX] Update rejection logic
+		if isStale {
+			reason = "Stale share (DOA)"
+			accepted = false // Ensure it's marked as rejected
+		}
 		logging.Warnf("Stratum: Share rejected – %s for %s", reason, c.WorkerName)
 		c.Mutex.Lock()
 		c.RejectedShares++
 		c.Mutex.Unlock()
+	}
+
+	// [FIX] Add stale shares to the chain so they count against efficiency
+	if isStale {
+		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
+		// We don't broadcast stale shares to peers
 	}
 
 	resp := JSONRPCResponse{ID: id, Result: accepted, Error: nil}
@@ -447,6 +532,11 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	}
 
 	addr := params[0]
+	// Handle full address with worker name (e.g., vtc1...worker1)
+	if strings.Contains(addr, ".") {
+		addr = strings.Split(addr, ".")[0]
+	}
+
 	logging.Debugf("Stratum: Miner %s trying to authorize with address: %s", c.Conn.RemoteAddr(), addr)
 	if !isValidVtcAddress(addr) {
 		logging.Warnf("Stratum: Miner %s failed authorization with INVALID address: %s", c.Conn.RemoteAddr(), addr)
@@ -559,10 +649,28 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		ID:            jobID,
 		BlockTemplate: tmpl,
 		ExtraNonce1:   c.ExtraNonce1,
-		Difficulty:    c.CurrentDifficulty,
+		Difficulty:    c.CurrentDifficulty, // [FIX] This is the difficulty *for this job*
 	}
 	if clean {
-		c.ActiveJobs = make(map[string]*Job)
+		// [FIX] Don't wipe old jobs immediately. Prune them instead.
+		// c.ActiveJobs = make(map[string]*Job)
+		if len(c.ActiveJobs) > 20 { // Keep a buffer of old jobs
+			// Simple prune: delete half the old jobs
+			keys := make([]string, 0, len(c.ActiveJobs))
+			for k := range c.ActiveJobs {
+				keys = append(keys, k)
+			}
+			// [FIX] Sort by jobID (as a number) to delete the oldest
+			// The callback function's params i and j are INTS (indices)
+			sort.Slice(keys, func(i, j int) bool {
+				iNum, _ := strconv.Atoi(keys[i])
+				jNum, _ := strconv.Atoi(keys[j])
+				return iNum < jNum
+			})
+			for i := 0; i < len(keys)/2; i++ {
+				delete(c.ActiveJobs, keys[i])
+			}
+		}
 	}
 	c.ActiveJobs[jobID] = job
 	worker := c.WorkerName
@@ -638,3 +746,5 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 
 	return (workTotal * hashrateConstant) / span.Seconds()
 }
+
+

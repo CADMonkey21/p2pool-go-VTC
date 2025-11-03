@@ -31,6 +31,7 @@ type Config struct {
 	Vardiff         VardiffConfig `yaml:"vardiff"`
 	VerthashDatFile string        `yaml:"verthash_dat_file"`
 	LogLevel        string        `yaml:"loglevel"` // This can be overridden by the flag
+	SoloMode        bool          `yaml:"solomode"` // [NEW] Add this flag
 }
 
 var Active Config
@@ -53,7 +54,9 @@ func LoadConfig() {
 	user := flag.String("u", "", "RPC Username")
 	pass := flag.String("p", "", "RPC Password")
 	// FIX: Add the loglevel flag
-	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, warn, error)")
+	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, error)")
+	// [NEW] Add the solomode flag
+	soloMode := flag.Bool("solo", false, "Enable solo mode to bypass P2P sync for the first node")
 
 	flag.Parse()
 
@@ -73,4 +76,10 @@ func LoadConfig() {
 	if *logLevel != "" {
 		Active.LogLevel = *logLevel
 	}
+	// [NEW] Handle the solomode flag
+	if *soloMode {
+		Active.SoloMode = true
+	}
 }
+
+

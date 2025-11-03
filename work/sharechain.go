@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil/base58" // [FIX] Added missing import
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
+	// [FIX] This import is no longer needed
+	// p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
@@ -116,7 +118,7 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 			if es, ok := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]; ok {
 				newChainShare := &ChainShare{Share: s, Previous: es}
 				es.Next = newChainShare
-				if es.Share.Hash.IsEqual(sc.Tip.Share.Hash) {
+				if sc.Tip == nil || es.Share.Hash.IsEqual(sc.Tip.Share.Hash) {
 					sc.Tip = newChainShare
 				}
 				sc.addChainShare(newChainShare)
@@ -124,7 +126,7 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 			} else if es, ok := sc.AllSharesByPrev[s.Hash.String()]; ok {
 				newChainShare := &ChainShare{Share: s, Next: es}
 				es.Previous = newChainShare
-				if es.Share.Hash.IsEqual(sc.Tail.Share.Hash) {
+				if sc.Tail == nil || es.Share.Hash.IsEqual(sc.Tail.Share.Hash) {
 					sc.Tail = newChainShare
 				}
 				sc.addChainShare(newChainShare)
@@ -206,7 +208,8 @@ func (sc *ShareChain) Load() error {
 
 	for i := range shares {
 		s := &shares[i]
-		s.CalculateHashes()
+		// [FIX] Only calculate the fast hash. This is the optimization.
+		s.CalculateHash()
 	}
 
 	sc.disconnectedShares = make([]*wire.Share, len(shares))
@@ -225,6 +228,7 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 
 	for i := range s {
 		share := s[i]
+		// [FIX] New shares submitted by miners must calculate *all* hashes
 		share.CalculateHashes()
 		if _, ok := sc.AllShares[share.Hash.String()]; !ok {
 			sc.disconnectedShares = append(sc.disconnectedShares, &share)
@@ -264,18 +268,21 @@ func (sc *ShareChain) GetStats() ChainStats {
 	lookbackDuration := 30 * time.Minute
 	startTime := time.Now().Add(-lookbackDuration)
 
-	totalDifficulty := new(big.Int)
 	var deadShares, sharesInWindow int
 
-	// Use powLimit instead of 2^256
-	powLimit := p2pnet.ActiveChainConfig.PowLimit
-	if powLimit == nil || powLimit.Sign() == 0 {
-		logging.Warnf("ActiveChainConfig.PowLimit is nil or zero; falling back to Vertcoin mainnet 0x1e0ffff0")
-		powLimit = blockchain.CompactToBig(0x1e0ffff0)
-	}
-	maxWork := new(big.Int).Set(powLimit)
+	// [FIX] Use the standard "Difficulty 1" target (max work)
+	// This is 2^256 - 1
+	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	maxWorkFloat := new(big.Float).SetInt(maxWork)
 
 	var earliestShareTime time.Time = time.Now()
+
+	// [FIX] This is the start of the new, correct logic
+	stratumWork := new(big.Float)
+	sharesInWindow = 0 // Reset for the new loop
+
+	// [FIX] This is for the debug log only now
+	totalDifficultyLog := new(big.Int)
 
 	current := sc.Tip
 	for current != nil && time.Unix(int64(current.Share.ShareInfo.Timestamp), 0).After(startTime) {
@@ -289,8 +296,19 @@ func (sc *ShareChain) GetStats() ChainStats {
 			current = current.Previous
 			continue
 		}
+		shareTargetFloat := new(big.Float).SetInt(shareTarget)
+		if shareTargetFloat.Sign() <= 0 {
+			current = current.Previous
+			continue
+		}
+
+		// stratum_diff = maxWork / shareTarget
+		diff := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
+		stratumWork.Add(stratumWork, diff)
+
+		// For debug log
 		work := new(big.Int).Div(maxWork, shareTarget)
-		totalDifficulty.Add(totalDifficulty, work)
+		totalDifficultyLog.Add(totalDifficultyLog, work)
 
 		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
 		if t.Before(earliestShareTime) {
@@ -318,27 +336,29 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	const hrConst = float64(4294967296) // 2^32
+	// [FIX] Use the correct constant for Verthash (2^24)
+	const hrConst = float64(16777216)
+	stats.PoolHashrate = 0.0 // Default
 
-	if totalDifficulty.Sign() > 0 {
-		totalDifficultyFloat := new(big.Float).SetInt(totalDifficulty)
-		hashrateFloat := new(big.Float).Quo(
-			new(big.Float).Mul(totalDifficultyFloat, big.NewFloat(hrConst)),
-			big.NewFloat(elapsedSeconds),
-		)
-		stats.PoolHashrate, _ = hashrateFloat.Float64()
+	if stratumWork.Sign() > 0 {
+		stratumWorkFloat, _ := stratumWork.Float64()
+		stats.PoolHashrate = (stratumWorkFloat * hrConst) / elapsedSeconds
 	}
+	// [FIX] End of new logic
 
 	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
+		// [FIX] Use the correct hrConst for Network Difficulty as well
 		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
+	} else {
+		stats.TimeToBlock = 0 // Or some indicator of N/A
 	}
 
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty=%s powLimit=%s hrConst=%.0f poolHashrate=%.6f H/s",
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty(stratum)=%s maxWork=%s hrConst=%.0f poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
-		totalDifficulty.String(),
-		powLimit.Text(16),
+		stratumWork.String(), // [FIX] Log the correct variable
+		maxWork.Text(16),
 		hrConst,
 		stats.PoolHashrate,
 	)
@@ -398,18 +418,15 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
 
-	// Use powLimit instead of hardcoded hex
-	powLimit := p2pnet.ActiveChainConfig.PowLimit
-	if powLimit == nil || powLimit.Sign() == 0 {
-		powLimit = blockchain.CompactToBig(0x1e0ffff0)
-	}
-	maxWork := new(big.Int).Set(powLimit)
+	// [FIX] Use the standard "Difficulty 1" target (max work)
+	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, share := range payoutShares {
 		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
+		// [FIX] Calculate work based on the standard maxWork
 		work := new(big.Int).Div(new(big.Int).Set(maxWork), shareTarget)
 		totalWorkInWindow.Add(totalWorkInWindow, work)
 	}
@@ -423,8 +440,29 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 			continue
 		}
 
-		address, err := bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, share.ShareInfo.ShareData.PubKeyHash...))
+		// Patched Address Handling
+		var address string
+		var err error
+		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 { // Bech32 P2WPKH or P2WSH
+			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
+			if err != nil {
+				logging.Warnf("Could not convert bits for bech32 payout: %v", err)
+				continue
+			}
+			// Use the correct HRP for the active network
+			hrp := "vtc"
+			if config.Active.Testnet {
+				hrp = "tvtc"
+			}
+			address, err = bech32.Encode(hrp, append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
+		} else { // Legacy Base58
+			// [FIX] Use base58.CheckEncode, not bech32.SafeBase58CheckEncode
+			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
+		}
+		// End Patched Address Handling
+
 		if err != nil {
+			logging.Warnf("Could not re-encode address for pubkeyhash, skipping share for payout: %v", err)
 			continue
 		}
 
@@ -432,6 +470,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
+		// [FIX] Calculate work based on the standard maxWork
 		work := new(big.Int).Div(new(big.Int).Set(maxWork), shareTarget)
 
 		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), work)
@@ -470,6 +509,7 @@ func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
 	defer sc.chainLock.Unlock()
 
 	needed := make(map[chainhash.Hash]bool)
+	// [FIX] Typo: sc.disconnectedShares not sc.disconnected
 	for _, s := range sc.disconnectedShares {
 		if s.ShareInfo.ShareData.PreviousShareHash != nil {
 			if _, exists := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]; !exists {
@@ -489,4 +529,5 @@ func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
 	}
 	return hashes
 }
+
 

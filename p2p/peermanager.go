@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	// [FIX] Corrected the typo in this import path
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/CADMonkey21/p2pool-go-VTC/config" // [NEW] Import config
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
@@ -190,7 +192,11 @@ func (pm *PeerManager) peerConnectorLoop() {
 		<-ticker.C
 		pm.peersMutex.RLock()
 		peerCount := len(pm.peers)
-		if peerCount == 0 && pm.IsSynced() {
+		//
+		// [FIX] Added check for config.Active.SoloMode
+		// We only check for lost sync if we are NOT in solo mode.
+		//
+		if peerCount == 0 && pm.IsSynced() && !config.Active.SoloMode {
 			logging.Warnf("P2P: Node has lost sync with the network (no peers).")
 			pm.ForceSyncState(false)
 		}
@@ -198,7 +204,10 @@ func (pm *PeerManager) peerConnectorLoop() {
 
 		logging.Debugf("Number of active peers: %d", peerCount)
 
-		if peerCount < 8 {
+		//
+		// [FIX] Also, don't try to connect to peers if we are in solo mode.
+		//
+		if peerCount < 8 && !config.Active.SoloMode {
 			pm.peersMutex.Lock()
 			var peerToTry string
 			for p := range pm.possiblePeers {
@@ -231,12 +240,12 @@ func (pm *PeerManager) TryPeer(p string) {
 	}
 
 	logging.Debugf("Trying OUTGOING connection to peer %s", p)
-	
+
 	// Mark this peer as "connecting"
 	pm.peersMutex.Lock()
 	pm.connectingPeers[host] = true
 	pm.peersMutex.Unlock()
-	
+
 	// Ensure we remove from connectingPeers on any exit path
 	defer func() {
 		pm.peersMutex.Lock()
@@ -262,7 +271,7 @@ func (pm *PeerManager) TryPeer(p string) {
 
 func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-	
+
 	peer, err := NewPeer(conn, pm.activeNetwork, pm.shareChain, pm)
 	if err != nil {
 		logging.Warnf("P2P: Handshake with %s failed: %v", conn.RemoteAddr(), err)
@@ -349,3 +358,5 @@ func (pm *PeerManager) GetPeerCount() int {
 	defer pm.peersMutex.RUnlock()
 	return len(pm.peers)
 }
+
+

@@ -132,9 +132,21 @@ func main() {
 	go workManager.WatchFoundBlocks()
 
 	/* ----- BLOCKING LOGIC WITHOUT TIMEOUT --------------------------- */
-	logging.Infof("MAIN: Waiting for P2P manager to sync with the network...")
-	<-pm.SyncedChannel() // This will now block until the sync is complete
-	logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
+	//
+	// [FIX] We wrap the sync block in a check for SoloMode.
+	//
+	if !config.Active.SoloMode {
+		logging.Infof("MAIN: Waiting for P2P manager to sync with the network...")
+		<-pm.SyncedChannel() // This will now block until the sync is complete
+		logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
+	} else {
+		logging.Warnf("MAIN: SoloMode=true. Bypassing P2P sync check.")
+		logging.Warnf("MAIN: This node will act as the FIRST node on a new network.")
+		// Manually force the PeerManager into a "synced" state.
+		// This is crucial so the Stratum server's authorization check passes.
+		pm.ForceSyncState(true)
+		logging.Infof("MAIN: ✅ Sync FAKED! Starting Stratum server and web UI.")
+	}
 	/* ---------------------------------------------------------------- */
 
 	/* ----- Stratum server instance ---------------------------------- */
@@ -182,3 +194,5 @@ func main() {
 		logging.Infof("Sharechain committed successfully.")
 	}
 }
+
+
