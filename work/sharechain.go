@@ -8,13 +8,12 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcutil/base58" // [FIX] Added missing import
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	// [FIX] This import is no longer needed
-	// p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
+	// "github.com/CADMonkey21/p2pool-go-VTC/net" // [FIX] This was an unused import
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
@@ -208,7 +207,7 @@ func (sc *ShareChain) Load() error {
 
 	for i := range shares {
 		s := &shares[i]
-		// [FIX] Only calculate the fast hash. This is the optimization.
+		// [FIX] Only calculate the fast hash. This is the startup optimization.
 		s.CalculateHash()
 	}
 
@@ -277,21 +276,17 @@ func (sc *ShareChain) GetStats() ChainStats {
 
 	var earliestShareTime time.Time = time.Now()
 
-	// [FIX] This is the start of the new, correct logic
 	stratumWork := new(big.Float)
 	sharesInWindow = 0 // Reset for the new loop
 
-	// [FIX] This is for the debug log only now
-	totalDifficultyLog := new(big.Int)
-
 	current := sc.Tip
-	for current != nil && time.Unix(int64(current.Share.ShareInfo.Timestamp), 0).After(startTime) {
+	for current != nil && time.Unix(int64(current.Share.MinHeader.Timestamp), 0).After(startTime) {
 		sharesInWindow++
 		if current.Share.ShareInfo.ShareData.StaleInfo != wire.StaleInfoNone {
 			deadShares++
 		}
 
-		shareTarget := blockchain.CompactToBig(current.Share.ShareInfo.Bits)
+		shareTarget := blockchain.CompactToBig(current.Share.MinHeader.Bits)
 		if shareTarget.Sign() <= 0 {
 			current = current.Previous
 			continue
@@ -303,14 +298,11 @@ func (sc *ShareChain) GetStats() ChainStats {
 		}
 
 		// stratum_diff = maxWork / shareTarget
+		// This is the "work" (total hashes) represented by this share
 		diff := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
 		stratumWork.Add(stratumWork, diff)
 
-		// For debug log
-		work := new(big.Int).Div(maxWork, shareTarget)
-		totalDifficultyLog.Add(totalDifficultyLog, work)
-
-		t := time.Unix(int64(current.Share.ShareInfo.Timestamp), 0)
+		t := time.Unix(int64(current.Share.MinHeader.Timestamp), 0)
 		if t.Before(earliestShareTime) {
 			earliestShareTime = t
 		}
@@ -336,30 +328,33 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	// [FIX] Use the correct constant for Verthash (2^24)
-	const hrConst = float64(16777216)
+	// [STATS BUG FIX]
+	// The Python code's `target_to_average_attempts` is `2**256 / target`.
+	// Our `stratumWork` is `sum(maxWork / shareTarget)`, which is the same thing.
+	// This value *is* the total hashes (or "attempts").
+	// Hashrate = total hashes / time.
+	// The multiplication by `hrConst` was the bug.
 	stats.PoolHashrate = 0.0 // Default
-
 	if stratumWork.Sign() > 0 {
-		stratumWorkFloat, _ := stratumWork.Float64()
-		stats.PoolHashrate = (stratumWorkFloat * hrConst) / elapsedSeconds
+		hashrateFloat := new(big.Float).Quo(stratumWork, big.NewFloat(elapsedSeconds))
+		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
-	// [FIX] End of new logic
+	// [END STATS BUG FIX]
 
-	if stats.PoolHashrate > 0 && stats.NetworkDifficulty > 0 {
-		// [FIX] Use the correct hrConst for Network Difficulty as well
-		stats.TimeToBlock = (stats.NetworkDifficulty * hrConst) / stats.PoolHashrate
+	if stats.PoolHashrate > 0 && stats.NetworkHashrate > 0 {
+		// [FIX] Use the network hashrate provided by the daemon for TTB calculation
+		// This is more stable and correct. 150 seconds = 2.5 min block time
+		stats.TimeToBlock = (stats.NetworkHashrate / stats.PoolHashrate) * 150
 	} else {
 		stats.TimeToBlock = 0 // Or some indicator of N/A
 	}
 
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty(stratum)=%s maxWork=%s hrConst=%.0f poolHashrate=%.6f H/s",
+	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty(stratum)=%s maxWork=%s poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
 		stratumWork.String(), // [FIX] Log the correct variable
 		maxWork.Text(16),
-		hrConst,
 		stats.PoolHashrate,
 	)
 
@@ -422,7 +417,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, share := range payoutShares {
-		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
+		shareTarget := blockchain.CompactToBig(share.MinHeader.Bits)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
@@ -456,7 +451,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 			}
 			address, err = bech32.Encode(hrp, append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
 		} else { // Legacy Base58
-			// [FIX] Use base58.CheckEncode, not bech32.SafeBase58CheckEncode
+			// [FIX] Use base58.CheckEncode
 			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
 		}
 		// End Patched Address Handling
@@ -466,7 +461,7 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 			continue
 		}
 
-		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
+		shareTarget := blockchain.CompactToBig(share.MinHeader.Bits)
 		if shareTarget.Sign() <= 0 {
 			continue
 		}
@@ -480,8 +475,8 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 	}
 
 	finalPayouts := make(map[string]float64)
-	for addr, amountSatoshis := range payouts {
-		finalPayouts[addr] = float64(amountSatoshis) / 100000000.0
+	for addr, amountSatoshIS := range payouts {
+		finalPayouts[addr] = float64(amountSatoshIS) / 100000000.0
 	}
 
 	return finalPayouts, nil
@@ -529,5 +524,3 @@ func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
 	}
 	return hashes
 }
-
-
