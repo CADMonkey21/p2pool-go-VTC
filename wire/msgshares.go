@@ -21,14 +21,20 @@ func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
 	if err != nil {
 		return err
 	}
-	// CORRECTED: Do NOT reverse the hashes. The btcd library already stores
-	// them in the correct internal (little-endian) byte order.
-	if _, err := w.Write(header.PrevBlock.CloneBytes()); err != nil {
+
+	// [CRITICAL BUG FIX]
+	// The legacy Python code (p2pool/bitcoin/data.py -> serialize_header)
+	// REVERSES the PrevBlock and MerkleRoot hashes before serializing.
+	// This means it writes them in BIG-ENDIAN format.
+	// We MUST reverse them to match the legacy code, otherwise our PoW hash
+	// will be completely different from the miner's.
+	if _, err := w.Write(util.ReverseBytes(header.PrevBlock.CloneBytes())); err != nil {
 		return err
 	}
-	if _, err := w.Write(header.MerkleRoot.CloneBytes()); err != nil {
+	if _, err := w.Write(util.ReverseBytes(header.MerkleRoot.CloneBytes())); err != nil {
 		return err
 	}
+
 	if err := binary.Write(w, binary.LittleEndian, uint32(header.Timestamp.Unix())); err != nil {
 		return err
 	}
@@ -223,5 +229,3 @@ func (m *MsgShares) ToBytes() ([]byte, error) {
 }
 
 func (mm *MsgShares) Command() string { return "shares" }
-
-

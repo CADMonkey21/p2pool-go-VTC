@@ -281,7 +281,9 @@ func (s *StratumServer) keepAliveLoop() {
 		s.clientsMutex.RUnlock()
 		for _, c := range clients {
 			if c.Authorized && s.isClientActive(c.ID) {
-				s.sendMiningJob(c, job.BlockTemplate, false)
+				// [RACE CONDITION FIX] Pass a copy of the template, not the pointer
+				jobTemplate := *job.BlockTemplate
+				s.sendMiningJob(c, &jobTemplate, false)
 			}
 		}
 	}
@@ -293,13 +295,19 @@ func (s *StratumServer) jobBroadcaster() {
 
 		newJobID := atomic.AddUint64(&jobCounter, 1)
 
+		// [RACE CONDITION FIX] Deep copy the block template.
+		// template is a pointer, and its contents WILL be mutated
+		// by the workManager. We must create a new struct and copy the values
+		// so this job's data is immutable.
+		jobTemplate := *template
+
 		newJob := &Job{
 			ID:            fmt.Sprintf("%d", newJobID),
-			BlockTemplate: template,
+			BlockTemplate: &jobTemplate, // <-- Pass a pointer to our new, safe copy
 		}
 		s.lastJobMutex.Lock()
 		s.lastJob = newJob
-		// [FIX] Store the latest previous block hash
+		// [STALE SHARE FIX] Store the latest previous block hash
 		prevHash, _ := chainhash.NewHashFromStr(template.PreviousBlockHash)
 		s.latestPrevBlockHash = prevHash
 		s.lastJobMutex.Unlock()
@@ -313,7 +321,7 @@ func (s *StratumServer) jobBroadcaster() {
 
 		for _, c := range clients {
 			if c.Authorized && s.isClientActive(c.ID) {
-				s.sendMiningJob(c, template, true)
+				s.sendMiningJob(c, &jobTemplate, true) // Pass our safe copy
 			}
 		}
 	}
@@ -380,7 +388,6 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	c.Mutex.Lock()
 	job, jobExists := c.ActiveJobs[jobID]
 	payoutAddr := c.WorkerName
-	// [FIX] Get the difficulty from the job, not the client's current difficulty
 	var jobDifficulty float64
 	if jobExists {
 		jobDifficulty = job.Difficulty
@@ -391,14 +398,12 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		logging.Warnf("Stratum: Stale share for unknown jobID %s from %s", jobID, c.WorkerName)
 		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{21, "Stale share", nil}}
 		_ = c.send(resp)
-		// [FIX] Increment rejected share count for stale shares
 		c.Mutex.Lock()
 		c.RejectedShares++
 		c.Mutex.Unlock()
 		return
 	}
 
-	// [FIX] Use the job's difficulty, not the client's current difficulty
 	newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, jobDifficulty)
 	if err != nil {
 		logging.Errorf("Stratum: Could not create share object: %v", err)
@@ -407,25 +412,25 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	// [FIX] Use the job's difficulty to calculate the target
 	shareTarget := work.DiffToTarget(jobDifficulty)
 	newShare.Target = shareTarget
 
-	// [FIX] Add new stale check logic based on block hash
 	s.lastJobMutex.RLock()
 	latestPrevHash := s.latestPrevBlockHash
 	s.lastJobMutex.RUnlock()
 
 	isStale := false
-	if latestPrevHash != nil && !newShare.MinHeader.PreviousBlock.IsEqual(latestPrevHash) {
+	// [STALE SHARE FIX] We check if the share's prevBlock is the *current* latest block.
+	// [COMPILER FIX] Convert the string from the template to a hash object before comparing.
+	jobPrevHash, _ := chainhash.NewHashFromStr(job.BlockTemplate.PreviousBlockHash)
+	if latestPrevHash != nil && !jobPrevHash.IsEqual(latestPrevHash) {
 		isStale = true
 		newShare.ShareInfo.ShareData.StaleInfo = wire.StaleInfoDOA // Mark as Dead on Arrival
-		logging.Warnf("Stratum: Share %s is stale (DOA), based on old block %s", newShare.Hash.String()[:12], newShare.MinHeader.PreviousBlock.String()[:12])
+		// [COMPILER FIX] Log the string field `PreviousBlockHash`
+		logging.Warnf("Stratum: Share %s is stale (DOA), based on old block %s", newShare.Hash.String()[:12], job.BlockTemplate.PreviousBlockHash[:12])
 	}
-	// [FIX] End new stale check
 
 	accepted, reason := newShare.IsValid()
-	// [FIX] Add !isStale to the acceptance criteria
 	if accepted && !isStale {
 		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
 		shareDiff := TargetToDiff(powInt)
@@ -441,7 +446,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		c.Mutex.Unlock()
 
 		c.LocalRateMonitor.AddDatum(ShareDatum{
-			Work:        jobDifficulty, // [FIX] Use job's difficulty
+			Work:        jobDifficulty,
 			IsDead:      false,
 			WorkerName:  c.WorkerName,
 			ShareTarget: shareTarget,
@@ -450,10 +455,10 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
 		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
 
-		// Restored DIAG block
 		logging.Debugf("[DIAG] shareHash.print=%s", newShare.Hash.String())
 		logging.Debugf("[DIAG] powInt(H^LE->big)=%s", powInt.Text(16))
 
+		// [CRITICAL FIX] Use the nBits from the JOB the share was for, not the global template.
 		nBits64, err := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		if err != nil {
 			logging.Errorf("Could not parse bits from block template: %v", err)
@@ -474,10 +479,11 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			}
 		}
 	} else {
-		// [FIX] Update rejection logic
 		if isStale {
 			reason = "Stale share (DOA)"
 			accepted = false // Ensure it's marked as rejected
+		} else if !accepted {
+			reason = fmt.Sprintf("Share hash > target (%s)", reason)
 		}
 		logging.Warnf("Stratum: Share rejected – %s for %s", reason, c.WorkerName)
 		c.Mutex.Lock()
@@ -485,10 +491,8 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		c.Mutex.Unlock()
 	}
 
-	// [FIX] Add stale shares to the chain so they count against efficiency
 	if isStale {
 		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
-		// We don't broadcast stale shares to peers
 	}
 
 	resp := JSONRPCResponse{ID: id, Result: accepted, Error: nil}
@@ -563,7 +567,9 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	job := s.lastJob
 	s.lastJobMutex.RUnlock()
 	if job != nil {
-		go s.sendMiningJob(c, job.BlockTemplate, true)
+		// [RACE CONDITION FIX] We must pass a *copy* of the template, not the pointer
+		jobTemplate := *job.BlockTemplate
+		go s.sendMiningJob(c, &jobTemplate, true)
 	}
 }
 
@@ -645,23 +651,24 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	newJobID := atomic.AddUint64(&jobCounter, 1)
 	jobID := fmt.Sprintf("%d", newJobID)
 
+	// [RACE CONDITION FIX] Deep copy the block template.
+	// tmpl is a pointer, and its contents WILL be mutated
+	// by the jobBroadcaster. We must create a new struct and copy the values
+	// so this job's data is immutable.
+	jobTemplate := *tmpl
+
 	job := &Job{
 		ID:            jobID,
-		BlockTemplate: tmpl,
+		BlockTemplate: &jobTemplate, // <-- Pass a pointer to our new, safe copy
 		ExtraNonce1:   c.ExtraNonce1,
-		Difficulty:    c.CurrentDifficulty, // [FIX] This is the difficulty *for this job*
+		Difficulty:    c.CurrentDifficulty,
 	}
 	if clean {
-		// [FIX] Don't wipe old jobs immediately. Prune them instead.
-		// c.ActiveJobs = make(map[string]*Job)
 		if len(c.ActiveJobs) > 20 { // Keep a buffer of old jobs
-			// Simple prune: delete half the old jobs
 			keys := make([]string, 0, len(c.ActiveJobs))
 			for k := range c.ActiveJobs {
 				keys = append(keys, k)
 			}
-			// [FIX] Sort by jobID (as a number) to delete the oldest
-			// The callback function's params i and j are INTS (indices)
 			sort.Slice(keys, func(i, j int) bool {
 				iNum, _ := strconv.Atoi(keys[i])
 				jNum, _ := strconv.Atoi(keys[j])
@@ -678,13 +685,13 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 
 	params := []interface{}{
 		jobID,
-		tmpl.PreviousBlockHash,
+		jobTemplate.PreviousBlockHash, // Use the copied template's data
 		"01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704",
 		"000000000000000000000000000000",
 		[]string{},
 		"20000000",
-		tmpl.Bits,
-		fmt.Sprintf("%x", tmpl.CurTime),
+		jobTemplate.Bits, // Use the copied template's data
+		fmt.Sprintf("%x", jobTemplate.CurTime), // Use the copied template's data
 		clean,
 	}
 	msg := JSONRPCResponse{Method: "mining.notify", Params: params}
@@ -692,17 +699,17 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		logging.Debugf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
 		s.dropClient(c)
 	} else {
-		txCount := len(tmpl.Transactions)
+		txCount := len(jobTemplate.Transactions)
 		txSize := 0
-		for _, tx := range tmpl.Transactions {
+		for _, tx := range jobTemplate.Transactions {
 			txSize += len(tx.Data)
 		}
-		blockValue := float64(tmpl.CoinbaseValue) / 100000000.0
+		blockValue := float64(jobTemplate.CoinbaseValue) / 100000000.0
 
 		logging.Noticef("New job %s sent to %s (Height: %d, Block Value: %.2f VTC, Share Diff: %.2f, %d tx, %.1f kB)",
 			jobID,
 			worker,
-			tmpl.Height,
+			jobTemplate.Height,
 			blockValue,
 			job.Difficulty,
 			txCount,
@@ -746,5 +753,3 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 
 	return (workTotal * hashrateConstant) / span.Seconds()
 }
-
-

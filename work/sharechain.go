@@ -208,7 +208,9 @@ func (sc *ShareChain) Load() error {
 	for i := range shares {
 		s := &shares[i]
 		// [FIX] Only calculate the fast hash. This is the startup optimization.
-		s.CalculateHash()
+		if err := s.CalculateHash(); err != nil {
+			logging.Warnf("Failed to calculate hash for share on load: %v", err)
+		}
 	}
 
 	sc.disconnectedShares = make([]*wire.Share, len(shares))
@@ -228,7 +230,10 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 	for i := range s {
 		share := s[i]
 		// [FIX] New shares submitted by miners must calculate *all* hashes
-		share.CalculateHashes()
+		if err := share.CalculateHashes(); err != nil {
+			logging.Warnf("Failed to calculate hashes for new share: %v", err)
+			continue // Don't add a share we can't hash
+		}
 		if _, ok := sc.AllShares[share.Hash.String()]; !ok {
 			sc.disconnectedShares = append(sc.disconnectedShares, &share)
 		}
@@ -504,7 +509,6 @@ func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
 	defer sc.chainLock.Unlock()
 
 	needed := make(map[chainhash.Hash]bool)
-	// [FIX] Typo: sc.disconnectedShares not sc.disconnected
 	for _, s := range sc.disconnectedShares {
 		if s.ShareInfo.ShareData.PreviousShareHash != nil {
 			if _, exists := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]; !exists {
