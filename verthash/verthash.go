@@ -85,8 +85,22 @@ type Verthash struct {
 	datFile        *os.File
 }
 
-func fnv1a(a, b uint32) uint32 {
-	return (a ^ b) * 0x1000193
+// [FIX] This is the new byte-wise FNV-1a update function
+func fnv1a_b(hash uint32, b byte) uint32 {
+	return (hash ^ uint32(b)) * 0x1000193
+}
+
+// [FIX] This function hashes a uint32 (as 4 bytes) into the hash state,
+// processing bytes in little-endian order to match the C++ implementation.
+func fnv1a_u32(hash uint32, v uint32) uint32 {
+	// Extract bytes in little-endian order
+	// C++ implementation casts `uint32_t*` to `unsigned char*`
+	// which on a little-endian architecture means processing b0, b1, b2, b3.
+	hash = fnv1a_b(hash, byte(v))
+	hash = fnv1a_b(hash, byte(v>>8))
+	hash = fnv1a_b(hash, byte(v>>16))
+	hash = fnv1a_b(hash, byte(v>>24))
+	return hash
 }
 
 func NewVerthash(datFileLocation string, keepInRam bool) (*Verthash, error) {
@@ -157,14 +171,19 @@ func (v *Verthash) SumVerthash(input []byte) ([32]byte, error) {
 	var valueAccumulator uint32
 	var mdiv uint32
 	mdiv = ((uint32(datFileSize) - VerthashHashOutSize) / VerthashByteAlignment) + 1
-	valueAccumulator = uint32(0x811c9dc5)
+	valueAccumulator = uint32(0x811c9dc5) // FNV1_32_INIT
 	buf = bytes.NewBuffer(p1[:])
 	p1Arr := make([]uint32, VerthashHashOutSize/4)
 	for i := 0; i < len(p1Arr); i++ {
 		binary.Read(buf, binary.LittleEndian, &p1Arr[i])
 	}
 	for i := uint32(0); i < VerthashIndexes; i++ {
-		offset := (fnv1a(seekIndexes[i], valueAccumulator) % mdiv) * VerthashByteAlignment
+		// [FIX] This is the corrected hashing logic.
+		// The hash is calculated using the current valueAccumulator state,
+		// and then valueAccumulator is updated with the new hash for the next loop.
+		hash_for_offset := fnv1a_u32(valueAccumulator, seekIndexes[i])
+		offset := (hash_for_offset % mdiv) * VerthashByteAlignment
+		valueAccumulator = hash_for_offset // Update accumulator
 
 		data := make([]byte, 32)
 		if v.datFileContent != nil {
@@ -176,8 +195,9 @@ func (v *Verthash) SumVerthash(input []byte) ([32]byte, error) {
 
 		for i2 := uint32(0); i2 < VerthashHashOutSize/4; i2++ {
 			value := binary.LittleEndian.Uint32(data[i2*4 : ((i2 + 1) * 4)])
-			p1Arr[i2] = fnv1a(p1Arr[i2], value)
-			valueAccumulator = fnv1a(valueAccumulator, value)
+			// [FIX] Use the byte-wise fnv1a_u32 function for hashing
+			p1Arr[i2] = fnv1a_u32(p1Arr[i2], value)
+			valueAccumulator = fnv1a_u32(valueAccumulator, value)
 		}
 	}
 
