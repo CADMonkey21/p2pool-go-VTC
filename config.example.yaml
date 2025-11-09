@@ -23,7 +23,7 @@ rpcPass: "your_rpc_password"
 
 # --- Pool Settings ---
 # Your personal Vertcoin address for receiving pool fee payouts.
-poolAddress: "vtc1..."
+poolAddress: "tvtc1q09pd5kr6pvcjdp809uc34esd42wag4ckkmxpz9"
 # The fee (in percent) that the pool will take.
 fee: 1.0
 # How many shares are considered for payouts when a block is found (Pay-Per-Last-N-Shares).
@@ -81,3 +81,11 @@ vardiff:
   # This prevents difficulty from dropping too low for very slow miners.
   # 0.01 is a reasonable floor for most hardware.
   minDiff: 0.01
+
+# --- Testing Settings ---
+# !! WARNING: FOR TESTING ONLY !!
+# forceBlockFind: true
+# (Optional) Set to true to treat EVERY accepted share as a
+# block. This is used to test the block submission and
+# daemon rejection logic. This will NOT find a real block.
+# DO NOT run this on mainnet.

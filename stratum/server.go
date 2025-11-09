@@ -537,6 +537,12 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			nBits := uint32(nBits64)
 			netTarget := blockchain.CompactToBig(nBits)
 
+			// [NEW] Testing hack to force a block find
+			if config.Active.ForceBlockFind {
+				logging.Warnf("TESTING: Forcing netTarget to maximum (Difficulty 1) to test block finding.")
+				netTarget, _ = new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+			}
+
 			logging.Debugf("[DIAG] nBits=0x%08x netTarget=%s", nBits, netTarget.Text(16))
 			logging.Debugf("[DIAG] powInt=%s", powInt.Text(16))
 			logging.Debugf("[DIAG] netTarget=%s", netTarget.Text(16))

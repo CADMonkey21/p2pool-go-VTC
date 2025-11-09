@@ -31,8 +31,9 @@ type Config struct {
 	Vardiff         VardiffConfig `yaml:"vardiff"`
 	VerthashDatFile string        `yaml:"verthash_dat_file"`
 	LogLevel        string        `yaml:"loglevel"` // This can be overridden by the flag
-	SoloMode        bool          `yaml:"solomode"` // [NEW] Add this flag
-	P2PSyncTimeout  int           `yaml:"p2pSyncTimeout"` // [NEW] Add this field
+	SoloMode        bool          `yaml:"solomode"`
+	P2PSyncTimeout  int           `yaml:"p2pSyncTimeout"`
+	ForceBlockFind  bool          `yaml:"forceBlockFind"` // [NEW] Add this field
 }
 
 var Active Config
@@ -58,6 +59,8 @@ func LoadConfig() {
 	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, error)")
 	// [NEW] Add the solomode flag
 	soloMode := flag.Bool("solo", false, "Enable solo mode to bypass P2P sync for the first node")
+	// [NEW] Add the forceBlockFind flag
+	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
 
 	flag.Parse()
 
@@ -80,5 +83,9 @@ func LoadConfig() {
 	// [NEW] Handle the solomode flag
 	if *soloMode {
 		Active.SoloMode = true
+	}
+	// [NEW] Handle the forceBlockFind flag
+	if *forceBlockFind {
+		Active.ForceBlockFind = true
 	}
 }
