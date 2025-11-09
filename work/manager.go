@@ -178,6 +178,13 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
+	// [NEW] Set maturity confirmations based on the network
+	var requiredConfirmations int64 = 100
+	if config.Active.Testnet {
+		requiredConfirmations = 2
+		logging.Warnf("Payout: Testnet mode is active. Block maturity check set to %d confirmations.", requiredConfirmations)
+	}
+
 	for {
 		<-ticker.C
 		var keptBlocks []*PayoutBlock
@@ -202,7 +209,8 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 					} else {
 						logging.Warnf("Could not get block info for %s: %v", pb.BlockHash.String(), err)
 					}
-				} else if blockInfo.Confirmations >= 100 {
+				// [MODIFIED] Use the requiredConfirmations variable
+				} else if blockInfo.Confirmations >= requiredConfirmations {
 					logging.Successf("✅ Block %s at height %d is now MATURE with %d confirmations!", pb.BlockHash.String(), pb.BlockHeight, blockInfo.Confirmations)
 					pb.State = StateMature
 				} else {
