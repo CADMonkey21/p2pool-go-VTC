@@ -140,3 +140,8 @@ func Error(args ...interface{}) {
 		log.Print(append([]interface{}{Red + getPrefix("ERROR")}, args...)...)
 	}
 }
+
+// [NEW] GetLogLevel returns the current logging level.
+func GetLogLevel() LogLevel {
+	return logLevel
+}

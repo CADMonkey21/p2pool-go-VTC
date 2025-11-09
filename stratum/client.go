@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging" // [NEW] Import logging
 )
 
 // ShareDatum represents a single data point for rate monitoring.
@@ -154,11 +154,14 @@ func (c *Client) send(v interface{}) error {
 		return errors.New("connection is closed")
 	}
 
-	jsonData, err := json.Marshal(v)
-	if err != nil {
-		logging.Errorf("Stratum: FAILED TO MARSHAL JSON FOR DEBUG LOG: %v", err)
-	} else {
-		logging.Debugf("Stratum: SENDING RAW JSON -> %s", string(jsonData))
+	// [OPTIMIZATION] Only marshal for debug log if log level is appropriate
+	if logging.GetLogLevel() >= logging.LogLevelDebug {
+		jsonData, err := json.Marshal(v)
+		if err != nil {
+			logging.Errorf("Stratum: FAILED TO MARSHAL JSON FOR DEBUG LOG: %v", err)
+		} else {
+			logging.Debugf("Stratum: SENDING RAW JSON -> %s", string(jsonData))
+		}
 	}
 
 	if err := c.Encoder.Encode(v); err != nil {

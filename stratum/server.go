@@ -138,6 +138,20 @@ func TargetToDiff(target *big.Int) float64 {
 	return f64
 }
 
+// [NEW] buildMasterNotifyParams creates the 7 job parameters that are
+// common to all miners for a given template.
+func buildMasterNotifyParams(tmpl *work.BlockTemplate) []interface{} {
+	return []interface{}{
+		tmpl.PreviousBlockHash,
+		"01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704",
+		"000000000000000000000000000000",
+		[]string{},
+		"20000000",
+		tmpl.Bits,
+		fmt.Sprintf("%x", tmpl.CurTime),
+	}
+}
+
 /* -------------------------------------------------------------------- */
 /* StratumServer struct                                                 */
 /* -------------------------------------------------------------------- */
@@ -276,6 +290,11 @@ func (s *StratumServer) keepAliveLoop() {
 		if job == nil {
 			continue
 		}
+
+		// [OPTIMIZATION] Build master params once for all clients
+		jobTemplate := *job.BlockTemplate
+		masterParams := buildMasterNotifyParams(&jobTemplate)
+
 		s.clientsMutex.RLock()
 		clients := make([]*Client, 0, len(s.clients))
 		for _, c := range s.clients {
@@ -284,9 +303,8 @@ func (s *StratumServer) keepAliveLoop() {
 		s.clientsMutex.RUnlock()
 		for _, c := range clients {
 			if c.Authorized && s.isClientActive(c.ID) {
-				// [RACE CONDITION FIX] Pass a copy of the template, not the pointer
-				jobTemplate := *job.BlockTemplate
-				s.sendMiningJob(c, &jobTemplate, false)
+				// [OPTIMIZATION] Pass master params to sendMiningJob
+				s.sendMiningJob(c, &jobTemplate, false, masterParams)
 			}
 		}
 	}
@@ -332,6 +350,9 @@ func (s *StratumServer) jobBroadcaster() {
 		coinbaseMerkleLinkBranches := work.CalculateMerkleLink(txHashesForLink, 0)
 		// [END OPTIMIZATION]
 
+		// [OPTIMIZATION] Build master params once for all clients
+		masterParams := buildMasterNotifyParams(&jobTemplate)
+
 		newJob := &Job{
 			ID:                   fmt.Sprintf("%d", newJobID),
 			BlockTemplate:        &jobTemplate, // <-- Pass a pointer to our new, safe copy
@@ -356,7 +377,8 @@ func (s *StratumServer) jobBroadcaster() {
 
 		for _, c := range clients {
 			if c.Authorized && s.isClientActive(c.ID) {
-				s.sendMiningJob(c, &jobTemplate, true) // Pass our safe copy
+				// [OPTIMIZATION] Pass master params to sendMiningJob
+				s.sendMiningJob(c, &jobTemplate, true, masterParams)
 			}
 		}
 	}
@@ -618,7 +640,10 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	if job != nil {
 		// [RACE CONDITION FIX] We must pass a *copy* of the template, not the pointer
 		jobTemplate := *job.BlockTemplate
-		go s.sendMiningJob(c, &jobTemplate, true)
+
+		// [OPTIMIZATION] Build master params for this job send
+		masterParams := buildMasterNotifyParams(&jobTemplate)
+		go s.sendMiningJob(c, &jobTemplate, true, masterParams)
 	}
 }
 
@@ -691,7 +716,8 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 /* Job sender                                                           */
 /* -------------------------------------------------------------------- */
 
-func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean bool) {
+// [MODIFIED] Added masterParams argument
+func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean bool, masterParams []interface{}) {
 	if c.closed.Load() || tmpl == nil {
 		return
 	}
@@ -745,17 +771,15 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	worker := c.WorkerName
 	c.Mutex.Unlock()
 
-	params := []interface{}{
-		jobID,
-		jobTemplate.PreviousBlockHash, // Use the copied template's data
-		"01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704",
-		"000000000000000000000000000000",
-		[]string{},
-		"20000000",
-		jobTemplate.Bits, // Use the copied template's data
-		fmt.Sprintf("%x", jobTemplate.CurTime), // Use the copied template's data
-		clean,
-	}
+	// [OPTIMIZATION] Create the final params slice efficiently
+	// 0: jobID (client-specific)
+	// 1-7: masterParams (common)
+	// 8: clean (client-specific)
+	params := make([]interface{}, 9)
+	params[0] = jobID
+	copy(params[1:8], masterParams) // Copy the 7 common params
+	params[8] = clean
+
 	msg := JSONRPCResponse{Method: "mining.notify", Params: params}
 	if err := c.send(msg); err != nil {
 		logging.Debugf("Stratum: Failed to send job to %s: %v", c.Conn.RemoteAddr(), err)
