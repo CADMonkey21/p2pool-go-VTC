@@ -1,7 +1,9 @@
 package stratum
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,11 +20,12 @@ import (
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
-	"github.com/CADMonkey21/p2pool-go-VTC/wire"
+	p2pwire "github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 // Each unit of VertHash difficulty represents 2^24 hashes.
@@ -301,9 +304,41 @@ func (s *StratumServer) jobBroadcaster() {
 		// so this job's data is immutable.
 		jobTemplate := *template
 
+		// [OPTIMIZATION] Pre-calculate all expensive Merkle data ONCE.
+		wtxidMerkleRoot, witnessCommitment, err := work.CalculateWitnessCommitment(&jobTemplate)
+		if err != nil {
+			logging.Errorf("Failed to calculate witness commitment for new job: %v", err)
+			continue
+		}
+
+		coinbaseWtxid, _ := chainhash.NewHashFromStr("0000000000000000000000000000000000000000000000000000000000000000")
+		wtxids := []*chainhash.Hash{coinbaseWtxid}
+		for _, txTmpl := range jobTemplate.Transactions {
+			txBytes, _ := hex.DecodeString(txTmpl.Data)
+			var msgTx wire.MsgTx
+			_ = msgTx.Deserialize(bytes.NewReader(txBytes))
+			wtxid := msgTx.WitnessHash()
+			wtxids = append(wtxids, &wtxid)
+		}
+		txidMerkleLinkBranches := work.CalculateMerkleLinkFromHashes(wtxids, 0)
+
+		// This dummy hash will be replaced by the real one in CreateShare
+		dummyCoinbaseHash := work.DblSha256([]byte{})
+		txHashesForLink := [][]byte{work.ReverseBytes(dummyCoinbaseHash)}
+		for _, tx := range jobTemplate.Transactions {
+			txHashBytes, _ := hex.DecodeString(tx.Hash)
+			txHashesForLink = append(txHashesForLink, work.ReverseBytes(txHashBytes))
+		}
+		coinbaseMerkleLinkBranches := work.CalculateMerkleLink(txHashesForLink, 0)
+		// [END OPTIMIZATION]
+
 		newJob := &Job{
-			ID:            fmt.Sprintf("%d", newJobID),
-			BlockTemplate: &jobTemplate, // <-- Pass a pointer to our new, safe copy
+			ID:                   fmt.Sprintf("%d", newJobID),
+			BlockTemplate:        &jobTemplate, // <-- Pass a pointer to our new, safe copy
+			WitnessCommitment:    witnessCommitment.CloneBytes(),
+			WTXIDMerkleRoot:      wtxidMerkleRoot,
+			TXIDMerkleLink:       txidMerkleLinkBranches,
+			CoinbaseMerkleLink: coinbaseMerkleLinkBranches,
 		}
 		s.lastJobMutex.Lock()
 		s.lastJob = newJob
@@ -404,7 +439,21 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	newShare, err := work.CreateShare(job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr, s.workManager.ShareChain, jobDifficulty)
+	// [OPTIMIZATION] Pass the pre-calculated job data to CreateShare
+	newShare, err := work.CreateShare(
+		job.BlockTemplate,
+		job.ExtraNonce1,
+		extraNonce2,
+		nTime,
+		nonceHex,
+		payoutAddr,
+		s.workManager.ShareChain,
+		jobDifficulty,
+		job.WitnessCommitment,
+		job.WTXIDMerkleRoot,
+		job.TXIDMerkleLink,
+		job.CoinbaseMerkleLink,
+	)
 	if err != nil {
 		logging.Errorf("Stratum: Could not create share object: %v", err)
 		resp := JSONRPCResponse{ID: id, Result: nil, Error: []interface{}{26, "Internal error creating share", nil}}
@@ -425,7 +474,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	jobPrevHash, _ := chainhash.NewHashFromStr(job.BlockTemplate.PreviousBlockHash)
 	if latestPrevHash != nil && !jobPrevHash.IsEqual(latestPrevHash) {
 		isStale = true
-		newShare.ShareInfo.ShareData.StaleInfo = wire.StaleInfoDOA // Mark as Dead on Arrival
+		newShare.ShareInfo.ShareData.StaleInfo = p2pwire.StaleInfoDOA // Mark as Dead on Arrival
 		// [COMPILER FIX] Log the string field `PreviousBlockHash`
 		logging.Warnf("Stratum: Share %s is stale (DOA), based on old block %s", newShare.Hash.String()[:12], job.BlockTemplate.PreviousBlockHash[:12])
 	}
@@ -452,8 +501,8 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			ShareTarget: shareTarget,
 		})
 
-		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
-		s.peerManager.Broadcast(&wire.MsgShares{Shares: []wire.Share{*newShare}})
+		s.workManager.ShareChain.AddShares([]p2pwire.Share{*newShare})
+		s.peerManager.Broadcast(&p2pwire.MsgShares{Shares: []p2pwire.Share{*newShare}})
 
 		logging.Debugf("[DIAG] shareHash.print=%s", newShare.Hash.String())
 		logging.Debugf("[DIAG] powInt(H^LE->big)=%s", powInt.Text(16))
@@ -492,7 +541,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	}
 
 	if isStale {
-		s.workManager.ShareChain.AddShares([]wire.Share{*newShare})
+		s.workManager.ShareChain.AddShares([]p2pwire.Share{*newShare})
 	}
 
 	resp := JSONRPCResponse{ID: id, Result: accepted, Error: nil}
@@ -657,11 +706,24 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	// so this job's data is immutable.
 	jobTemplate := *tmpl
 
+	// [OPTIMIZATION] Get the pre-calculated data from the master job
+	s.lastJobMutex.RLock()
+	masterJob := s.lastJob
+	s.lastJobMutex.RUnlock()
+	if masterJob == nil {
+		c.Mutex.Unlock()
+		return // No job to send
+	}
+
 	job := &Job{
-		ID:            jobID,
-		BlockTemplate: &jobTemplate, // <-- Pass a pointer to our new, safe copy
-		ExtraNonce1:   c.ExtraNonce1,
-		Difficulty:    c.CurrentDifficulty,
+		ID:                   jobID,
+		BlockTemplate:        &jobTemplate, // <-- Pass a pointer to our new, safe copy
+		ExtraNonce1:          c.ExtraNonce1,
+		Difficulty:           c.CurrentDifficulty,
+		WitnessCommitment:    masterJob.WitnessCommitment,
+		WTXIDMerkleRoot:      masterJob.WTXIDMerkleRoot,
+		TXIDMerkleLink:       masterJob.TXIDMerkleLink,
+		CoinbaseMerkleLink: masterJob.CoinbaseMerkleLink,
 	}
 	if clean {
 		if len(c.ActiveJobs) > 20 { // Keep a buffer of old jobs

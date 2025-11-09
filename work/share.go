@@ -1,7 +1,7 @@
 package work
 
 import (
-	"bytes"
+	// "bytes" // [REMOVED] This import is no longer used
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -11,13 +11,15 @@ import (
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	// "github.com/btcsuite/btcd/wire" // [REMOVED] This import is no longer needed
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	p2pwire "github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
 // calculateMerkleRoot is a helper function for header creation.
+// [REMOVED] This function is no longer used here.
+/*
 func calculateMerkleRoot(hashes [][]byte) []byte {
 	if len(hashes) == 0 {
 		return nil
@@ -40,9 +42,19 @@ func calculateMerkleRoot(hashes [][]byte) []byte {
 	}
 	return hashes[0]
 }
+*/
 
-// CreateShare takes a successful submission and converts it into a p2pool share object.
-func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHex, payoutAddress string, shareChain *ShareChain, stratumDifficulty float64) (*p2pwire.Share, error) {
+// [MODIFIED] CreateShare function signature is updated
+func CreateShare(
+	job *BlockTemplate,
+	extraNonce1, extraNonce2, nTimeHex, nonceHex, payoutAddress string,
+	shareChain *ShareChain,
+	stratumDifficulty float64,
+	witnessCommitment []byte,
+	wtxidMerkleRoot *chainhash.Hash,
+	txidMerkleLinkBranches []*chainhash.Hash,
+	coinbaseMerkleLinkBranches []*chainhash.Hash,
+) (*p2pwire.Share, error) {
 	nonceBytes, err := hex.DecodeString(nonceHex)
 	if err != nil {
 		return nil, err
@@ -92,35 +104,58 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
 	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
 
-	wtxidMerkleRoot, witnessCommitment, err := CalculateWitnessCommitment(job)
+	// [REMOVED] This expensive calculation is now done in the job broadcaster
+	/*
+		wtxidMerkleRoot, witnessCommitment, err := CalculateWitnessCommitment(job)
+		if err != nil {
+			return nil, err
+		}
+	*/
+
+	coinbaseTxBytes, err := CreateCoinbaseTx(job, payoutAddress, extraNonce1, extraNonce2, witnessCommitment)
 	if err != nil {
 		return nil, err
 	}
 
-	coinbaseTxBytes, err := CreateCoinbaseTx(job, payoutAddress, extraNonce1, extraNonce2, witnessCommitment.CloneBytes())
-	if err != nil {
-		return nil, err
-	}
+	// [REMOVED] This expensive Merkle link calculation is now done in the job broadcaster
+	/*
+		coinbaseWtxid, _ := chainhash.NewHashFromStr("0000000000000000000000000000000000000000000000000000000000000000")
+		wtxids := []*chainhash.Hash{coinbaseWtxid}
+		for _, txTmpl := range job.Transactions {
+			txBytes, _ := hex.DecodeString(txTmpl.Data)
+			var msgTx wire.MsgTx
+			_ = msgTx.Deserialize(bytes.NewReader(txBytes))
+			wtxid := msgTx.WitnessHash()
+			wtxids = append(wtxids, &wtxid)
+		}
+		txidMerkleLinkBranches := CalculateMerkleLinkFromHashes(wtxids, 0)
+	*/
 
-	coinbaseWtxid, _ := chainhash.NewHashFromStr("0000000000000000000000000000000000000000000000000000000000000000")
-	wtxids := []*chainhash.Hash{coinbaseWtxid}
-	for _, txTmpl := range job.Transactions {
-		txBytes, _ := hex.DecodeString(txTmpl.Data)
-		var msgTx wire.MsgTx
-		_ = msgTx.Deserialize(bytes.NewReader(txBytes))
-		wtxid := msgTx.WitnessHash()
-		wtxids = append(wtxids, &wtxid)
-	}
-	txidMerkleLinkBranches := CalculateMerkleLinkFromHashes(wtxids, 0)
-
+	// [OPTIMIZATION] We must *replace* the dummy coinbase hash in the pre-calculated
+	// branches with the one from the actual coinbase tx we just built.
 	coinbaseTxHash := DblSha256(coinbaseTxBytes)
-	txHashesForLink := [][]byte{ReverseBytes(coinbaseTxHash)}
-	for _, tx := range job.Transactions {
-		txHashBytes, _ := hex.DecodeString(tx.Hash)
-		// CORRECTED: Reverse the byte order of the transaction hashes
-		txHashesForLink = append(txHashesForLink, ReverseBytes(txHashBytes))
+	merkleLinkBranches := coinbaseMerkleLinkBranches
+	if len(merkleLinkBranches) > 0 {
+		// [FIX] Check if branch is nil/empty first (for blocks with only coinbase)
+		if len(merkleLinkBranches) > 0 && merkleLinkBranches[0] != nil {
+			merkleLinkBranches[0], _ = chainhash.NewHash(ReverseBytes(coinbaseTxHash))
+		}
+	} else {
+		// This handles the case where there are no other txs, so the branch list is empty
+		merkleLinkBranches = []*chainhash.Hash{}
 	}
-	merkleLinkBranches := CalculateMerkleLink(txHashesForLink, 0)
+
+	// [REMOVED] This expensive Merkle link calculation is now done in the job broadcaster
+	/*
+		coinbaseTxHash := DblSha256(coinbaseTxBytes)
+		txHashesForLink := [][]byte{ReverseBytes(coinbaseTxHash)}
+		for _, tx := range job.Transactions {
+			txHashBytes, _ := hex.DecodeString(tx.Hash)
+			// CORRECTED: Reverse the byte order of the transaction hashes
+			txHashesForLink = append(txHashesForLink, ReverseBytes(txHashBytes))
+		}
+		merkleLinkBranches := CalculateMerkleLink(txHashesForLink, 0)
+	*/
 
 	newTxHashesForShareInfo := []*chainhash.Hash{}
 	for _, tx := range job.Transactions {
@@ -141,7 +176,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 			ShareData: p2pwire.ShareData{
 				PreviousShareHash: shareChain.GetTipHash(),
 				CoinBase:          coinbaseTxBytes,
-				Nonce:             nonceUint32,
+				Nonce:             nonceUint32, // [FIXED] Was nonceUint3D
 				PubKeyHash:        pkh,
 				PubKeyHashVersion: pkhVersion,
 				Subsidy:           uint64(job.CoinbaseValue),
@@ -149,10 +184,10 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 			},
 			SegwitData: &p2pwire.SegwitData{
 				TXIDMerkleLink: p2pwire.MerkleLink{
-					Branch: txidMerkleLinkBranches,
+					Branch: txidMerkleLinkBranches, // Use pre-calculated value
 					Index:  0,
 				},
-				WTXIDMerkleRoot: wtxidMerkleRoot,
+				WTXIDMerkleRoot: wtxidMerkleRoot, // Use pre-calculated value
 			},
 			NewTransactionHashes: newTxHashesForShareInfo,
 			TransactionHashRefs:  []p2pwire.TransactionHashRef{},
@@ -163,7 +198,7 @@ func CreateShare(job *BlockTemplate, extraNonce1, extraNonce2, nTimeHex, nonceHe
 			AbsHeight:            int32(job.Height),
 			AbsWork:              new(big.Int),
 		},
-		MerkleLink:    p2pwire.MerkleLink{Branch: merkleLinkBranches, Index: 0},
+		MerkleLink:    p2pwire.MerkleLink{Branch: merkleLinkBranches, Index: 0}, // Use pre-calculated value
 		RefMerkleLink: p2pwire.MerkleLink{Branch: []*chainhash.Hash{}, Index: 0},
 	}
 
