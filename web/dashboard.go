@@ -1,4 +1,3 @@
-
 package web
 
 import (
@@ -8,9 +7,11 @@ import (
 	"net/http"
 	"runtime"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/stratum"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
@@ -61,18 +62,214 @@ const dashboardTemplate = `
 </html>
 `
 
+// [NEW] DashboardHandler struct to hold dependencies and the cache
+type DashboardHandler struct {
+	wm           *work.WorkManager
+	pm           *p2p.PeerManager
+	ss           *stratum.StratumServer
+	startTime    time.Time
+	htmlTemplate *template.Template
+	cacheMutex   sync.RWMutex
+	cachedStats  *DashboardStats
+}
+
+// [NEW] statUpdater runs in a separate goroutine, caching stats every 15 seconds
+func (dh *DashboardHandler) statUpdater() {
+	ticker := time.NewTicker(15 * time.Second) // Refresh stats every 15 seconds
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+		logging.Debugf("WEB: Re-caching dashboard stats...")
+		newStats := dh.buildStats()
+
+		dh.cacheMutex.Lock()
+		dh.cachedStats = newStats
+		dh.cacheMutex.Unlock()
+		logging.Debugf("WEB: Dashboard stats re-caching complete.")
+	}
+}
+
+// [NEW] buildStats performs the expensive calculations.
+// This is now only called once every 15 seconds.
+func (dh *DashboardHandler) buildStats() *DashboardStats {
+	chainStats := dh.wm.ShareChain.GetStats()
+	stratumClients := dh.ss.GetClients()
+
+	// [OPTIMIZATION]
+	// Call GetProjectedPayouts ONCE.
+	// We will re-use this map for both the Top 50 list and the
+	// individual miner payout estimates to avoid re-calculating.
+	allPayouts, _ := dh.wm.ShareChain.GetProjectedPayouts(50)
+
+	activeMiners := make([]MinerStats, 0, len(stratumClients))
+	for _, client := range stratumClients {
+		if !client.Authorized {
+			continue
+		}
+
+		hashrate := dh.ss.GetHashrateForClient(client.ID)
+		rejectedRate := client.GetRejectedRate()
+		avgShareTime := client.GetAverageShareTime()
+
+		// [OPTIMIZATION] Use the map we already fetched.
+		payout := allPayouts[client.WorkerName]
+		est24hPayout := 0.0
+		if chainStats.TimeToBlock > 0 {
+			est24hPayout = payout * (86400 / chainStats.TimeToBlock)
+		}
+
+		activeMiners = append(activeMiners, MinerStats{
+			Address:            client.WorkerName,
+			Hashrate:           formatHashrate(hashrate),
+			RejectedPercentage: rejectedRate * 100,
+			ShareDifficulty:    client.CurrentDifficulty,
+			AvgTimeToShare:     formatDuration(avgShareTime),
+			Est24HourPayout:    est24hPayout,
+		})
+	}
+
+	recentBlocks, _ := dh.wm.GetRecentBlocks(20)
+	blocksFound := make([]BlockFoundStats, len(recentBlocks))
+	for i, block := range recentBlocks {
+		blocksFound[i] = BlockFoundStats{
+			BlockNumber: int64(block.BlockHeight),
+			FoundAgo:    formatDuration(time.Since(block.FoundTime)),
+		}
+	}
+
+	// [OPTIMIZATION] Use the map we already fetched.
+	payoutsList := make([]PayoutStats, 0, len(allPayouts))
+	for addr, amount := range allPayouts {
+		payoutsList = append(payoutsList, PayoutStats{Address: addr, Payout: amount})
+	}
+	sort.Slice(payoutsList, func(i, j int) bool {
+		return payoutsList[i].Payout > payoutsList[j].Payout
+	})
+	// Limit to top 50 if necessary (though GetProjectedPayouts already did)
+	if len(payoutsList) > 50 {
+		payoutsList = payoutsList[:50]
+	}
+
+	lastBlock := dh.wm.GetLastBlockFoundTime()
+	lastBlockAgo := "Never"
+	if !lastBlock.IsZero() {
+		lastBlockAgo = formatDuration(time.Since(lastBlock))
+	}
+
+	latestTmpl := dh.wm.GetLatestTemplate()
+	reward := 0.0
+	if latestTmpl != nil {
+		reward = float64(latestTmpl.CoinbaseValue) / 1e8
+	}
+
+	stats := &DashboardStats{
+		GlobalNetworkHashrate: formatHashrate(chainStats.NetworkHashrate),
+		P2PoolNetworkHashrate: formatHashrate(chainStats.PoolHashrate),
+		NetworkDifficulty:     chainStats.NetworkDifficulty,
+		BlockReward:           reward,
+		LastBlockFoundAgo:     lastBlockAgo,
+
+		PoolEfficiency:   fmt.Sprintf("%.2f%%", chainStats.Efficiency),
+		TimeToBlock:      formatDuration(time.Duration(chainStats.TimeToBlock) * time.Second),
+		PoolSharesTotal:  chainStats.SharesTotal,
+		PoolSharesOrphan: chainStats.SharesOrphan,
+		PoolSharesDead:   chainStats.SharesDead,
+		BlocksFound24h:   dh.wm.GetBlocksFoundInLast(24 * time.Hour),
+
+		NodeUptime:        formatDuration(time.Since(dh.startTime)),
+		LocalNodeHashrate: formatHashrate(dh.ss.GetLocalHashrate()), // <-- [FIXED] Wrapped in formatHashrate()
+		ConnectedMiners:    len(stratumClients),
+		MinShareDifficulty: config.Active.Vardiff.MinDiff,
+		GoRoutines:         runtime.NumGoroutine(),
+
+		ActiveMiners: activeMiners,
+		BlocksFound:  blocksFound,
+		Payouts:      payoutsList,
+	}
+
+	return stats
+}
+
+// [MODIFIED] NewDashboard now returns the handler struct
+func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.StratumServer, startTime time.Time) http.Handler {
+	// Parse the HTML template once on startup
+	tmpl, err := template.New("dashboard").Parse(dashboardTemplate)
+	if err != nil {
+		// If the template fails to parse, we must panic as the server can't function.
+		panic(fmt.Sprintf("failed to parse dashboard template: %v", err))
+	}
+
+	handler := &DashboardHandler{
+		wm:           wm,
+		pm:           pm,
+		ss:           ss,
+		startTime:    startTime,
+		htmlTemplate: tmpl,
+	}
+
+	// [NEW] Prime the cache on startup
+	handler.cachedStats = handler.buildStats()
+
+	// [NEW] Start the caching goroutine
+	go handler.statUpdater()
+
+	return handler
+}
+
+// [NEW] ServeHTTP makes DashboardHandler satisfy the http.Handler interface
+func (dh *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Check if the request is for the JSON data API
+	if r.URL.Query().Get("json") == "1" {
+		w.Header().Set("Content-Type", "application/json")
+
+		// [OPTIMIZATION]
+		// Get a Read Lock, copy the cached pointer, and release.
+		// This is extremely fast and blocks for almost no time.
+		dh.cacheMutex.RLock()
+		statsToServe := dh.cachedStats
+		dh.cacheMutex.RUnlock()
+
+		if statsToServe == nil {
+			// This should only happen in the first few moments of startup
+			http.Error(w, `{"error": "Stats are being generated, please try again in a moment."}`, http.StatusServiceUnavailable)
+			return
+		}
+
+		// Marshal with indentation for pretty-printing
+		prettyJSON, err := json.MarshalIndent(statsToServe, "", "  ")
+		if err != nil {
+			http.Error(w, "Failed to generate stats", http.StatusInternalServerError)
+			return
+		}
+		w.Write(prettyJSON)
+
+	} else {
+		// Otherwise, serve the HTML page
+		w.Header().Set("Content-Type", "text/html")
+		err := dh.htmlTemplate.Execute(w, nil)
+		if err != nil {
+			http.Error(w, "Failed to render dashboard", http.StatusInternalServerError)
+		}
+	}
+}
+
 // formatDuration is a helper to make time intervals human-readable.
 func formatDuration(d time.Duration) string {
-	if d.Hours() > 48 {
-		return fmt.Sprintf("%.0f days, %d hours", d.Hours()/24, int(d.Hours())%24)
+	sec := d.Seconds()
+	if sec <= 0 {
+		return "N/A"
 	}
-	if d.Minutes() > 120 {
-		return fmt.Sprintf("%.0f hours, %d minutes", d.Hours(), int(d.Minutes())%60)
+	switch {
+	case sec > 86400*2:
+		return fmt.Sprintf("%.1f days", d.Hours()/24)
+	case sec > 3600*2:
+		return fmt.Sprintf("%.1f hours", d.Hours())
+	case sec > 60*2:
+		return fmt.Sprintf("%.1f minutes", d.Minutes())
+	default:
+		return fmt.Sprintf("%.1f seconds", d.Seconds())
 	}
-	if d.Seconds() > 120 {
-		return fmt.Sprintf("%.0f minutes, %d seconds", d.Minutes(), int(d.Seconds())%60)
-	}
-	return fmt.Sprintf("%.0f seconds", d.Seconds())
 }
 
 // CORRECTED: This function now matches the one in main.go and includes TH/s.
@@ -134,122 +331,4 @@ type BlockFoundStats struct {
 type PayoutStats struct {
 	Address string  `json:"address"`
 	Payout  float64 `json:"payout_vtc"`
-}
-
-func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.StratumServer, startTime time.Time) http.Handler {
-	_ = pm // Acknowledge unused variable to satisfy compiler
-
-	// Parse the HTML template once on startup
-	tmpl, err := template.New("dashboard").Parse(dashboardTemplate)
-	if err != nil {
-		// If the template fails to parse, we must panic as the server can't function.
-		panic(fmt.Sprintf("failed to parse dashboard template: %v", err))
-	}
-	
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if the request is for the JSON data API
-		if r.URL.Query().Get("json") == "1" {
-			w.Header().Set("Content-Type", "application/json")
-			
-			chainStats := wm.ShareChain.GetStats()
-			stratumClients := ss.GetClients()
-
-			activeMiners := make([]MinerStats, 0, len(stratumClients))
-			for _, client := range stratumClients {
-				if !client.Authorized {
-					continue
-				}
-
-				hashrate := ss.GetHashrateForClient(client.ID)
-				rejectedRate := client.GetRejectedRate()
-				avgShareTime := client.GetAverageShareTime()
-
-				payout, _ := wm.ShareChain.GetProjectedPayoutForAddress(client.WorkerName)
-				est24hPayout := 0.0
-				if chainStats.TimeToBlock > 0 {
-					est24hPayout = payout * (86400 / chainStats.TimeToBlock)
-				}
-
-				activeMiners = append(activeMiners, MinerStats{
-					Address:            client.WorkerName,
-					Hashrate:           formatHashrate(hashrate),
-					RejectedPercentage: rejectedRate * 100,
-					ShareDifficulty:    client.CurrentDifficulty,
-					AvgTimeToShare:     formatDuration(avgShareTime),
-					Est24HourPayout:    est24hPayout,
-				})
-			}
-
-			recentBlocks, _ := wm.GetRecentBlocks(20)
-			blocksFound := make([]BlockFoundStats, len(recentBlocks))
-			for i, block := range recentBlocks {
-				blocksFound[i] = BlockFoundStats{
-					BlockNumber: int64(block.BlockHeight),
-					FoundAgo:    formatDuration(time.Since(block.FoundTime)),
-				}
-			}
-
-			payoutProjections, _ := wm.ShareChain.GetProjectedPayouts(50)
-			payoutsList := make([]PayoutStats, 0, len(payoutProjections))
-			for addr, amount := range payoutProjections {
-				payoutsList = append(payoutsList, PayoutStats{Address: addr, Payout: amount})
-			}
-			sort.Slice(payoutsList, func(i, j int) bool {
-				return payoutsList[i].Payout > payoutsList[j].Payout
-			})
-
-			lastBlock := wm.GetLastBlockFoundTime()
-			lastBlockAgo := "Never"
-			if !lastBlock.IsZero() {
-				lastBlockAgo = formatDuration(time.Since(lastBlock))
-			}
-
-			latestTmpl := wm.GetLatestTemplate()
-			reward := 0.0
-			if latestTmpl != nil {
-				reward = float64(latestTmpl.CoinbaseValue) / 1e8
-			}
-
-			stats := DashboardStats{
-				GlobalNetworkHashrate: formatHashrate(chainStats.NetworkHashrate),
-				P2PoolNetworkHashrate: formatHashrate(chainStats.PoolHashrate),
-				NetworkDifficulty:     chainStats.NetworkDifficulty,
-				BlockReward:           reward,
-				LastBlockFoundAgo:     lastBlockAgo,
-
-				PoolEfficiency:   fmt.Sprintf("%.2f%%", chainStats.Efficiency),
-				TimeToBlock:      formatDuration(time.Duration(chainStats.TimeToBlock) * time.Second),
-				PoolSharesTotal:  chainStats.SharesTotal,
-				PoolSharesOrphan: chainStats.SharesOrphan,
-				PoolSharesDead:   chainStats.SharesDead,
-				BlocksFound24h:   wm.GetBlocksFoundInLast(24 * time.Hour),
-
-				NodeUptime:         formatDuration(time.Since(startTime)),
-				LocalNodeHashrate:  formatHashrate(ss.GetLocalHashrate()),
-				ConnectedMiners:    len(stratumClients),
-				MinShareDifficulty: config.Active.Vardiff.MinDiff,
-				GoRoutines:         runtime.NumGoroutine(),
-
-				ActiveMiners: activeMiners,
-				BlocksFound:  blocksFound,
-				Payouts:      payoutsList,
-			}
-			
-			// Marshal with indentation for pretty-printing
-			prettyJSON, err := json.MarshalIndent(stats, "", "  ")
-			if err != nil {
-				http.Error(w, "Failed to generate stats", http.StatusInternalServerError)
-				return
-			}
-			w.Write(prettyJSON)
-
-		} else {
-			// Otherwise, serve the HTML page
-			w.Header().Set("Content-Type", "text/html")
-			err := tmpl.Execute(w, nil)
-			if err != nil {
-				http.Error(w, "Failed to render dashboard", http.StatusInternalServerError)
-			}
-		}
-	})
 }
