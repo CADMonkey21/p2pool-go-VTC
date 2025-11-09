@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	// "github.com/btcsuite/btcd/blockchain" // This line is now removed
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -232,11 +231,18 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 
 	for i := range s {
 		share := s[i]
-		// [FIX] New shares submitted by miners must calculate *all* hashes
-		if err := share.CalculateHashes(); err != nil {
-			logging.Warnf("Failed to calculate hashes for new share: %v", err)
-			continue // Don't add a share we can't hash
+
+		// [OPTIMIZATION]
+		// If a share already has a PoW hash (e.g., from our local stratum
+		// server), don't recalculate the expensive hashes.
+		// Hashes only need to be calculated for shares from peers or disk.
+		if share.POWHash == nil {
+			if err := share.CalculateHashes(); err != nil {
+				logging.Warnf("Failed to calculate hashes for new share: %v", err)
+				continue // Don't add a share we can't hash
+			}
 		}
+
 		if _, ok := sc.AllShares[share.Hash.String()]; !ok {
 			sc.disconnectedShares = append(sc.disconnectedShares, &share)
 		}
