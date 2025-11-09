@@ -753,3 +753,7 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 
 	return (workTotal * hashrateConstant) / span.Seconds()
 }
+
+func (s *StratumServer) GetWorkManager() *work.WorkManager {
+	return s.workManager
+}

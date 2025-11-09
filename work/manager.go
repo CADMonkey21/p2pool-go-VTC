@@ -16,11 +16,11 @@ import (
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/CADMonkey21/p2pool-go-VTC/config"
+	"github.com/CADMonkey21/p2pool-go-VTC/config" // Import removed, no longer needed
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
-	"github.com/CADMonkey21/p2pool-go-VTC/verthash"
+	// "github.com/CADMonkey21/p2pool-go-VTC/verthash" // Import removed, no longer needed
 	p2pwire "github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
@@ -53,7 +53,7 @@ type WorkManager struct {
 	ForceNewTemplate   chan bool
 	lastBlockUpdate    time.Time
 	lastBlockUpdateMux sync.RWMutex
-	verthasher         verthash.Verthasher
+	// verthasher         verthash.Verthasher // [REMOVED] This field was redundant
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
@@ -66,11 +66,13 @@ func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 		ForceNewTemplate: make(chan bool, 1),
 	}
 
-	var err error
-	wm.verthasher, err = verthash.New(config.Active.VerthashDatFile)
-	if err != nil {
-		logging.Fatalf("Could not initialize verthasher: %v", err)
-	}
+	// [REMOVED] The verthasher initialization here was redundant
+	// and is already handled in main.go.
+	// var err error
+	// wm.verthasher, err = verthash.New(config.Active.VerthashDatFile)
+	// if err != nil {
+	// 	logging.Fatalf("Could not initialize verthasher: %v", err)
+	// }
 	return wm
 }
 

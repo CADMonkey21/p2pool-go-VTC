@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/blockchain"
+	// "github.com/btcsuite/btcd/blockchain" // This line is now removed
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -17,6 +17,9 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
+
+// Each unit of VertHash difficulty represents 2^24 hashes.
+const hashrateConstant = 16777216 // 2^24
 
 type PeerManager interface {
 	Broadcast(msg wire.P2PoolMessage)
@@ -291,8 +294,9 @@ func (sc *ShareChain) GetStats() ChainStats {
 			deadShares++
 		}
 
-		shareTarget := blockchain.CompactToBig(current.Share.MinHeader.Bits)
-		if shareTarget.Sign() <= 0 {
+		// [FIX] Use the share's Stratum target, not the network's target
+		shareTarget := current.Share.Target
+		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			current = current.Previous
 			continue
 		}
@@ -335,13 +339,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 
 	// [STATS BUG FIX]
 	// The Python code's `target_to_average_attempts` is `2**256 / target`.
-	// Our `stratumWork` is `sum(maxWork / shareTarget)`, which is the same thing.
-	// This value *is* the total hashes (or "attempts").
-	// Hashrate = total hashes / time.
-	// The multiplication by `hrConst` was the bug.
+	// Our `stratumWork` is `sum(maxWork / shareTarget)`, which is the sum of difficulty.
+	// Hashrate = (sum(Difficulty) * hashrateConstant) / time.
+	// The `hashrateConstant` (2^24) must be re-introduced.
 	stats.PoolHashrate = 0.0 // Default
-	if stratumWork.Sign() > 0 {
+	if stratumWork.Sign() > 0 && elapsedSeconds > 0 {
 		hashrateFloat := new(big.Float).Quo(stratumWork, big.NewFloat(elapsedSeconds))
+		hashrateFloat.Mul(hashrateFloat, big.NewFloat(hashrateConstant)) // <-- Multiply by constant
 		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
 	// [END STATS BUG FIX]
@@ -422,8 +426,9 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, share := range payoutShares {
-		shareTarget := blockchain.CompactToBig(share.MinHeader.Bits)
-		if shareTarget.Sign() <= 0 {
+		// [FIX] Use the share's Stratum target, not the network's target
+		shareTarget := share.Target
+		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			continue
 		}
 		// [FIX] Calculate work based on the standard maxWork
@@ -466,8 +471,9 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 			continue
 		}
 
-		shareTarget := blockchain.CompactToBig(share.MinHeader.Bits)
-		if shareTarget.Sign() <= 0 {
+		// [FIX] Use the share's Stratum target, not the network's target
+		shareTarget := share.Target
+		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			continue
 		}
 		// [FIX] Calculate work based on the standard maxWork
