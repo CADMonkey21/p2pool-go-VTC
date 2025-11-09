@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/blockchain"
+	// "github.com/btcsuite/btcd/blockchain" // [REMOVED] This import is no longer used
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/CADMonkey21/p2pool-go-VTC/config" // Import removed, no longer needed
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
@@ -68,11 +68,6 @@ func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 
 	// [REMOVED] The verthasher initialization here was redundant
 	// and is already handled in main.go.
-	// var err error
-	// wm.verthasher, err = verthash.New(config.Active.VerthashDatFile)
-	// if err != nil {
-	// 	logging.Fatalf("Could not initialize verthasher: %v", err)
-	// }
 	return wm
 }
 
@@ -260,10 +255,12 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, share := range payoutShares {
-		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
-		if shareTarget.Sign() <= 0 {
+		// [PAYOUT BUG FIX] Use the share's Stratum target, not the network's target
+		shareTarget := share.Target
+		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			continue
 		}
+		// [PAYOUT BUG FIX] Calculate work based on the standard maxWork
 		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
 		totalWorkInWindow.Add(totalWorkInWindow, difficulty)
 	}
@@ -285,7 +282,12 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 				logging.Warnf("Could not convert bits for bech32 payout: %v", err)
 				continue
 			}
-			address, err = bech32.Encode("vtc", append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
+			// Use the correct HRP for the active network
+			hrp := "vtc"
+			if config.Active.Testnet {
+				hrp = "tvtc"
+			}
+			address, err = bech32.Encode(hrp, append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
 		} else { // Legacy Base58
 			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
 		}
@@ -295,10 +297,12 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 			continue
 		}
 
-		shareTarget := blockchain.CompactToBig(share.ShareInfo.Bits)
-		if shareTarget.Sign() <= 0 {
+		// [PAYOUT BUG FIX] Use the share's Stratum target, not the network's target
+		shareTarget := share.Target
+		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			continue
 		}
+		// [PAYOUT BUG FIX] Calculate work based on the standard maxWork
 		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), shareTarget)
 
 		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), difficulty)

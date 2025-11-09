@@ -150,9 +150,16 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 	if len(sc.AllShares) < config.Active.PPLNSWindow && sc.Tail != nil && sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash != nil && !sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash.IsEqual(&chainhash.Hash{}) {
 		sc.NeedShareChannel <- sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash
 	}
-	if !skipCommit {
-		sc.commit()
-	}
+
+	// [PERFORMANCE FIX]
+	// Remove the automatic commit-on-every-share.
+	// The commit-on-shutdown in main.go is sufficient for persistence
+	// and this prevents constant, heavy disk I/O.
+	/*
+		if !skipCommit {
+			sc.commit()
+		}
+	*/
 }
 
 func (sc *ShareChain) commit() error {
