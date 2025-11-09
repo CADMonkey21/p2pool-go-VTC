@@ -45,6 +45,12 @@ p2pPort: 9348
 # This can be overridden at startup with the -loglevel flag.
 loglevel: "info"
 
+# (Optional) Timeout in seconds to wait for a P2P peer before starting
+# the stratum server anyway. Set to 0 to wait forever (default).
+# A good value is 300 (5 minutes) to allow miners to connect
+# even if the P2P network is temporarily unavailable.
+p2pSyncTimeout: 300
+
 # --- Verthash Settings ---
 # (Optional) The full path to your verthash.dat file.
 # If you leave this blank, the node will check default locations,

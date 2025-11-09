@@ -161,12 +161,37 @@ func main() {
 
 	/* ----- BLOCKING LOGIC WITHOUT TIMEOUT --------------------------- */
 	//
-	// [FIX] We wrap the sync block in a check for SoloMode.
+	// [MODIFIED] This block now includes a configurable timeout
 	//
 	if !config.Active.SoloMode {
-		logging.Infof("MAIN: Waiting for P2P manager to sync with the network...")
-		<-pm.SyncedChannel() // This will now block until the sync is complete
-		logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
+		// [NEW] Set up a timeout for P2P sync
+		var timeoutChan <-chan time.Time
+		if config.Active.P2PSyncTimeout > 0 {
+			logging.Infof("MAIN: Waiting for P2P sync... (timeout: %d seconds)", config.Active.P2PSyncTimeout)
+			timeoutChan = time.After(time.Duration(config.Active.P2PSyncTimeout) * time.Second)
+			
+			// [MODIFIED] Log message now includes the timeout duration
+			logging.Warnf("MAIN: Stratum server (for miners) is PAUSED until P2P sync is complete or the %d second timeout is reached.", config.Active.P2PSyncTimeout)
+		} else {
+			logging.Infof("MAIN: Waiting for P2P sync... (no timeout)")
+			// [MODIFIED] Log message for the "wait forever" case
+			logging.Warnf("MAIN: Stratum server (for miners) is PAUSED until P2P sync is complete.")
+			// nil channel blocks forever, preserving original behavior
+		}
+
+		select {
+		case <-pm.SyncedChannel():
+			// This is the normal, successful sync
+			logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
+		case <-timeoutChan:
+			// This is the new timeout case
+			logging.Warnf("MAIN: P2P sync TIMEOUT. No peers found after %d seconds.", config.Active.P2PSyncTimeout)
+			logging.Warnf("MAIN: Starting in solo mode automatically to allow miners to connect.")
+			// Manually force the PeerManager into a "synced" state
+			// This is crucial so the Stratum server's authorization check passes.
+			pm.ForceSyncState(true)
+			logging.Infof("MAIN: ✅ Sync FAKED! Starting Stratum server and web UI.")
+		}
 	} else {
 		logging.Warnf("MAIN: SoloMode=true. Bypassing P2P sync check.")
 		logging.Warnf("MAIN: This node will act as the FIRST node on a new network.")

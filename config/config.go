@@ -32,6 +32,7 @@ type Config struct {
 	VerthashDatFile string        `yaml:"verthash_dat_file"`
 	LogLevel        string        `yaml:"loglevel"` // This can be overridden by the flag
 	SoloMode        bool          `yaml:"solomode"` // [NEW] Add this flag
+	P2PSyncTimeout  int           `yaml:"p2pSyncTimeout"` // [NEW] Add this field
 }
 
 var Active Config
@@ -81,5 +82,3 @@ func LoadConfig() {
 		Active.SoloMode = true
 	}
 }
-
-

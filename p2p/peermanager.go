@@ -20,27 +20,32 @@ import (
 )
 
 const (
-	defaultMaxPeers = 35
+	defaultMaxPeers    = 35
+	peerBackoffSeconds = 300 // 5 minutes
+	peerWarningMinutes = 5   // [NEW] How often to show "no peers" warning
 )
 
 type PeerManager struct {
-	peers            map[string]*Peer
-	possiblePeers    map[string]bool
-	connectingPeers  map[string]bool // NEW: Track peers currently being connected to
-	activeNetwork    p2pnet.Network
-	shareChain       *work.ShareChain
-	peersMutex       sync.RWMutex
-	synced           atomic.Value
-	syncedChan       chan struct{}
-	syncSignalSent   bool
-	syncMutex        sync.Mutex
+	peers                map[string]*Peer
+	possiblePeers        map[string]bool
+	connectingPeers      map[string]bool      // NEW: Track peers currently being connected to
+	backoffPeers         map[string]time.Time // [NEW] Track peers that failed to connect
+	lastNoPeersWarning   time.Time            // [NEW] Timestamp for rate-limiting warnings
+	activeNetwork        p2pnet.Network
+	shareChain           *work.ShareChain
+	peersMutex           sync.RWMutex
+	synced               atomic.Value
+	syncedChan           chan struct{}
+	syncSignalSent       bool
+	syncMutex            sync.Mutex
 }
 
 func NewPeerManager(net p2pnet.Network, sc *work.ShareChain) *PeerManager {
 	pm := &PeerManager{
 		peers:           make(map[string]*Peer),
 		possiblePeers:   make(map[string]bool),
-		connectingPeers: make(map[string]bool), // NEW: Initialize the map
+		connectingPeers: make(map[string]bool),     // NEW: Initialize the map
+		backoffPeers:    make(map[string]time.Time), // [NEW] Initialize the map
 		activeNetwork:   net,
 		shareChain:      sc,
 		syncedChan:      make(chan struct{}),
@@ -210,18 +215,49 @@ func (pm *PeerManager) peerConnectorLoop() {
 		if peerCount < 8 && !config.Active.SoloMode {
 			pm.peersMutex.Lock()
 			var peerToTry string
+			possiblePeerCount := len(pm.possiblePeers)
+			backoffPeerCount := len(pm.backoffPeers)
+
 			for p := range pm.possiblePeers {
-				// Don't try to connect if we are already connected or connecting
 				host, _, _ := net.SplitHostPort(p)
-				if _, active := pm.peers[p]; !active && !pm.connectingPeers[host] {
-					peerToTry = p
-					break
+				// Don't try to connect if we are already connected or connecting
+				if _, active := pm.peers[p]; active || pm.connectingPeers[host] {
+					continue
 				}
+
+				// [NEW] Check backoff list
+				if backoffTime, inBackoff := pm.backoffPeers[host]; inBackoff {
+					backoffDuration := time.Duration(peerBackoffSeconds) * time.Second
+					if time.Since(backoffTime) < backoffDuration {
+						logging.Debugf("P2P: Skipping peer %s, in backoff for %v", host, (backoffDuration)-time.Since(backoffTime))
+						continue // Still in backoff
+					}
+					// Backoff expired, remove from list and try again
+					logging.Debugf("P2P: Backoff expired for peer %s, retrying...", host)
+					delete(pm.backoffPeers, host)
+				}
+
+				peerToTry = p
+				break
 			}
 			pm.peersMutex.Unlock()
 
 			if peerToTry != "" {
 				go pm.TryPeer(peerToTry)
+			} else {
+				// [NEW] No peer found to try. Log a warning to the user.
+				pm.peersMutex.Lock()
+				if time.Since(pm.lastNoPeersWarning) > (peerWarningMinutes * time.Minute) {
+					if possiblePeerCount == 0 {
+						logging.Warnf("P2P: No peers found. Mining is paused.")
+						logging.Warnf("P2P: Please add peers to your 'config.yaml' or run with -solo flag for testing.")
+					} else if backoffPeerCount >= possiblePeerCount {
+						logging.Warnf("P2P: All known peers are offline. Mining is paused.")
+						logging.Warnf("P2P: Waiting for peers to come back online...")
+					}
+					pm.lastNoPeersWarning = time.Now()
+				}
+				pm.peersMutex.Unlock()
 			}
 		}
 	}
@@ -262,7 +298,12 @@ func (pm *PeerManager) TryPeer(p string) {
 	remoteAddr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
 	if err != nil {
-		logging.Warnf("Failed to connect to %s: %v", remoteAddr, err)
+		logging.Warnf("P2P: Failed to connect to %s: %v", remoteAddr, err)
+		// [NEW] Add to backoff list
+		pm.peersMutex.Lock()
+		pm.backoffPeers[host] = time.Now()
+		pm.peersMutex.Unlock()
+		logging.Warnf("P2P: Adding peer %s to backoff list for %d seconds.", host, peerBackoffSeconds) // User-requested log
 		return
 	}
 
@@ -283,6 +324,7 @@ func (pm *PeerManager) handleNewPeer(conn net.Conn) {
 	pm.peersMutex.Lock()
 	pm.peers[originalAddr] = peer
 	delete(pm.connectingPeers, remoteIP) // Successfully connected, remove from connecting list
+	delete(pm.backoffPeers, remoteIP)    // [NEW] Remove from backoff list on successful connect
 	pm.peersMutex.Unlock()
 
 	defer func() {
@@ -358,5 +400,3 @@ func (pm *PeerManager) GetPeerCount() int {
 	defer pm.peersMutex.RUnlock()
 	return len(pm.peers)
 }
-
-
