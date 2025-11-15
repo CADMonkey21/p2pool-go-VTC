@@ -55,6 +55,16 @@ func (dh *DashboardHandler) buildAndCacheStats() {
 	logging.Debugf("WEB: Dashboard stats re-caching complete.")
 }
 
+// [NEW] This struct is used to aggregate data from multiple connections/miners
+type aggregateMinerStats struct {
+	Address                 string
+	TotalHashrate           float64
+	TotalAcceptedShares     uint64
+	TotalRejectedShares     uint64
+	TotalWeightedDifficulty float64 // sum(hashrate * difficulty)
+	TotalWeightedShareTime  float64 // sum(hashrate * avgShareTimeSeconds)
+}
+
 // [NEW] buildStats performs the expensive calculations.
 // This is now only called once every 15 seconds.
 func (dh *DashboardHandler) buildStats() *DashboardStats {
@@ -67,29 +77,73 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 	// individual miner payout estimates to avoid re-calculating.
 	allPayouts, _ := dh.wm.ShareChain.GetProjectedPayouts(50)
 
-	activeMiners := make([]MinerStats, 0, len(stratumClients))
+	// [NEW] Step 1: Aggregate all client data by address
+	aggregatedMiners := make(map[string]*aggregateMinerStats)
 	for _, client := range stratumClients {
 		if !client.Authorized {
 			continue
 		}
 
 		hashrate := dh.ss.GetHashrateForClient(client.ID)
-		rejectedRate := client.GetRejectedRate()
-		avgShareTime := client.GetAverageShareTime()
+		if hashrate == 0 { // Don't include miners with no hashrate in weighted avgs
+			continue
+		}
+		
+		addr := client.WorkerName
+		avgShareTime := client.GetAverageShareTime().Seconds()
 
-		// [OPTIMIZATION] Use the map we already fetched.
-		payout := allPayouts[client.WorkerName]
+		if _, ok := aggregatedMiners[addr]; !ok {
+			// This is the first time we've seen this address. Create a new entry.
+			aggregatedMiners[addr] = &aggregateMinerStats{Address: addr}
+		}
+
+		// Get the stats for this address
+		stats := aggregatedMiners[addr]
+
+		// Sum the totals
+		client.Mutex.Lock() // Lock the client to safely read share counts
+		stats.TotalHashrate += hashrate
+		stats.TotalAcceptedShares += client.AcceptedShares
+		stats.TotalRejectedShares += client.RejectedShares
+		client.Mutex.Unlock()
+		
+		// Add to the weighted average components
+		stats.TotalWeightedDifficulty += hashrate * client.CurrentDifficulty
+		stats.TotalWeightedShareTime += hashrate * avgShareTime
+	}
+	
+	// [NEW] Step 2: Build the final ActiveMiners list from the aggregated data
+	activeMiners := make([]MinerStats, 0, len(aggregatedMiners))
+	for _, stats := range aggregatedMiners {
+		
+		// Calculate final weighted averages
+		finalAvgDifficulty := 0.0
+		finalAvgShareTime := 0.0
+		if stats.TotalHashrate > 0 {
+			finalAvgDifficulty = stats.TotalWeightedDifficulty / stats.TotalHashrate
+			finalAvgShareTime = stats.TotalWeightedShareTime / stats.TotalHashrate
+		}
+		
+		// Calculate final rejected percentage
+		totalShares := stats.TotalAcceptedShares + stats.TotalRejectedShares
+		finalRejectedPct := 0.0
+		if totalShares > 0 {
+			finalRejectedPct = (float64(stats.TotalRejectedShares) / float64(totalShares)) * 100
+		}
+		
+		// Get estimated payout from the map we fetched earlier
+		payout := allPayouts[stats.Address]
 		est24hPayout := 0.0
 		if chainStats.TimeToBlock > 0 {
 			est24hPayout = payout * (86400 / chainStats.TimeToBlock)
 		}
 
 		activeMiners = append(activeMiners, MinerStats{
-			Address:            client.WorkerName,
-			Hashrate:           formatHashrate(hashrate),
-			RejectedPercentage: rejectedRate * 100,
-			ShareDifficulty:    client.CurrentDifficulty,
-			AvgTimeToShare:     formatDuration(avgShareTime),
+			Address:            stats.Address,
+			Hashrate:           formatHashrate(stats.TotalHashrate),
+			RejectedPercentage: finalRejectedPct,
+			ShareDifficulty:    finalAvgDifficulty,
+			AvgTimeToShare:     formatDuration(time.Duration(finalAvgShareTime) * time.Second),
 			Est24HourPayout:    est24hPayout,
 		})
 	}
@@ -127,6 +181,9 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 	if latestTmpl != nil {
 		reward = float64(latestTmpl.CoinbaseValue) / 1e8
 	}
+	
+	// [MODIFIED] We now get the count of *aggregated* miners
+	connectedMinersCount := len(aggregatedMiners)
 
 	stats := &DashboardStats{
 		// [NEW] Added PoolAddress and PoolFee from config
@@ -150,7 +207,7 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 
 		NodeUptime:         formatDuration(time.Since(dh.startTime)),
 		LocalNodeHashrate:  formatHashrate(dh.ss.GetLocalHashrate()),
-		ConnectedMiners:    len(stratumClients),
+		ConnectedMiners:    connectedMinersCount, // [MODIFIED]
 		MinShareDifficulty: config.Active.Vardiff.MinDiff,
 		GoRoutines:         runtime.NumGoroutine(),
 
@@ -271,7 +328,7 @@ type DashboardStats struct {
 	// Lists
 	ActiveMiners []MinerStats      `json:"active_miners"`
 	BlocksFound  []BlockFoundStats `json:"blocks_found_list"`
-	Payouts      []PayoutStats     `json:"payouts_list"`
+	Payouts      []PayoutStats     `json."payouts_list"`
 }
 
 type MinerStats struct {
