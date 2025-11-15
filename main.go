@@ -218,9 +218,22 @@ func main() {
 	httpL := m.Match(cmux.HTTP1Fast())
 	stratumL := m.Match(cmux.Any())
 
-	/* ----- tiny placeholder dashboard ------------------------------- */
+	// [NEW] Create a new HTTP router (ServeMux)
+	mux := http.NewServeMux()
+
+	// [NEW] Create the handler for the JSON API
+	apiHandler := web.NewDashboard(workManager, pm, stratumSrv, startTime)
+	
+	// [NEW] Serve the JSON API at the /api/stats endpoint
+	mux.Handle("/api/stats", apiHandler)
+	
+	// [NEW] Serve the static files from the ./web/static directory at the root ("/")
+	// This will look for files like 'index.html', 'main.css', etc.
+	mux.Handle("/", http.FileServer(http.Dir("./web/static")))
+
+	// [MODIFIED] Use the new 'mux' router as the handler
 	httpSrv := &http.Server{
-		Handler: web.NewDashboard(workManager, pm, stratumSrv, startTime),
+		Handler: mux,
 	}
 
 	go func() { _ = httpSrv.Serve(httpL) }()

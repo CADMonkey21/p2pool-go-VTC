@@ -3,7 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"html/template"
+	// "html/template" // [REMOVED] This import is no longer used
 	"net/http"
 	"runtime"
 	"sort"
@@ -17,60 +17,17 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 )
 
-const dashboardTemplate = `
-<!DOCTYPE html>
-<html>
-<head>
-    <title>P2Pool-Go-VTC Dashboard</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif; background-color: #121212; color: #e0e0e0; }
-        pre { background-color: #1e1e1e; padding: 1em; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
-        #status { position: fixed; top: 10px; right: 10px; font-style: italic; color: #888; }
-    </style>
-</head>
-<body>
-    <h1>P2Pool-Go-VTC Dashboard</h1>
-    <div id="status">Loading...</div>
-    <pre id="json-container"></pre>
-
-    <script>
-        const statusDiv = document.getElementById('status');
-        const jsonContainer = document.getElementById('json-container');
-        const refreshInterval = 5000; // 5 seconds
-
-        function fetchData() {
-            statusDiv.textContent = 'Refreshing...';
-            fetch('/?json=1')
-                .then(response => response.json())
-                .then(data => {
-                    jsonContainer.textContent = JSON.stringify(data, null, 2); // Pretty print with 2-space indent
-                    statusDiv.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
-                })
-                .catch(error => {
-                    console.error('Error fetching stats:', error);
-                    statusDiv.textContent = 'Error fetching stats. See console.';
-                });
-        }
-
-        // Fetch data on initial load
-        fetchData();
-
-        // Set interval to refresh data
-        setInterval(fetchData, refreshInterval);
-    </script>
-</body>
-</html>
-`
+// [REMOVED] The old simple HTML template is no longer needed.
 
 // [NEW] DashboardHandler struct to hold dependencies and the cache
 type DashboardHandler struct {
-	wm           *work.WorkManager
-	pm           *p2p.PeerManager
-	ss           *stratum.StratumServer
-	startTime    time.Time
-	htmlTemplate *template.Template
-	cacheMutex   sync.RWMutex
-	cachedStats  *DashboardStats
+	wm        *work.WorkManager
+	pm        *p2p.PeerManager
+	ss        *stratum.StratumServer
+	startTime time.Time
+	// htmlTemplate *template.Template // [REMOVED] No longer serving a Go template
+	cacheMutex  sync.RWMutex
+	cachedStats *DashboardStats
 }
 
 // [NEW] statUpdater runs in a separate goroutine, caching stats every 15 seconds
@@ -78,16 +35,24 @@ func (dh *DashboardHandler) statUpdater() {
 	ticker := time.NewTicker(15 * time.Second) // Refresh stats every 15 seconds
 	defer ticker.Stop()
 
+	// Run once immediately on start
+	dh.buildAndCacheStats()
+
 	for {
 		<-ticker.C
-		logging.Debugf("WEB: Re-caching dashboard stats...")
-		newStats := dh.buildStats()
-
-		dh.cacheMutex.Lock()
-		dh.cachedStats = newStats
-		dh.cacheMutex.Unlock()
-		logging.Debugf("WEB: Dashboard stats re-caching complete.")
+		dh.buildAndCacheStats()
 	}
+}
+
+// [NEW] buildAndCacheStats performs the expensive calculations.
+func (dh *DashboardHandler) buildAndCacheStats() {
+	logging.Debugf("WEB: Re-caching dashboard stats...")
+	newStats := dh.buildStats()
+
+	dh.cacheMutex.Lock()
+	dh.cachedStats = newStats
+	dh.cacheMutex.Unlock()
+	logging.Debugf("WEB: Dashboard stats re-caching complete.")
 }
 
 // [NEW] buildStats performs the expensive calculations.
@@ -164,6 +129,12 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 	}
 
 	stats := &DashboardStats{
+		// [NEW] Added PoolAddress and PoolFee from config
+		PoolAddress:     config.Active.PoolAddress,
+		PoolFee:         config.Active.Fee,
+		P2PPort:         config.Active.P2PPort,
+		StratumPort:     config.Active.StratumPort,
+
 		GlobalNetworkHashrate: formatHashrate(chainStats.NetworkHashrate),
 		P2PoolNetworkHashrate: formatHashrate(chainStats.PoolHashrate),
 		NetworkDifficulty:     chainStats.NetworkDifficulty,
@@ -177,8 +148,8 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 		PoolSharesDead:   chainStats.SharesDead,
 		BlocksFound24h:   dh.wm.GetBlocksFoundInLast(24 * time.Hour),
 
-		NodeUptime:        formatDuration(time.Since(dh.startTime)),
-		LocalNodeHashrate: formatHashrate(dh.ss.GetLocalHashrate()), // <-- [FIXED] Wrapped in formatHashrate()
+		NodeUptime:         formatDuration(time.Since(dh.startTime)),
+		LocalNodeHashrate:  formatHashrate(dh.ss.GetLocalHashrate()),
 		ConnectedMiners:    len(stratumClients),
 		MinShareDifficulty: config.Active.Vardiff.MinDiff,
 		GoRoutines:         runtime.NumGoroutine(),
@@ -193,23 +164,12 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 
 // [MODIFIED] NewDashboard now returns the handler struct
 func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.StratumServer, startTime time.Time) http.Handler {
-	// Parse the HTML template once on startup
-	tmpl, err := template.New("dashboard").Parse(dashboardTemplate)
-	if err != nil {
-		// If the template fails to parse, we must panic as the server can't function.
-		panic(fmt.Sprintf("failed to parse dashboard template: %v", err))
-	}
-
 	handler := &DashboardHandler{
-		wm:           wm,
-		pm:           pm,
-		ss:           ss,
-		startTime:    startTime,
-		htmlTemplate: tmpl,
+		wm:        wm,
+		pm:        pm,
+		ss:        ss,
+		startTime: startTime,
 	}
-
-	// [NEW] Prime the cache on startup
-	handler.cachedStats = handler.buildStats()
 
 	// [NEW] Start the caching goroutine
 	go handler.statUpdater()
@@ -217,41 +177,31 @@ func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.Stratum
 	return handler
 }
 
-// [NEW] ServeHTTP makes DashboardHandler satisfy the http.Handler interface
+// [MODIFIED] ServeHTTP now *only* serves the JSON API
 func (dh *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Check if the request is for the JSON data API
-	if r.URL.Query().Get("json") == "1" {
-		w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*") // [NEW] Add CORS header
 
-		// [OPTIMIZATION]
-		// Get a Read Lock, copy the cached pointer, and release.
-		// This is extremely fast and blocks for almost no time.
-		dh.cacheMutex.RLock()
-		statsToServe := dh.cachedStats
-		dh.cacheMutex.RUnlock()
+	// [OPTIMIZATION]
+	// Get a Read Lock, copy the cached pointer, and release.
+	// This is extremely fast and blocks for almost no time.
+	dh.cacheMutex.RLock()
+	statsToServe := dh.cachedStats
+	dh.cacheMutex.RUnlock()
 
-		if statsToServe == nil {
-			// This should only happen in the first few moments of startup
-			http.Error(w, `{"error": "Stats are being generated, please try again in a moment."}`, http.StatusServiceUnavailable)
-			return
-		}
-
-		// Marshal with indentation for pretty-printing
-		prettyJSON, err := json.MarshalIndent(statsToServe, "", "  ")
-		if err != nil {
-			http.Error(w, "Failed to generate stats", http.StatusInternalServerError)
-			return
-		}
-		w.Write(prettyJSON)
-
-	} else {
-		// Otherwise, serve the HTML page
-		w.Header().Set("Content-Type", "text/html")
-		err := dh.htmlTemplate.Execute(w, nil)
-		if err != nil {
-			http.Error(w, "Failed to render dashboard", http.StatusInternalServerError)
-		}
+	if statsToServe == nil {
+		// This should only happen in the first few moments of startup
+		http.Error(w, `{"error": "Stats are being generated, please try again in a moment."}`, http.StatusServiceUnavailable)
+		return
 	}
+
+	// Marshal with indentation for pretty-printing
+	prettyJSON, err := json.MarshalIndent(statsToServe, "", "  ")
+	if err != nil {
+		http.Error(w, "Failed to generate stats", http.StatusInternalServerError)
+		return
+	}
+	w.Write(prettyJSON)
 }
 
 // formatDuration is a helper to make time intervals human-readable.
@@ -290,12 +240,20 @@ func formatHashrate(hr float64) string {
 
 // DashboardStats is the main structure for the API response, containing all stats.
 type DashboardStats struct {
+	// [NEW] Generic node info
+	PoolAddress     string  `json:"pool_address"`
+	PoolFee         float64 `json:"pool_fee"`
+	P2PPort         int     `json:"p2p_port"`
+	StratumPort     int     `json:"stratum_port"`
+
+	// Global Stats
 	GlobalNetworkHashrate string  `json:"global_network_hashrate"`
 	P2PoolNetworkHashrate string  `json:"p2pool_network_hashrate"`
 	NetworkDifficulty     float64 `json:"network_difficulty"`
 	BlockReward           float64 `json:"block_reward"`
 	LastBlockFoundAgo     string  `json:"last_block_found_ago"`
 
+	// Pool Stats
 	PoolEfficiency    string `json:"pool_efficiency"`
 	TimeToBlock       string `json:"pool_time_to_block"`
 	PoolSharesTotal   int    `json:"pool_shares_total"`
@@ -303,12 +261,14 @@ type DashboardStats struct {
 	PoolSharesDead    int    `json:"pool_shares_dead"`
 	BlocksFound24h    int    `json:"pool_blocks_found_24h"`
 
+	// Node Stats
 	NodeUptime         string  `json:"node_uptime"`
 	LocalNodeHashrate  string  `json:"local_node_hashrate"`
 	ConnectedMiners    int     `json:"connected_miners"`
 	MinShareDifficulty float64 `json:"min_share_difficulty"`
 	GoRoutines         int     `json:"go_routines"`
 
+	// Lists
 	ActiveMiners []MinerStats      `json:"active_miners"`
 	BlocksFound  []BlockFoundStats `json:"blocks_found_list"`
 	Payouts      []PayoutStats     `json:"payouts_list"`

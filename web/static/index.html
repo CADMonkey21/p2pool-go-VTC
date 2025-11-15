@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8">
+  <meta content="ie=edge" http-equiv="x-ua-compatible">
+  <title>p2pool-go-VTC Node</title>
+  <meta content="Vertcoin P2Pool Mining" name="description">
+  <meta content="width=device-width, initial-scale=1" name="viewport"><link href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:300,400,400i,600" rel="stylesheet"><link href="apple-touch-icon.png" rel="apple-touch-icon">
+  <link href="favicon.ico" rel="shortcut icon" type="image/x-icon"><link href="n-css/main.css" rel="stylesheet">
+  <link href="n-css/custom.css" rel="stylesheet">
+</head>
+<body class="o-page">
+  <div class="o-page__sidebar js-page-sidebar">
+    <div class="c-sidebar">
+      <a class="c-sidebar__brand" href="/"><img alt="Logo" class="c-sidebar__brand-img" src="img/vertcoin-logo.png">
+        <span id="pool_title">p2pool-go-VTC Node</span>
+      </a>
+
+      <h4 class="c-sidebar__title">Miners</h4>
+      <ul class="c-sidebar__list">
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://github.com/vertcoin-project/one-click-miner-vnext/releases">
+            <i class="fa fa-download u-mr-xsmall"></i>One-Click Miner
+          </a>
+        </li>
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://github.com/CryptoGraphics/VerthashMiner/releases">
+            <i class="fa fa-download u-mr-xsmall"></i>Verthash Miner
+          </a>
+        </li>
+      </ul>
+
+      <h4 class="c-sidebar__title">Wallets</h4>
+      <ul class="c-sidebar__list">
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://github.com/vertcoin/vertcoin/releases">
+            <i class="fa fa-check u-mr-xsmall"></i>Vertcoin Core Wallet
+          </a>
+        </li>
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://www.coinomi.com">
+            <i class="fa fa-link u-mr-xsmall"></i>Coinomi
+          </a>
+        </li>
+      </ul>
+
+      <h4 class="c-sidebar__title">Vertcoin Social</h4>
+      <ul class="c-sidebar__list">
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://www.reddit.com/r/vertcoin/">
+            <i class="fa fa-reddit-alien u-mr-xsmall"></i>Reddit
+          </a>
+        </li>
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://twitter.com/Vertcoin">
+            <i class="fa fa-twitter u-mr-xsmall"></i>Twitter
+          </a>
+        </li>
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://discord.gg/mXw9zpw">
+            <i class="fa fa-comments u-mr-xsmall"></i>Discord
+          </a>
+        </li>
+        <li class="c-sidebar__item">
+          <a class="c-sidebar__link" target="_blank" href="https://vertcoin.org">
+            <i class="fa fa-check u-mr-xsmall"></i>Vertcoin.org
+          </a>
+        </li>
+      </ul>
+
+    </div></div><main class="o-page__content">
+    <header class="c-navbar">
+      <button class="c-sidebar-toggle u-mr-small"><span class="c-sidebar-toggle__bar"></span> <span class="c-sidebar-toggle__bar"></span> <span class="c-sidebar-toggle__bar"></span></button> <h2 class="c-navbar__title u-mr-auto">Dashboard</h2>
+      <span class="u-text-mute" id="stratum_url">(loading...)</span>
+      <div class="c-dropdown dropdown u-mr-medium u-ml-small u-hidden-down@mobile">
+        <a aria-expanded="false" aria-haspopup="true" class="c-notification dropdown-toggle" data-toggle="dropdown" href="#" id="dropdownMenuAlerts"><span class="c-notification__icon"><i class="fa fa-bell-o"></i></span></a>
+        <div aria-labelledby="dropdownMenuAlerts" class="c-dropdown__menu c-dropdown__menu--large dropdown-menu dropdown-menu-right">
+          <a class="c-dropdown__item dropdown-item o-media" href="#">
+            <div class="o-media__body">
+              <h6 class="u-mb-zero">Join Our Pool!</h6>
+              <p class="u-text-mute">
+                <a href="https" target="_blank">Verthash Miner</a><br>
+                -o stratum+tcp://<span id="stratum_host_info"></span>:<span id="stratum_port_info"></span> <br>
+                --user &lt;YOUR_VTC_ADDRESS&gt; <br>
+                --p x --verthash-data &lt;YOUR_PATH_TO&gt;/verthash.dat <br>
+                --all-cl-devices <br>--all-cu-devices
+              </p>
+            </div>
+          </a>
+            </div>
+          </div>
+        </header>
+        <div class="c-toolbar u-justify-center u-mb-small">
+          <div class="col-12 col-lg-10 col-xl-8">
+            <div class="row">
+              <div class="col-6 col-md-3 c-toolbar__state">
+                <h4 class="c-toolbar__state-number"><span id="node_uptime">(loading)</span></h4><span class="c-toolbar__state-title">Node Uptime</span>
+              </div>
+              <div class="col-6 col-md-3 c-toolbar__state">
+                <h4 class="c-toolbar__state-number"><span id="block-diff">(loading)</span></h4><span class="c-toolbar__state-title">Current Difficulty</span>
+              </div>
+              <div class="col-6 col-md-3 c-toolbar__state">
+                <h4 class="c-toolbar__state-number"><span id="active-miners">(loading)</span></h4><span class="c-toolbar__state-title" id="active-miners-label">Miner(s)</span>
+              </div>
+              <div class="col-6 col-md-3 c-toolbar__state">
+                <h4 class="c-toolbar__state-number"><span id="last-block-found">(loading)</span></h4><span class="c-toolbar__state-title">Last Block Found</span>
+              </div>
+            </div></div></div><div class="container-fluid">
+          <div class="row">
+            <div class="col-md-12">
+              <div class="c-card c-card--responsive u-mb-medium">
+                <table class="c-table u-border-zero" id="active_miners_table">
+                  <caption class="c-table__title">
+                    Active Miners
+                  </caption>
+                  <thead class="c-table__head">
+                    <tr class="c-table__row">
+                      <th class="c-table__cell c-table__cell--head">Address</th>
+                      <th class="c-table__cell c-table__cell--head">Hashrate</th>
+                      <th class="c-table__cell c-table__cell--head">Rejected</th>
+                      <th class="c-table__cell c-table__cell--head">Share Difficulty <i href="#" class="fa fa-question-circle" data-toggle="modal" data-target="#shares-difficulty-modal"></i></th>
+                      <th class="c-table__cell c-table__cell--head">Avg. Time to Find Share</th>
+                      <th class="c-table__cell c-table__cell--head">Payout per Block <span class="u-hidden-visually">Shares</span></th>
+                      <th class="c-table__cell c-table__cell--head">Estimated 24 Hour Payout</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="c-table__row">
+                      <td colspan="7" class="c-table__cell">No miners are here...it's pretty lonely</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div aria-hidden="true" aria-labelledby="myModal3" class="c-modal modal fade" id="no-shares-modal" role="dialog" style="display: none;" tabindex="-1">
+                  <div class="c-modal__dialog modal-dialog" role="document">
+                    <div class="modal-content">
+                      <div class="c-card u-p-medium u-mh-auto" style="max-width:500px;">
+                        <h3>You Haven't Found Any Shares (Yet)</h3>
+                        <p class="u-text-mute u-mb-small">As you mine, you will find shares that will increase you payout when the network finds a block. Find your address, and look at the "Avg. Time to Find Share" column. On average, it will take this long for you to find a share on this network.</p><br>
+                        <button class="c-btn c-btn--info" data-dismiss="modal">Ok, got it!</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div aria-hidden="true" aria-labelledby="myModal3" class="c-modal modal fade" id="shares-difficulty-modal" role="dialog" style="display: none;" tabindex="-1">
+                  <div class="c-modal__dialog modal-dialog" role="document">
+                    <div class="modal-content">
+                      <div class="c-card u-p-medium u-mh-auto" style="max-width:500px;">
+                        <h3>What is this Share Difficulty?</h3>
+                        <p class="u-text-mute u-mb-small">
+                          Payouts are weighted based on the amount of work each share took to solve, which is proportional to the minimum share difficulty
+                          at that time (<span id="modal_share_difficulty">(loading)</span> in this case). Your hashrate will determine how long it will take, on
+                          average, to generate a paying share on this network.
+                          <br />
+                          <br />
+                          The Avg. Time to Share column is an <span class="u-text-bold">average estimation</span> of how long it will take to generate one of
+                          these shares. As there is a factor of luck involved, <i>your actual time to generate a paying share could be much shorter, or much longer.</i>
+                          <br />
+                          <br />
+                          <button class="c-btn c-btn--info" data-dismiss="modal">Ok, got it!</button>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="row u-mb-large">
+              <div class="col-xl-3 c-card--responsive u-hidden-down@mobile">
+                <table class="c-table c-table--custom" id="recent_blocks_table">
+                  <caption class="c-table__title">
+                    <span id="num_blocks_found">0</span> Blocks Found<small>24 hours</small>
+                  </caption>
+                  <thead class="c-table__head c-table__head--slim">
+                    <tr class="c-table__row">
+                      <th class="c-table__cell c-table__cell--head">Number</th>
+                      <th class="c-table__cell c-table__cell--head">When</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="c-table__row">
+                      <td colspan="2" class="c-table__cell">No blocks found!</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="col-xl-5 c-card--responsive u-hidden-down@mobile">
+                <table class="c-table c-table--custom" id="current_payouts_table">
+                  <caption class="c-table__title">
+                    <span id="num_payouts">0</span> Top 50 Payouts<small>when next block is found</small>
+                  </caption>
+                  <thead class="c-table__head c-table__head--slim">
+                    <tr class="c-table__row">
+                      <th class="c-table__cell c-table__cell--head no-sort">Address</th>
+                      <th class="c-table__cell c-table__cell--head">Payout</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="c-table__row">
+                      <td class="c-table__cell">No payouts!</td>
+                      <td class="c-table__cell"></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="col-xl-4">
+                <div class="u-mb-small c-card--responsive">
+                  <table class="c-table c-table--custom">
+                    <caption class="c-table__title">
+                      Node Statistics <small>(<span id="node_fee">(...)</span>% fee)</small>
+                    </caption>
+                    <tbody>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">Global Vertcoin Hashrate: <span id="network_rate">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">P2Pool Network Hashrate: <span id="global_rate">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">Local Node Hashrate: <span id="local_rate">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">Local Shares Found: <span id="shares">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">Blocks Found in 24 Hours: <span id="stats_blocks_found_daily">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">Block Reward: <span id="block-reward">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">Minimum Share Difficulty: <span id="share_difficulty">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">Average Time to Find a Block: <span id="expected_time_to_block">(loading)</span></td>
+                      </tr>
+                      <tr class="c-table__row">
+                        <td class="c-table__cell">
+                          Node: <span id="p2pool_version">p2pool-go-VTC</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            </div>
+          </div>
+        </div></main><script src="n-js/main.min.js">
+      </script>
+      <script src="js/jquery-dateFormat.min.js">
+      </script>
+      <script src="n-js/util.js">
+      </script>
+      <script src="n-js/p2pool.js">
+      </script>
+       </body>
+    </html>
