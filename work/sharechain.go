@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	// "github.com/CADMonkey21/p2pool-go-VTC/net" // [FIX] This was an unused import
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
@@ -150,16 +150,6 @@ func (sc *ShareChain) resolve(skipCommit bool) {
 	if len(sc.AllShares) < config.Active.PPLNSWindow && sc.Tail != nil && sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash != nil && !sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash.IsEqual(&chainhash.Hash{}) {
 		sc.NeedShareChannel <- sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash
 	}
-
-	// [PERFORMANCE FIX]
-	// Remove the automatic commit-on-every-share.
-	// The commit-on-shutdown in main.go is sufficient for persistence
-	// and this prevents constant, heavy disk I/O.
-	/*
-		if !skipCommit {
-			sc.commit()
-		}
-	*/
 }
 
 func (sc *ShareChain) commit() error {
@@ -216,10 +206,11 @@ func (sc *ShareChain) Load() error {
 
 	for i := range shares {
 		s := &shares[i]
-		// [FIX] Only calculate the fast hash. This is the startup optimization.
 		if err := s.CalculateHash(); err != nil {
 			logging.Warnf("Failed to calculate hash for share on load: %v", err)
 		}
+		// [CRITICAL FIX] Restore the Target big.Int from the Bits field.
+		s.Target = blockchain.CompactToBig(s.MinHeader.Bits)
 	}
 
 	sc.disconnectedShares = make([]*wire.Share, len(shares))
@@ -238,15 +229,10 @@ func (sc *ShareChain) AddShares(s []wire.Share) {
 
 	for i := range s {
 		share := s[i]
-
-		// [OPTIMIZATION]
-		// If a share already has a PoW hash (e.g., from our local stratum
-		// server), don't recalculate the expensive hashes.
-		// Hashes only need to be calculated for shares from peers or disk.
 		if share.POWHash == nil {
 			if err := share.CalculateHashes(); err != nil {
 				logging.Warnf("Failed to calculate hashes for new share: %v", err)
-				continue // Don't add a share we can't hash
+				continue
 			}
 		}
 
@@ -290,15 +276,13 @@ func (sc *ShareChain) GetStats() ChainStats {
 
 	var deadShares, sharesInWindow int
 
-	// [FIX] Use the standard "Difficulty 1" target (max work)
-	// This is 2^256 - 1
 	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 	maxWorkFloat := new(big.Float).SetInt(maxWork)
 
 	var earliestShareTime time.Time = time.Now()
 
 	stratumWork := new(big.Float)
-	sharesInWindow = 0 // Reset for the new loop
+	sharesInWindow = 0
 
 	current := sc.Tip
 	for current != nil && time.Unix(int64(current.Share.MinHeader.Timestamp), 0).After(startTime) {
@@ -307,7 +291,6 @@ func (sc *ShareChain) GetStats() ChainStats {
 			deadShares++
 		}
 
-		// [FIX] Use the share's Stratum target, not the network's target
 		shareTarget := current.Share.Target
 		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			current = current.Previous
@@ -319,8 +302,6 @@ func (sc *ShareChain) GetStats() ChainStats {
 			continue
 		}
 
-		// stratum_diff = maxWork / shareTarget
-		// This is the "work" (total hashes) represented by this share
 		diff := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
 		stratumWork.Add(stratumWork, diff)
 
@@ -350,32 +331,24 @@ func (sc *ShareChain) GetStats() ChainStats {
 		elapsedSeconds = measured
 	}
 
-	// [STATS BUG FIX]
-	// The Python code's `target_to_average_attempts` is `2**256 / target`.
-	// Our `stratumWork` is `sum(maxWork / shareTarget)`, which is the sum of difficulty.
-	// Hashrate = (sum(Difficulty) * hashrateConstant) / time.
-	// The `hashrateConstant` (2^24) must be re-introduced.
-	stats.PoolHashrate = 0.0 // Default
+	stats.PoolHashrate = 0.0
 	if stratumWork.Sign() > 0 && elapsedSeconds > 0 {
 		hashrateFloat := new(big.Float).Quo(stratumWork, big.NewFloat(elapsedSeconds))
 		hashrateFloat.Mul(hashrateFloat, big.NewFloat(hashrateConstant)) // <-- Multiply by constant
 		stats.PoolHashrate, _ = hashrateFloat.Float64()
 	}
-	// [END STATS BUG FIX]
 
 	if stats.PoolHashrate > 0 && stats.NetworkHashrate > 0 {
-		// [FIX] Use the network hashrate provided by the daemon for TTB calculation
-		// This is more stable and correct. 150 seconds = 2.5 min block time
 		stats.TimeToBlock = (stats.NetworkHashrate / stats.PoolHashrate) * 150
 	} else {
-		stats.TimeToBlock = 0 // Or some indicator of N/A
+		stats.TimeToBlock = 0
 	}
 
 	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty(stratum)=%s maxWork=%s poolHashrate=%.6f H/s",
 		sharesInWindow,
 		earliestShareTime.Format(time.RFC3339),
 		elapsedSeconds,
-		stratumWork.String(), // [FIX] Log the correct variable
+		stratumWork.String(),
 		maxWork.Text(16),
 		stats.PoolHashrate,
 	)
@@ -403,26 +376,23 @@ func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, win
 	return payoutShares, nil
 }
 
+// [MODIFIED] Uses big.Float to prevent truncation of low-difficulty shares
 func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error) {
 	sc.chainLock.Lock()
 	defer sc.chainLock.Unlock()
 
+	// logging.Debugf("[DIAG] PayoutCalc: Starting calculation...")
+
 	tip := sc.Tip
 	if tip == nil {
+		// logging.Debugf("[DIAG] PayoutCalc: ABORT - Tip is nil")
 		return nil, fmt.Errorf("sharechain has no tip, cannot calculate payouts")
 	}
 
-	totalPayout := uint64(12.5 * 1e8)
-	if tip.Share != nil && tip.Share.ShareInfo.ShareData.Subsidy > 0 {
-		totalPayout = tip.Share.ShareInfo.ShareData.Subsidy
-	}
-
-	feePercentage := config.Active.Fee / 100.0
-	amountToDistribute := totalPayout - uint64(float64(totalPayout)*feePercentage)
-
 	windowSize := config.Active.PPLNSWindow
 	if windowSize <= 0 {
-		return nil, fmt.Errorf("PPLNS window size is not configured or is invalid")
+		// logging.Warnf("[DIAG] PayoutCalc: Configured PPLNSWindow is %d (invalid). Defaulting to 8640.", windowSize)
+		windowSize = 8640
 	}
 
 	payoutShares := make([]*wire.Share, 0, windowSize)
@@ -432,75 +402,92 @@ func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error)
 		current = current.Previous
 	}
 
-	payouts := make(map[string]uint64)
-	totalWorkInWindow := new(big.Int)
+	// logging.Debugf("[DIAG] PayoutCalc: Found %d shares in window for processing", len(payoutShares))
 
-	// [FIX] Use the standard "Difficulty 1" target (max work)
+	payouts := make(map[string]*big.Float) // Changed to map of big.Float pointers
+	totalWorkInWindow := new(big.Float)
+	
 	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	maxWorkFloat := new(big.Float).SetInt(maxWork) // Pre-convert maxWork to Float
 
 	for _, share := range payoutShares {
-		// [FIX] Use the share's Stratum target, not the network's target
 		shareTarget := share.Target
 		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			continue
 		}
-		// [FIX] Calculate work based on the standard maxWork
-		work := new(big.Int).Div(new(big.Int).Set(maxWork), shareTarget)
+		shareTargetFloat := new(big.Float).SetInt(shareTarget)
+		
+		// work = maxWork / shareTarget
+		work := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
 		totalWorkInWindow.Add(totalWorkInWindow, work)
 	}
 
+	// logging.Debugf("[DIAG] PayoutCalc: Total Work in Window = %s", totalWorkInWindow.String())
+
 	if totalWorkInWindow.Sign() <= 0 {
+		// logging.Debugf("[DIAG] PayoutCalc: ABORT - Total work is zero")
 		return make(map[string]float64), nil
 	}
+
+	totalPayout := uint64(12.5 * 1e8)
+	if tip.Share != nil && tip.Share.ShareInfo.ShareData.Subsidy > 0 {
+		totalPayout = tip.Share.ShareInfo.ShareData.Subsidy
+	}
+
+	feePercentage := config.Active.Fee / 100.0
+	amountToDistribute := totalPayout - uint64(float64(totalPayout)*feePercentage)
+	amountToDistributeFloat := new(big.Float).SetUint64(amountToDistribute)
 
 	for _, share := range payoutShares {
 		if share.ShareInfo.ShareData.PubKeyHash == nil || len(share.ShareInfo.ShareData.PubKeyHash) == 0 {
 			continue
 		}
 
-		// Patched Address Handling
 		var address string
 		var err error
-		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 { // Bech32 P2WPKH or P2WSH
+		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 { // Bech32
 			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
 			if err != nil {
 				logging.Warnf("Could not convert bits for bech32 payout: %v", err)
 				continue
 			}
-			// Use the correct HRP for the active network
 			hrp := "vtc"
 			if config.Active.Testnet {
 				hrp = "tvtc"
 			}
 			address, err = bech32.Encode(hrp, append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
 		} else { // Legacy Base58
-			// [FIX] Use base58.CheckEncode
 			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
 		}
-		// End Patched Address Handling
 
 		if err != nil {
-			logging.Warnf("Could not re-encode address for pubkeyhash, skipping share for payout: %v", err)
+			logging.Warnf("Could not re-encode address: %v", err)
 			continue
 		}
 
-		// [FIX] Use the share's Stratum target, not the network's target
 		shareTarget := share.Target
 		if shareTarget == nil || shareTarget.Sign() <= 0 {
 			continue
 		}
-		// [FIX] Calculate work based on the standard maxWork
-		work := new(big.Int).Div(new(big.Int).Set(maxWork), shareTarget)
+		
+		shareTargetFloat := new(big.Float).SetInt(shareTarget)
+		work := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
 
-		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), work)
-		payoutAmount.Div(payoutAmount, totalWorkInWindow)
+		// payoutAmount = (amountToDistribute * work) / totalWorkInWindow
+		payoutAmount := new(big.Float).Mul(amountToDistributeFloat, work)
+		payoutAmount.Quo(payoutAmount, totalWorkInWindow)
 
-		payouts[address] += payoutAmount.Uint64()
+		if _, exists := payouts[address]; !exists {
+			payouts[address] = new(big.Float)
+		}
+		payouts[address].Add(payouts[address], payoutAmount)
 	}
 
 	finalPayouts := make(map[string]float64)
-	for addr, amountSatoshIS := range payouts {
-		finalPayouts[addr] = float64(amountSatoshIS) / 100000000.0
+	for addr, amountSatoshisFloat := range payouts {
+		f64, _ := amountSatoshisFloat.Float64()
+		finalPayouts[addr] = f64 / 100000000.0
+		// logging.Debugf("[DIAG] PayoutCalc: Address %s has accumulated %.8f VTC", addr, finalPayouts[addr])
 	}
 
 	return finalPayouts, nil

@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	// "html/template" // [REMOVED] This import is no longer used
 	"net/http"
 	"runtime"
 	"sort"
@@ -17,20 +16,17 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 )
 
-// [REMOVED] The old simple HTML template is no longer needed.
-
-// [NEW] DashboardHandler struct to hold dependencies and the cache
+// DashboardHandler struct to hold dependencies and the cache
 type DashboardHandler struct {
-	wm        *work.WorkManager
-	pm        *p2p.PeerManager
-	ss        *stratum.StratumServer
-	startTime time.Time
-	// htmlTemplate *template.Template // [REMOVED] No longer serving a Go template
+	wm          *work.WorkManager
+	pm          *p2p.PeerManager
+	ss          *stratum.StratumServer
+	startTime   time.Time
 	cacheMutex  sync.RWMutex
 	cachedStats *DashboardStats
 }
 
-// [NEW] statUpdater runs in a separate goroutine, caching stats every 15 seconds
+// statUpdater runs in a separate goroutine, caching stats every 15 seconds
 func (dh *DashboardHandler) statUpdater() {
 	ticker := time.NewTicker(15 * time.Second) // Refresh stats every 15 seconds
 	defer ticker.Stop()
@@ -44,7 +40,7 @@ func (dh *DashboardHandler) statUpdater() {
 	}
 }
 
-// [NEW] buildAndCacheStats performs the expensive calculations.
+// buildAndCacheStats performs the expensive calculations.
 func (dh *DashboardHandler) buildAndCacheStats() {
 	logging.Debugf("WEB: Re-caching dashboard stats...")
 	newStats := dh.buildStats()
@@ -55,7 +51,7 @@ func (dh *DashboardHandler) buildAndCacheStats() {
 	logging.Debugf("WEB: Dashboard stats re-caching complete.")
 }
 
-// [NEW] This struct is used to aggregate data from multiple connections/miners
+// This struct is used to aggregate data from multiple connections/miners
 type aggregateMinerStats struct {
 	Address                 string
 	TotalHashrate           float64
@@ -65,19 +61,16 @@ type aggregateMinerStats struct {
 	TotalWeightedShareTime  float64 // sum(hashrate * avgShareTimeSeconds)
 }
 
-// [NEW] buildStats performs the expensive calculations.
+// buildStats performs the expensive calculations.
 // This is now only called once every 15 seconds.
 func (dh *DashboardHandler) buildStats() *DashboardStats {
 	chainStats := dh.wm.ShareChain.GetStats()
 	stratumClients := dh.ss.GetClients()
 
-	// [OPTIMIZATION]
 	// Call GetProjectedPayouts ONCE.
-	// We will re-use this map for both the Top 50 list and the
-	// individual miner payout estimates to avoid re-calculating.
 	allPayouts, _ := dh.wm.ShareChain.GetProjectedPayouts(50)
 
-	// [NEW] Step 1: Aggregate all client data by address
+	// Step 1: Aggregate all client data by address
 	aggregatedMiners := make(map[string]*aggregateMinerStats)
 	for _, client := range stratumClients {
 		if !client.Authorized {
@@ -85,15 +78,12 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 		}
 
 		hashrate := dh.ss.GetHashrateForClient(client.ID)
-		if hashrate == 0 { // Don't include miners with no hashrate in weighted avgs
-			continue
-		}
+		// We include miners even with 0 hashrate so they appear in the list if connected
 		
 		addr := client.WorkerName
 		avgShareTime := client.GetAverageShareTime().Seconds()
 
 		if _, ok := aggregatedMiners[addr]; !ok {
-			// This is the first time we've seen this address. Create a new entry.
 			aggregatedMiners[addr] = &aggregateMinerStats{Address: addr}
 		}
 
@@ -101,18 +91,20 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 		stats := aggregatedMiners[addr]
 
 		// Sum the totals
-		client.Mutex.Lock() // Lock the client to safely read share counts
+		client.Mutex.Lock() 
 		stats.TotalHashrate += hashrate
 		stats.TotalAcceptedShares += client.AcceptedShares
 		stats.TotalRejectedShares += client.RejectedShares
 		client.Mutex.Unlock()
 		
 		// Add to the weighted average components
-		stats.TotalWeightedDifficulty += hashrate * client.CurrentDifficulty
-		stats.TotalWeightedShareTime += hashrate * avgShareTime
+		if hashrate > 0 {
+			stats.TotalWeightedDifficulty += hashrate * client.CurrentDifficulty
+			stats.TotalWeightedShareTime += hashrate * avgShareTime
+		}
 	}
 	
-	// [NEW] Step 2: Build the final ActiveMiners list from the aggregated data
+	// Step 2: Build the final ActiveMiners list from the aggregated data
 	activeMiners := make([]MinerStats, 0, len(aggregatedMiners))
 	for _, stats := range aggregatedMiners {
 		
@@ -144,6 +136,7 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 			RejectedPercentage: finalRejectedPct,
 			ShareDifficulty:    finalAvgDifficulty,
 			AvgTimeToShare:     formatDuration(time.Duration(finalAvgShareTime) * time.Second),
+			Payout:             payout, // [FIX] Populate the payout field
 			Est24HourPayout:    est24hPayout,
 		})
 	}
@@ -157,7 +150,7 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 		}
 	}
 
-	// [OPTIMIZATION] Use the map we already fetched.
+	// Use the map we already fetched.
 	payoutsList := make([]PayoutStats, 0, len(allPayouts))
 	for addr, amount := range allPayouts {
 		payoutsList = append(payoutsList, PayoutStats{Address: addr, Payout: amount})
@@ -165,7 +158,6 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 	sort.Slice(payoutsList, func(i, j int) bool {
 		return payoutsList[i].Payout > payoutsList[j].Payout
 	})
-	// Limit to top 50 if necessary (though GetProjectedPayouts already did)
 	if len(payoutsList) > 50 {
 		payoutsList = payoutsList[:50]
 	}
@@ -182,11 +174,9 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 		reward = float64(latestTmpl.CoinbaseValue) / 1e8
 	}
 	
-	// [MODIFIED] We now get the count of *aggregated* miners
 	connectedMinersCount := len(aggregatedMiners)
 
 	stats := &DashboardStats{
-		// [NEW] Added PoolAddress and PoolFee from config
 		PoolAddress:     config.Active.PoolAddress,
 		PoolFee:         config.Active.Fee,
 		P2PPort:         config.Active.P2PPort,
@@ -207,7 +197,7 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 
 		NodeUptime:         formatDuration(time.Since(dh.startTime)),
 		LocalNodeHashrate:  formatHashrate(dh.ss.GetLocalHashrate()),
-		ConnectedMiners:    connectedMinersCount, // [MODIFIED]
+		ConnectedMiners:    connectedMinersCount,
 		MinShareDifficulty: config.Active.Vardiff.MinDiff,
 		GoRoutines:         runtime.NumGoroutine(),
 
@@ -219,7 +209,6 @@ func (dh *DashboardHandler) buildStats() *DashboardStats {
 	return stats
 }
 
-// [MODIFIED] NewDashboard now returns the handler struct
 func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.StratumServer, startTime time.Time) http.Handler {
 	handler := &DashboardHandler{
 		wm:        wm,
@@ -228,31 +217,25 @@ func NewDashboard(wm *work.WorkManager, pm *p2p.PeerManager, ss *stratum.Stratum
 		startTime: startTime,
 	}
 
-	// [NEW] Start the caching goroutine
+	// Start the caching goroutine
 	go handler.statUpdater()
 
 	return handler
 }
 
-// [MODIFIED] ServeHTTP now *only* serves the JSON API
 func (dh *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*") // [NEW] Add CORS header
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// [OPTIMIZATION]
-	// Get a Read Lock, copy the cached pointer, and release.
-	// This is extremely fast and blocks for almost no time.
 	dh.cacheMutex.RLock()
 	statsToServe := dh.cachedStats
 	dh.cacheMutex.RUnlock()
 
 	if statsToServe == nil {
-		// This should only happen in the first few moments of startup
 		http.Error(w, `{"error": "Stats are being generated, please try again in a moment."}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	// Marshal with indentation for pretty-printing
 	prettyJSON, err := json.MarshalIndent(statsToServe, "", "  ")
 	if err != nil {
 		http.Error(w, "Failed to generate stats", http.StatusInternalServerError)
@@ -261,7 +244,6 @@ func (dh *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(prettyJSON)
 }
 
-// formatDuration is a helper to make time intervals human-readable.
 func formatDuration(d time.Duration) string {
 	sec := d.Seconds()
 	if sec <= 0 {
@@ -279,7 +261,6 @@ func formatDuration(d time.Duration) string {
 	}
 }
 
-// CORRECTED: This function now matches the one in main.go and includes TH/s.
 func formatHashrate(hr float64) string {
 	switch {
 	case hr > 1e12:
@@ -295,22 +276,18 @@ func formatHashrate(hr float64) string {
 	}
 }
 
-// DashboardStats is the main structure for the API response, containing all stats.
 type DashboardStats struct {
-	// [NEW] Generic node info
 	PoolAddress     string  `json:"pool_address"`
 	PoolFee         float64 `json:"pool_fee"`
 	P2PPort         int     `json:"p2p_port"`
 	StratumPort     int     `json:"stratum_port"`
 
-	// Global Stats
 	GlobalNetworkHashrate string  `json:"global_network_hashrate"`
 	P2PoolNetworkHashrate string  `json:"p2pool_network_hashrate"`
 	NetworkDifficulty     float64 `json:"network_difficulty"`
 	BlockReward           float64 `json:"block_reward"`
 	LastBlockFoundAgo     string  `json:"last_block_found_ago"`
 
-	// Pool Stats
 	PoolEfficiency    string `json:"pool_efficiency"`
 	TimeToBlock       string `json:"pool_time_to_block"`
 	PoolSharesTotal   int    `json:"pool_shares_total"`
@@ -318,17 +295,15 @@ type DashboardStats struct {
 	PoolSharesDead    int    `json:"pool_shares_dead"`
 	BlocksFound24h    int    `json:"pool_blocks_found_24h"`
 
-	// Node Stats
 	NodeUptime         string  `json:"node_uptime"`
 	LocalNodeHashrate  string  `json:"local_node_hashrate"`
 	ConnectedMiners    int     `json:"connected_miners"`
 	MinShareDifficulty float64 `json:"min_share_difficulty"`
 	GoRoutines         int     `json:"go_routines"`
 
-	// Lists
 	ActiveMiners []MinerStats      `json:"active_miners"`
 	BlocksFound  []BlockFoundStats `json:"blocks_found_list"`
-	Payouts      []PayoutStats     `json."payouts_list"`
+	Payouts      []PayoutStats     `json:"payouts_list"`
 }
 
 type MinerStats struct {
@@ -337,6 +312,7 @@ type MinerStats struct {
 	RejectedPercentage float64 `json:"rejected_percentage"`
 	ShareDifficulty    float64 `json:"share_difficulty"`
 	AvgTimeToShare     string  `json:"avg_time_to_share"`
+	Payout             float64 `json:"payout_vtc"` // [FIX] Added this field
 	Est24HourPayout    float64 `json:"est_24_hour_payout_vtc"`
 }
 
