@@ -1,536 +1,266 @@
 package work
 
 import (
-	"fmt"
+	"encoding/json"
 	"math/big"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcutil/base58"
-	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
-	"github.com/CADMonkey21/p2pool-go-VTC/wire"
 )
 
-// Each unit of VertHash difficulty represents 2^24 hashes.
-const hashrateConstant = 16777216 // 2^24
+const maxShareAge = 72 * time.Hour
 
-type PeerManager interface {
-	Broadcast(msg wire.P2PoolMessage)
-}
-
-type ChainStats struct {
-	SharesTotal       int
-	SharesOrphan      int
-	SharesDead        int
-	Efficiency        float64
-	PoolHashrate      float64
-	NetworkHashrate   float64
-	NetworkDifficulty float64
-	TimeToBlock       float64
-	CurrentPayout     float64
+type PoolStats struct {
+	PoolHashrate    float64 `json:"pool_hashrate"`
+	NetworkHashrate float64 `json:"network_hashrate"`
+	SharesTotal     int     `json:"shares_total"`
+	SharesOrphan    int     `json:"shares_orphan"`
+	SharesDead      int     `json:"shares_dead"`
+	Efficiency      float64 `json:"efficiency"`
+	TimeToBlock     float64 `json:"time_to_block_seconds"`
 }
 
 type ShareChain struct {
-	SharesChannel      chan []wire.Share
-	NeedShareChannel   chan *chainhash.Hash
-	FoundBlockChan     chan *wire.Share
-	Tip                *ChainShare
-	Tail               *ChainShare
-	AllShares          map[string]*ChainShare
-	AllSharesByPrev    map[string]*ChainShare
-	disconnectedShares []*wire.Share
-	rpcClient          *rpc.Client
-	pm                 PeerManager
-	chainLock          sync.Mutex
+	shares           map[string]*Share
+	mutex            sync.RWMutex
+	rpcClient        *rpc.Client
+	genesisHash      *chainhash.Hash
+	TipHash          *chainhash.Hash
+	FoundBlockChan   chan *Share
+	poolHashrate     float64
+	networkHashrate  float64
+	poolStatsMutex   sync.RWMutex
 }
 
-type ChainShare struct {
-	Share    *wire.Share
-	Previous *ChainShare
-	Next     *ChainShare
-}
-
-func NewShareChain(client *rpc.Client) *ShareChain {
+func NewShareChain(rpcClient *rpc.Client) *ShareChain {
 	sc := &ShareChain{
-		disconnectedShares: make([]*wire.Share, 0),
-		AllSharesByPrev:    make(map[string]*ChainShare),
-		AllShares:          make(map[string]*ChainShare),
-		SharesChannel:      make(chan []wire.Share, 10),
-		NeedShareChannel:   make(chan *chainhash.Hash, 10),
-		FoundBlockChan:     make(chan *wire.Share, 10),
-		rpcClient:          client,
+		shares:         make(map[string]*Share),
+		rpcClient:      rpcClient,
+		FoundBlockChan: make(chan *Share, 100),
 	}
-	go sc.ReadShareChan()
+	nullHash, _ := chainhash.NewHash(make([]byte, 32))
+	sc.genesisHash = nullHash
+	sc.TipHash = nullHash
+	go sc.maintenanceLoop()
 	return sc
 }
 
-func (sc *ShareChain) SetPeerManager(pm PeerManager) {
-	sc.pm = pm
-}
-
-func (sc *ShareChain) ReadShareChan() {
-	for s := range sc.SharesChannel {
-		sc.AddShares(s)
+func (sc *ShareChain) maintenanceLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		sc.PruneOldShares()
+		sc.updateStats()
 	}
 }
 
-func (sc *ShareChain) addChainShare(newChainShare *ChainShare) {
-	sc.AllShares[newChainShare.Share.Hash.String()] = newChainShare
-	if newChainShare.Share.ShareInfo.ShareData.PreviousShareHash != nil {
-		sc.AllSharesByPrev[newChainShare.Share.ShareInfo.ShareData.PreviousShareHash.String()] = newChainShare
-	}
+func (sc *ShareChain) GetShare(hashStr string) *Share {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	return sc.shares[hashStr]
 }
 
-func (sc *ShareChain) resolve(skipCommit bool) {
-	logging.Debugf("Resolving sharechain")
-	if len(sc.disconnectedShares) == 0 {
+func (sc *ShareChain) HasShare(hashStr string) bool {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	_, exists := sc.shares[hashStr]
+	return exists
+}
+
+func (sc *ShareChain) AddShares(newShares []Share) int {
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	added := 0
+	for i := range newShares {
+		s := newShares[i]
+		if s.Hash == nil { continue }
+		hStr := s.Hash.String()
+		if _, exists := sc.shares[hStr]; !exists {
+			sc.shares[hStr] = &s
+			added++
+			sc.updateTip(&s)
+		}
+	}
+	return added
+}
+
+func (sc *ShareChain) updateTip(s *Share) {
+	if sc.TipHash == nil || sc.TipHash.IsEqual(sc.genesisHash) {
+		sc.TipHash = s.Hash
 		return
 	}
-
-	if sc.Tip == nil {
-		if len(sc.disconnectedShares) > 0 {
-			newChainShare := &ChainShare{Share: sc.disconnectedShares[0]}
-			sc.Tip = newChainShare
-			sc.disconnectedShares = sc.disconnectedShares[1:]
-			sc.addChainShare(newChainShare)
-			sc.Tail = sc.Tip
-		}
-	}
-
-	for {
-		extended := false
-		newDisconnectedShares := make([]*wire.Share, 0)
-		for _, s := range sc.disconnectedShares {
-			if _, ok := sc.AllShares[s.Hash.String()]; ok {
-				continue
-			}
-
-			if s.ShareInfo.ShareData.PreviousShareHash == nil {
-				newDisconnectedShares = append(newDisconnectedShares, s)
-				continue
-			}
-
-			if es, ok := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]; ok {
-				newChainShare := &ChainShare{Share: s, Previous: es}
-				es.Next = newChainShare
-				if sc.Tip == nil || es.Share.Hash.IsEqual(sc.Tip.Share.Hash) {
-					sc.Tip = newChainShare
-				}
-				sc.addChainShare(newChainShare)
-				extended = true
-			} else if es, ok := sc.AllSharesByPrev[s.Hash.String()]; ok {
-				newChainShare := &ChainShare{Share: s, Next: es}
-				es.Previous = newChainShare
-				if sc.Tail == nil || es.Share.Hash.IsEqual(sc.Tail.Share.Hash) {
-					sc.Tail = newChainShare
-				}
-				sc.addChainShare(newChainShare)
-				extended = true
-			} else {
-				newDisconnectedShares = append(newDisconnectedShares, s)
-			}
-		}
-
-		sc.disconnectedShares = newDisconnectedShares
-		if !extended || len(sc.disconnectedShares) == 0 {
-			break
-		}
-	}
-
-	if sc.Tip != nil {
-		logging.Debugf("Tip is now %s - disconnected: %d - Length: %d", sc.Tip.Share.Hash.String(), len(sc.disconnectedShares), len(sc.AllShares))
-	}
-
-	if len(sc.AllShares) < config.Active.PPLNSWindow && sc.Tail != nil && sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash != nil && !sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash.IsEqual(&chainhash.Hash{}) {
-		sc.NeedShareChannel <- sc.Tail.Share.ShareInfo.ShareData.PreviousShareHash
+	if s.ShareInfo.AbsHeight > sc.GetShare(sc.TipHash.String()).ShareInfo.AbsHeight {
+		sc.TipHash = s.Hash
 	}
 }
 
-func (sc *ShareChain) commit() error {
-	shares := make([]wire.Share, 0, len(sc.AllShares))
-	s := sc.Tip
-	for s != nil {
-		shares = append(shares, *(s.Share))
-		s = s.Previous
-	}
-
-	f, err := os.Create("sharechain-new.dat")
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if err := wire.WriteShares(f, shares); err != nil {
-		return err
-	}
-
-	if _, err := os.Stat("sharechain.dat"); err == nil {
-		if err := os.Remove("sharechain.dat"); err != nil {
-			return err
+func (sc *ShareChain) PruneOldShares() {
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	cutoff := time.Now().Add(-maxShareAge).Unix()
+	pruned := 0
+	for hStr, s := range sc.shares {
+		if int64(s.ShareInfo.Timestamp) < cutoff {
+			delete(sc.shares, hStr)
+			pruned++
 		}
 	}
-
-	return os.Rename("sharechain-new.dat", "sharechain.dat")
-}
-
-func (sc *ShareChain) Commit() error {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
-	return sc.commit()
+	if pruned > 0 {
+		logging.Debugf("ShareChain: Pruned %d shares older than 72 hours", pruned)
+	}
 }
 
 func (sc *ShareChain) Load() error {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
-
-	if _, err := os.Stat("sharechain.dat"); os.IsNotExist(err) {
-		return nil
-	}
-
-	f, err := os.Open("sharechain.dat")
+	path := "sharechain.json"
+	b, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) { return nil }
 		return err
 	}
-	defer f.Close()
-
-	shares, err := wire.ReadShares(f)
-	if err != nil {
-		return err
-	}
-
-	for i := range shares {
-		s := &shares[i]
-		if err := s.CalculateHash(); err != nil {
-			logging.Warnf("Failed to calculate hash for share on load: %v", err)
-		}
-		// [CRITICAL FIX] Restore the Target big.Int from the Bits field.
-		s.Target = blockchain.CompactToBig(s.MinHeader.Bits)
-	}
-
-	sc.disconnectedShares = make([]*wire.Share, len(shares))
-	for i := range shares {
-		sc.disconnectedShares[i] = &shares[i]
-	}
-
-	logging.Debugf("Loaded %d shares from disk", len(sc.disconnectedShares))
-	sc.resolve(true)
+	var fileShares []Share
+	if err := json.Unmarshal(b, &fileShares); err != nil { return err }
+	sc.AddShares(fileShares)
+	logging.Infof("Loaded %d shares from disk", len(fileShares))
 	return nil
 }
 
-func (sc *ShareChain) AddShares(s []wire.Share) {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
+func (sc *ShareChain) Commit() error {
+	sc.mutex.RLock()
+	sharesToSave := make([]Share, 0, len(sc.shares))
+	for _, s := range sc.shares { sharesToSave = append(sharesToSave, *s) }
+	sc.mutex.RUnlock()
 
-	for i := range s {
-		share := s[i]
-		if share.POWHash == nil {
-			if err := share.CalculateHashes(); err != nil {
-				logging.Warnf("Failed to calculate hashes for new share: %v", err)
-				continue
-			}
-		}
-
-		if _, ok := sc.AllShares[share.Hash.String()]; !ok {
-			sc.disconnectedShares = append(sc.disconnectedShares, &share)
-		}
-	}
-
-	sc.resolve(false)
+	path := "sharechain.json"
+	b, err := json.MarshalIndent(sharesToSave, "", "  ")
+	if err != nil { return err }
+	return os.WriteFile(path, b, 0644)
 }
 
-func (sc *ShareChain) GetTipHash() *chainhash.Hash {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
+func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*Share, error) {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
 
-	if sc.Tip != nil {
-		return sc.Tip.Share.Hash
-	}
-	return &chainhash.Hash{}
-}
+	var payoutShares []*Share
+	currentHash := blockFindShareHash.String()
+	sharesGathered := 0
 
-func (sc *ShareChain) GetStats() ChainStats {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
-
-	stats := ChainStats{
-		SharesOrphan: len(sc.disconnectedShares),
-		SharesTotal:  len(sc.AllShares),
-	}
-
-	netInfo, err := sc.rpcClient.GetMiningInfo()
-	if err != nil {
-		logging.Warnf("Could not get network info from daemon: %v", err)
-	} else {
-		stats.NetworkHashrate = netInfo.NetworkHashPS
-		stats.NetworkDifficulty = netInfo.Difficulty
-	}
-
-	lookbackDuration := 30 * time.Minute
-	startTime := time.Now().Add(-lookbackDuration)
-
-	var deadShares, sharesInWindow int
-
-	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-	maxWorkFloat := new(big.Float).SetInt(maxWork)
-
-	var earliestShareTime time.Time = time.Now()
-
-	stratumWork := new(big.Float)
-	sharesInWindow = 0
-
-	current := sc.Tip
-	for current != nil && time.Unix(int64(current.Share.MinHeader.Timestamp), 0).After(startTime) {
-		sharesInWindow++
-		if current.Share.ShareInfo.ShareData.StaleInfo != wire.StaleInfoNone {
-			deadShares++
+	for sharesGathered < windowSize {
+		share, exists := sc.shares[currentHash]
+		if !exists { break }
+		if share.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+			payoutShares = append(payoutShares, share)
+			sharesGathered++
 		}
-
-		shareTarget := current.Share.Target
-		if shareTarget == nil || shareTarget.Sign() <= 0 {
-			current = current.Previous
-			continue
+		if share.ShareInfo.ShareData.PreviousShareHash == nil || share.ShareInfo.ShareData.PreviousShareHash.IsEqual(sc.genesisHash) {
+			break
 		}
-		shareTargetFloat := new(big.Float).SetInt(shareTarget)
-		if shareTargetFloat.Sign() <= 0 {
-			current = current.Previous
-			continue
-		}
-
-		diff := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
-		stratumWork.Add(stratumWork, diff)
-
-		t := time.Unix(int64(current.Share.MinHeader.Timestamp), 0)
-		if t.Before(earliestShareTime) {
-			earliestShareTime = t
-		}
-
-		current = current.Previous
+		currentHash = share.ShareInfo.ShareData.PreviousShareHash.String()
 	}
-
-	stats.SharesDead = deadShares
-	if sharesInWindow > 0 {
-		stats.Efficiency = 100 * (1 - (float64(stats.SharesDead) / float64(sharesInWindow)))
-	} else if stats.SharesOrphan == 0 && stats.SharesTotal > 0 {
-		stats.Efficiency = 100.0
-	}
-
-	elapsedSeconds := lookbackDuration.Seconds()
-	if sharesInWindow > 0 {
-		measured := time.Since(earliestShareTime).Seconds()
-		if measured < 1.0 {
-			measured = 1.0
-		} else if measured > lookbackDuration.Seconds() {
-			measured = lookbackDuration.Seconds()
-		}
-		elapsedSeconds = measured
-	}
-
-	stats.PoolHashrate = 0.0
-	if stratumWork.Sign() > 0 && elapsedSeconds > 0 {
-		hashrateFloat := new(big.Float).Quo(stratumWork, big.NewFloat(elapsedSeconds))
-		hashrateFloat.Mul(hashrateFloat, big.NewFloat(hashrateConstant)) // <-- Multiply by constant
-		stats.PoolHashrate, _ = hashrateFloat.Float64()
-	}
-
-	if stats.PoolHashrate > 0 && stats.NetworkHashrate > 0 {
-		stats.TimeToBlock = (stats.NetworkHashrate / stats.PoolHashrate) * 150
-	} else {
-		stats.TimeToBlock = 0
-	}
-
-	logging.Debugf("[DIAG] GetStats: sharesWindow=%d earliest=%v elapsed=%.2fs totalDifficulty(stratum)=%s maxWork=%s poolHashrate=%.6f H/s",
-		sharesInWindow,
-		earliestShareTime.Format(time.RFC3339),
-		elapsedSeconds,
-		stratumWork.String(),
-		maxWork.Text(16),
-		stats.PoolHashrate,
-	)
-
-	stats.CurrentPayout = 0.0
-	return stats
-}
-
-func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*wire.Share, error) {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
-
-	startShare, ok := sc.AllShares[blockFindShareHash.String()]
-	if !ok {
-		return nil, fmt.Errorf("block-finding share %s not found in chain", blockFindShareHash.String())
-	}
-
-	payoutShares := make([]*wire.Share, 0, windowSize)
-	current := startShare
-	for i := 0; i < windowSize && current != nil; i++ {
-		payoutShares = append(payoutShares, current.Share)
-		current = current.Previous
-	}
-
 	return payoutShares, nil
 }
 
-// [MODIFIED] Uses big.Float to prevent truncation of low-difficulty shares
-func (sc *ShareChain) GetProjectedPayouts(limit int) (map[string]float64, error) {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
-
-	// logging.Debugf("[DIAG] PayoutCalc: Starting calculation...")
-
-	tip := sc.Tip
-	if tip == nil {
-		// logging.Debugf("[DIAG] PayoutCalc: ABORT - Tip is nil")
-		return nil, fmt.Errorf("sharechain has no tip, cannot calculate payouts")
-	}
-
-	windowSize := config.Active.PPLNSWindow
-	if windowSize <= 0 {
-		// logging.Warnf("[DIAG] PayoutCalc: Configured PPLNSWindow is %d (invalid). Defaulting to 8640.", windowSize)
-		windowSize = 8640
-	}
-
-	payoutShares := make([]*wire.Share, 0, windowSize)
-	current := tip
-	for i := 0; i < windowSize && current != nil; i++ {
-		payoutShares = append(payoutShares, current.Share)
-		current = current.Previous
-	}
-
-	// logging.Debugf("[DIAG] PayoutCalc: Found %d shares in window for processing", len(payoutShares))
-
-	payouts := make(map[string]*big.Float) // Changed to map of big.Float pointers
-	totalWorkInWindow := new(big.Float)
+func (sc *ShareChain) updateStats() {
+	sc.mutex.RLock()
 	
-	maxWork, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-	maxWorkFloat := new(big.Float).SetInt(maxWork) // Pre-convert maxWork to Float
+	// Quick slice so we can release lock
+	shares := make([]*Share, 0, len(sc.shares))
+	for _, s := range sc.shares { shares = append(shares, s) }
+	sc.mutex.RUnlock()
 
-	for _, share := range payoutShares {
-		shareTarget := share.Target
-		if shareTarget == nil || shareTarget.Sign() <= 0 {
-			continue
-		}
-		shareTargetFloat := new(big.Float).SetInt(shareTarget)
-		
-		// work = maxWork / shareTarget
-		work := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
-		totalWorkInWindow.Add(totalWorkInWindow, work)
-	}
+	orphanCount := 0
+	doaCount := 0
 
-	// logging.Debugf("[DIAG] PayoutCalc: Total Work in Window = %s", totalWorkInWindow.String())
+	now := time.Now().Unix()
+	cutoff24h := now - (24 * 3600)
+	var work24h float64
 
-	if totalWorkInWindow.Sign() <= 0 {
-		// logging.Debugf("[DIAG] PayoutCalc: ABORT - Total work is zero")
-		return make(map[string]float64), nil
-	}
+	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
-	totalPayout := uint64(12.5 * 1e8)
-	if tip.Share != nil && tip.Share.ShareInfo.ShareData.Subsidy > 0 {
-		totalPayout = tip.Share.ShareInfo.ShareData.Subsidy
-	}
-
-	feePercentage := config.Active.Fee / 100.0
-	amountToDistribute := totalPayout - uint64(float64(totalPayout)*feePercentage)
-	amountToDistributeFloat := new(big.Float).SetUint64(amountToDistribute)
-
-	for _, share := range payoutShares {
-		if share.ShareInfo.ShareData.PubKeyHash == nil || len(share.ShareInfo.ShareData.PubKeyHash) == 0 {
-			continue
+	for _, s := range shares {
+		switch s.ShareInfo.ShareData.StaleInfo {
+		case StaleInfoOrphan: orphanCount++
+		case StaleInfoDOA: doaCount++
 		}
 
-		var address string
-		var err error
-		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 { // Bech32
-			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
-			if err != nil {
-				logging.Warnf("Could not convert bits for bech32 payout: %v", err)
-				continue
-			}
-			hrp := "vtc"
-			if config.Active.Testnet {
-				hrp = "tvtc"
-			}
-			address, err = bech32.Encode(hrp, append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
-		} else { // Legacy Base58
-			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
-		}
-
-		if err != nil {
-			logging.Warnf("Could not re-encode address: %v", err)
-			continue
-		}
-
-		shareTarget := share.Target
-		if shareTarget == nil || shareTarget.Sign() <= 0 {
-			continue
-		}
-		
-		shareTargetFloat := new(big.Float).SetInt(shareTarget)
-		work := new(big.Float).Quo(maxWorkFloat, shareTargetFloat)
-
-		// payoutAmount = (amountToDistribute * work) / totalWorkInWindow
-		payoutAmount := new(big.Float).Mul(amountToDistributeFloat, work)
-		payoutAmount.Quo(payoutAmount, totalWorkInWindow)
-
-		if _, exists := payouts[address]; !exists {
-			payouts[address] = new(big.Float)
-		}
-		payouts[address].Add(payouts[address], payoutAmount)
-	}
-
-	finalPayouts := make(map[string]float64)
-	for addr, amountSatoshisFloat := range payouts {
-		f64, _ := amountSatoshisFloat.Float64()
-		finalPayouts[addr] = f64 / 100000000.0
-		// logging.Debugf("[DIAG] PayoutCalc: Address %s has accumulated %.8f VTC", addr, finalPayouts[addr])
-	}
-
-	return finalPayouts, nil
-}
-
-func (sc *ShareChain) GetProjectedPayoutForAddress(address string) (float64, error) {
-	allPayouts, err := sc.GetProjectedPayouts(0)
-	if err != nil {
-		return 0, err
-	}
-	return allPayouts[address], nil
-}
-
-func (sc *ShareChain) GetShare(hashStr string) *wire.Share {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
-	if cs, ok := sc.AllShares[hashStr]; ok {
-		return cs.Share
-	}
-	return nil
-}
-
-func (sc *ShareChain) GetNeededHashes() []*chainhash.Hash {
-	sc.chainLock.Lock()
-	defer sc.chainLock.Unlock()
-
-	needed := make(map[chainhash.Hash]bool)
-	for _, s := range sc.disconnectedShares {
-		if s.ShareInfo.ShareData.PreviousShareHash != nil {
-			if _, exists := sc.AllShares[s.ShareInfo.ShareData.PreviousShareHash.String()]; !exists {
-				needed[*s.ShareInfo.ShareData.PreviousShareHash] = true
+		if int64(s.ShareInfo.Timestamp) > cutoff24h && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+			if s.Target != nil && s.Target.Sign() > 0 {
+				difficulty := new(big.Int).Div(maxTarget, s.Target)
+				diffFloat, _ := difficulty.Float64()
+				work24h += diffFloat
 			}
 		}
 	}
 
-	if len(needed) == 0 {
-		return nil
-	}
+	sc.poolStatsMutex.Lock()
+	sc.poolHashrate = (work24h * 16777216) / float64(24*3600)
 
-	hashes := make([]*chainhash.Hash, 0, len(needed))
-	for h := range needed {
-		hashCopy := h
-		hashes = append(hashes, &hashCopy)
+	info, err := sc.rpcClient.GetMiningInfo()
+	if err == nil {
+		sc.networkHashrate = info.NetworkHashPS
 	}
-	return hashes
+	sc.poolStatsMutex.Unlock()
+}
+
+func (sc *ShareChain) GetStats() PoolStats {
+	sc.mutex.RLock()
+	total := len(sc.shares)
+	sc.mutex.RUnlock()
+
+	orphan := 0
+	doa := 0
+	sc.mutex.RLock()
+	for _, s := range sc.shares {
+		switch s.ShareInfo.ShareData.StaleInfo {
+		case StaleInfoOrphan: orphan++
+		case StaleInfoDOA: doa++
+		}
+	}
+	sc.mutex.RUnlock()
+
+	eff := 100.0
+	if total > 0 { eff = float64(total-orphan-doa) / float64(total) * 100.0 }
+
+	sc.poolStatsMutex.RLock()
+	pH := sc.poolHashrate
+	nH := sc.networkHashrate
+	sc.poolStatsMutex.RUnlock()
+
+	ttb := 0.0
+	if pH > 0 && nH > 0 { ttb = (nH / pH) * 150.0 }
+
+	return PoolStats{
+		PoolHashrate:    pH,
+		NetworkHashrate: nH,
+		SharesTotal:     total,
+		SharesOrphan:    orphan,
+		SharesDead:      doa,
+		Efficiency:      eff,
+		TimeToBlock:     ttb,
+	}
+}
+
+func (sc *ShareChain) GetRecentShares(count int) ([]*Share, error) {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+
+	shareList := make([]*Share, 0, len(sc.shares))
+	for _, s := range sc.shares { shareList = append(shareList, s) }
+
+	sort.Slice(shareList, func(i, j int) bool {
+		return shareList[i].ShareInfo.Timestamp > shareList[j].ShareInfo.Timestamp
+	})
+
+	if count > len(shareList) { count = len(shareList) }
+	return shareList[:count], nil
+}
+
+func (sc *ShareChain) GetTipHash() *chainhash.Hash {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	return sc.TipHash
 }

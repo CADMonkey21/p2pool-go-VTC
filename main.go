@@ -59,7 +59,6 @@ func formatDuration(sec float64) string {
 	}
 }
 
-// [MODIFIED] This function now matches the web dashboard's "ago" formatting
 func formatDurationAgo(t time.Time) string {
 	if t.IsZero() {
 		return "Never"
@@ -77,22 +76,25 @@ func formatDurationAgo(t time.Time) string {
 	}
 }
 
-func logStats(pm *p2p.PeerManager, sc *work.ShareChain, ss *stratum.StratumServer) {
+func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer) {
 	ticker := time.NewTicker(30 * time.Second)
 	for range ticker.C {
 		stats := sc.GetStats()
 		localHashrate := ss.GetLocalHashrate()
 
-		// --- [NEW] Get additional stats for logging ---
-		// [FIX] Use the public getter method
 		workManager := ss.GetWorkManager()
 		connectedMiners := len(ss.GetClients())
 		blocksFound24h := workManager.GetBlocksFoundInLast(24 * time.Hour)
 		lastBlockFoundTime := workManager.GetLastBlockFoundTime()
-		// --- [END NEW] ---
+
+		// Get peer count from libp2p Host
+		peerCount := 0
+		if p2pNode != nil {
+			peerCount = len(p2pNode.Host.Network().Peers())
+		}
 
 		logging.Infof("================================= Stats Update =================================")
-		logging.Infof("Peers: %d  |  Miners: %d  |  GoRoutines: %d", pm.GetPeerCount(), connectedMiners, runtime.NumGoroutine())
+		logging.Infof("Peers: %d  |  Miners: %d  |  GoRoutines: %d", peerCount, connectedMiners, runtime.NumGoroutine())
 		logging.Infof("--------------------------------------------------------------------------------")
 		logging.Infof("P2Pool Network Hashrate: %s (%.2f%% efficient)", formatHashrate(stats.PoolHashrate), stats.Efficiency)
 		logging.Infof("Your Node's Hashrate: %s", formatHashrate(localHashrate))
@@ -113,7 +115,7 @@ func main() {
 	startTime := time.Now()
 
 	/* ----- start-up & logging ---------------------------------------- */
-	logging.Infof("🚀  p2pool-go (single-port build) starting up")
+	logging.Infof("🚀  p2pool-go (GossipSub mesh) starting up")
 
 	logFile, _ := os.OpenFile("p2pool.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
 	defer logFile.Close()
@@ -132,7 +134,7 @@ func main() {
 	case "error":
 		logging.SetLogLevel(0)
 	default:
-		logging.SetLogLevel(2) // Default to Info
+		logging.SetLogLevel(2)
 	}
 
 	verthashEngine, err := verthash.New(config.Active.VerthashDatFile)
@@ -146,10 +148,6 @@ func main() {
 	rpcClient := rpc.NewClient(config.Active)
 	sc := work.NewShareChain(rpcClient)
 
-	/* ----- peer network --------------------------------------------- */
-	pm := p2p.NewPeerManager(p2pnet.ActiveNetwork, sc)
-	go pm.ListenForPeers()
-
 	if err := sc.Load(); err != nil {
 		logging.Fatalf("MAIN: Failed to load sharechain: %v", err)
 	}
@@ -159,51 +157,30 @@ func main() {
 	go workManager.WatchMaturedBlocks()
 	go workManager.WatchFoundBlocks()
 
-	/* ----- BLOCKING LOGIC WITHOUT TIMEOUT --------------------------- */
-	//
-	// [MODIFIED] This block now includes a configurable timeout
-	//
-	if !config.Active.SoloMode {
-		// [NEW] Set up a timeout for P2P sync
-		var timeoutChan <-chan time.Time
-		if config.Active.P2PSyncTimeout > 0 {
-			logging.Infof("MAIN: Waiting for P2P sync... (timeout: %d seconds)", config.Active.P2PSyncTimeout)
-			timeoutChan = time.After(time.Duration(config.Active.P2PSyncTimeout) * time.Second)
-			
-			// [MODIFIED] Log message now includes the timeout duration
-			logging.Warnf("MAIN: Stratum server (for miners) is PAUSED until P2P sync is complete or the %d second timeout is reached.", config.Active.P2PSyncTimeout)
-		} else {
-			logging.Infof("MAIN: Waiting for P2P sync... (no timeout)")
-			// [MODIFIED] Log message for the "wait forever" case
-			logging.Warnf("MAIN: Stratum server (for miners) is PAUSED until P2P sync is complete.")
-			// nil channel blocks forever, preserving original behavior
-		}
-
-		select {
-		case <-pm.SyncedChannel():
-			// This is the normal, successful sync
-			logging.Infof("MAIN: ✅ Sync complete! Starting Stratum server and web UI.")
-		case <-timeoutChan:
-			// This is the new timeout case
-			logging.Warnf("MAIN: P2P sync TIMEOUT. No peers found after %d seconds.", config.Active.P2PSyncTimeout)
-			logging.Warnf("MAIN: Starting in solo mode automatically to allow miners to connect.")
-			// Manually force the PeerManager into a "synced" state
-			// This is crucial so the Stratum server's authorization check passes.
-			pm.ForceSyncState(true)
-			logging.Infof("MAIN: ✅ Sync FAKED! Starting Stratum server and web UI.")
-		}
-	} else {
-		logging.Warnf("MAIN: SoloMode=true. Bypassing P2P sync check.")
-		logging.Warnf("MAIN: This node will act as the FIRST node on a new network.")
-		// Manually force the PeerManager into a "synced" state.
-		// This is crucial so the Stratum server's authorization check passes.
-		pm.ForceSyncState(true)
-		logging.Infof("MAIN: ✅ Sync FAKED! Starting Stratum server and web UI.")
+	/* ----- NEW LIBP2P NETWORKING ------------------------------------ */
+	// Initialize the new P2P Node on port 4001 (or any port you prefer)
+	p2pNode, err := p2p.NewNode(4001)
+	if err != nil {
+		logging.Fatalf("Failed to start p2p networking: %v", err)
 	}
+	defer p2pNode.Close()
+
+	// Connect to the mesh (Leave empty for local testing, add IPs later)
+	bootstrapPeers := []string{}
+	go p2pNode.Bootstrap(bootstrapPeers)
+
+	// Listen for shares coming from the network
+	go func() {
+		for shareBytes := range p2pNode.IncomingShares {
+			// Right now, just print it so we know it works!
+			// Later we will deserialize this and pass it to verthash.
+			logging.Infof("Received remote share over GossipSub: %s", string(shareBytes))
+		}
+	}()
 	/* ---------------------------------------------------------------- */
 
 	/* ----- Stratum server instance ---------------------------------- */
-	stratumSrv := stratum.NewStratumServer(workManager, pm)
+	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 
 	/* =================================================================
 	   Single TCP listener, multiplexed via cmux
@@ -218,20 +195,15 @@ func main() {
 	httpL := m.Match(cmux.HTTP1Fast())
 	stratumL := m.Match(cmux.Any())
 
-	// [NEW] Create a new HTTP router (ServeMux)
 	mux := http.NewServeMux()
 
-	// [NEW] Create the handler for the JSON API
-	apiHandler := web.NewDashboard(workManager, pm, stratumSrv, startTime)
+	// NOTE: Passing 'nil' for the old PeerManager argument temporarily to prevent compiler crashes.
+	// We will update the Dashboard to read from p2pNode next!
+	apiHandler := web.NewDashboard(workManager, nil, stratumSrv, startTime)
 	
-	// [NEW] Serve the JSON API at the /api/stats endpoint
 	mux.Handle("/api/stats", apiHandler)
-	
-	// [NEW] Serve the static files from the ./web/static directory at the root ("/")
-	// This will look for files like 'index.html', 'main.css', etc.
 	mux.Handle("/", http.FileServer(http.Dir("./web/static")))
 
-	// [MODIFIED] Use the new 'mux' router as the handler
 	httpSrv := &http.Server{
 		Handler: mux,
 	}
@@ -245,7 +217,7 @@ func main() {
 	}()
 
 	/* ----- misc goroutines & shutdown handler ----------------------- */
-	go logStats(pm, sc, stratumSrv)
+	go logStats(p2pNode, sc, stratumSrv)
 
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
