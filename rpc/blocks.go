@@ -17,11 +17,21 @@ type BlockInfo struct {
 	Height        int32  `json:"height"`
 }
 
-// GetBlockTemplate now returns the raw JSON result.
+// GetBlockTemplate requests the latest block template from Vertcoin Core.
+// It explicitly passes the required "segwit" rule.
 func (c *Client) GetBlockTemplate() (json.RawMessage, error) {
-	params := []interface{}{
-		map[string][]string{"rules": {"segwit", "taproot"}},
+	// Define the exact JSON structure the daemon expects
+	type TemplateRequest struct {
+		Rules []string `json:"rules"`
 	}
+
+	// Populate it with the mandatory segwit rule
+	reqData := TemplateRequest{
+		Rules: []string{"segwit"},
+	}
+
+	// Wrap it in the params array for the JSON-RPC call
+	params := []interface{}{reqData}
 
 	resp, err := c.Call("getblocktemplate", params)
 	if err != nil {

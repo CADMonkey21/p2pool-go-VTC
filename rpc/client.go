@@ -100,6 +100,9 @@ func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error)
 
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("Content-Type", "application/json")
+	
+	// [NEW] Tells Go to close the connection after the request, preventing Keep-Alive EOF errors
+	req.Close = true 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -112,10 +115,15 @@ func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error)
 		return nil, err
 	}
 
+	// Catch HTTP errors before trying to parse JSON
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP Error %d: %s (Check your rpcuser/rpcpass and rpcallowip)", resp.StatusCode, string(body))
+	}
+
 	var rpcResp RPCResponse
 	err = json.Unmarshal(body, &rpcResp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal RPC response: %s", body)
+		return nil, fmt.Errorf("JSON parse failed. HTTP %d. Error: %v | Body: %s", resp.StatusCode, err, string(body))
 	}
 
 	if rpcResp.Error != nil {

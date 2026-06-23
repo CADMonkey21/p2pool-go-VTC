@@ -81,9 +81,11 @@ func (sc *ShareChain) AddShares(newShares []Share) int {
 		if s.Hash == nil { continue }
 		hStr := s.Hash.String()
 		if _, exists := sc.shares[hStr]; !exists {
-			sc.shares[hStr] = &s
+			// [FIX] Force memory allocation to prevent map pointer corruption
+			shareCopy := s 
+			sc.shares[hStr] = &shareCopy
 			added++
-			sc.updateTip(&s)
+			sc.updateTip(&shareCopy)
 		}
 	}
 	return added
@@ -94,7 +96,9 @@ func (sc *ShareChain) updateTip(s *Share) {
 		sc.TipHash = s.Hash
 		return
 	}
-	if s.ShareInfo.AbsHeight > sc.GetShare(sc.TipHash.String()).ShareInfo.AbsHeight {
+	
+	currentTip := sc.shares[sc.TipHash.String()]
+	if currentTip != nil && s.ShareInfo.AbsHeight > currentTip.ShareInfo.AbsHeight {
 		sc.TipHash = s.Hash
 	}
 }
@@ -167,7 +171,6 @@ func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, win
 func (sc *ShareChain) updateStats() {
 	sc.mutex.RLock()
 	
-	// Quick slice so we can release lock
 	shares := make([]*Share, 0, len(sc.shares))
 	for _, s := range sc.shares { shares = append(shares, s) }
 	sc.mutex.RUnlock()
@@ -196,12 +199,16 @@ func (sc *ShareChain) updateStats() {
 		}
 	}
 
+	info, err := sc.rpcClient.GetMiningInfo()
+	netHash := 0.0
+	if err == nil {
+		netHash = info.NetworkHashPS
+	}
+
 	sc.poolStatsMutex.Lock()
 	sc.poolHashrate = (work24h * 16777216) / float64(24*3600)
-
-	info, err := sc.rpcClient.GetMiningInfo()
 	if err == nil {
-		sc.networkHashrate = info.NetworkHashPS
+		sc.networkHashrate = netHash
 	}
 	sc.poolStatsMutex.Unlock()
 }
