@@ -90,7 +90,7 @@ type StratumServer struct {
 	clients             map[uint64]*Client
 	clientsMutex        sync.RWMutex
 	lastJob             *Job
-	latestPrevBlockHash *chainhash.Hash 
+	latestPrevBlockHash *chainhash.Hash
 	lastJobMutex        sync.RWMutex
 }
 
@@ -181,7 +181,7 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 func (s *StratumServer) dropClient(c *Client) {
 	if c.closed.Load() { return }
 	c.closed.Store(true)
-	
+
 	c.Conn.Close()
 
 	s.clientsMutex.Lock()
@@ -211,12 +211,12 @@ func (s *StratumServer) jobBroadcaster() {
 		masterParams := buildMasterNotifyParams(&jobTemplate)
 
 		newJob := &Job{
-			ID:                   fmt.Sprintf("%d", newJobID),
-			BlockTemplate:        &jobTemplate, 
-			WitnessCommitment:    witnessCommitment.CloneBytes(),
-			WTXIDMerkleRoot:      wtxidMerkleRoot,
-			TXIDMerkleLink:       merkleLinkBranches,
-			CoinbaseMerkleLink:   merkleLinkBranches,
+			ID:                 fmt.Sprintf("%d", newJobID),
+			BlockTemplate:      &jobTemplate,
+			WitnessCommitment:  witnessCommitment.CloneBytes(),
+			WTXIDMerkleRoot:    wtxidMerkleRoot,
+			TXIDMerkleLink:     merkleLinkBranches,
+			CoinbaseMerkleLink: merkleLinkBranches,
 		}
 		s.lastJobMutex.Lock()
 		s.lastJob = newJob
@@ -248,6 +248,8 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 		client.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 		var req JSONRPCRequest
 		if err := decoder.Decode(&req); err != nil { return }
+		
+		// This updates the timer used by our new Idle Watcher
 		client.LastActivity = time.Now()
 
 		switch req.Method {
@@ -304,7 +306,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	jobPrevHash, _ := chainhash.NewHashFromStr(job.BlockTemplate.PreviousBlockHash)
 	if latestPrevHash != nil && !jobPrevHash.IsEqual(latestPrevHash) {
 		isStale = true
-		newShare.ShareInfo.ShareData.StaleInfo = 255 
+		newShare.ShareInfo.ShareData.StaleInfo = 255
 	}
 
 	accepted, reason := newShare.IsValid()
@@ -318,7 +320,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		c.Mutex.Unlock()
 
 		c.LocalRateMonitor.AddDatum(ShareDatum{Work: jobDifficulty, WorkerName: c.WorkerName})
-		
+
 		go func(share work.Share) {
 			s.workManager.ShareChain.AddShares([]work.Share{share})
 			shareBytes, err := json.Marshal(share)
@@ -401,35 +403,51 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	_ = c.send(JSONRPCResponse{Method: "mining.set_difficulty", Params: []interface{}{diff}})
 }
 
-// [CRITICAL FIX] Mathematically constrained Vardiff loop to prevent Death Spirals
+// [CRITICAL FIX] Mathematically constrained Vardiff loop with Time-Decay and Max Cap
 func (s *StratumServer) vardiffLoop(c *Client) {
-	ticker := time.NewTicker(time.Duration(config.Active.Vardiff.RetargetTime) * time.Second)
+	retargetSecs := time.Duration(config.Active.Vardiff.RetargetTime) * time.Second
+	ticker := time.NewTicker(retargetSecs)
 	defer ticker.Stop()
+
+	maxDiff := 10000.0 // Hard ceiling to prevent infinite scaling loops
 
 	for {
 		<-ticker.C
 		if c.closed.Load() { return }
 
 		c.Mutex.Lock()
-		if !c.Authorized { 
+		if !c.Authorized {
 			c.Mutex.Unlock()
-			continue 
+			continue
 		}
 
-		datums, span := c.LocalRateMonitor.GetDatumsInLast(c.LocalRateMonitor.maxLookbackTime)
-		
-		// If miner goes completely silent, smoothly halve the difficulty to bring them back to life
-		if len(datums) < 2 {
-			newDiff := c.CurrentDifficulty * 0.5
-			if newDiff < config.Active.Vardiff.MinDiff { 
-				newDiff = config.Active.Vardiff.MinDiff 
+		// --- TIME DECAY (IDLE WATCHER) ---
+		// If the miner hasn't communicated in longer than the retarget window,
+		// they are struggling. We must decay the difficulty and skip the frozen average math.
+		idleTime := time.Since(c.LastActivity)
+		if idleTime > retargetSecs {
+			newDiff := c.CurrentDifficulty * 0.5 // Halve the difficulty
+
+			if newDiff < config.Active.Vardiff.MinDiff {
+				newDiff = config.Active.Vardiff.MinDiff
 			}
+
 			curDiff := c.CurrentDifficulty
 			c.Mutex.Unlock()
 
+			// Only push the new difficulty if it actually changed
 			if newDiff < curDiff {
 				s.sendDifficulty(c, newDiff)
 			}
+			continue // Skip normal rolling average calculation!
+		}
+
+		// --- ROLLING AVERAGE CALCULATION ---
+		datums, span := c.LocalRateMonitor.GetDatumsInLast(c.LocalRateMonitor.maxLookbackTime)
+
+		// We need at least 2 datums to calculate a meaningful time span
+		if len(datums) < 2 {
+			c.Mutex.Unlock()
 			continue
 		}
 
@@ -439,24 +457,30 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 		ratio := float64(config.Active.Vardiff.TargetTime) / avgTime
 
 		// Clamp the jump multiplier. It can NEVER increase more than 1.5x or decrease more than 0.5x.
-		// This mathematically prevents the massive 300x spikes that were silencing the miner.
-		if ratio > 1.5 { 
-			ratio = 1.5 
-		} else if ratio < 0.5 { 
-			ratio = 0.5 
+		if ratio > 1.5 {
+			ratio = 1.5
+		} else if ratio < 0.5 {
+			ratio = 0.5
 		}
 
 		newDiff := c.CurrentDifficulty * ratio
 
-		if newDiff < config.Active.Vardiff.MinDiff { 
-			newDiff = config.Active.Vardiff.MinDiff 
+		// Enforce Floors and Ceilings
+		if newDiff < config.Active.Vardiff.MinDiff {
+			newDiff = config.Active.Vardiff.MinDiff
 		}
-		
+		if newDiff > maxDiff {
+			newDiff = maxDiff
+		}
+
 		curDiff := c.CurrentDifficulty
 		c.Mutex.Unlock()
 
 		// Apply the variance buffer to avoid spamming the miner with micro-adjustments
-		if newDiff/curDiff > 1.0+config.Active.Vardiff.Variance || newDiff/curDiff < 1.0-config.Active.Vardiff.Variance {
+		varianceUpper := 1.0 + config.Active.Vardiff.Variance
+		varianceLower := 1.0 - config.Active.Vardiff.Variance
+		
+		if (newDiff/curDiff) > varianceUpper || (newDiff/curDiff) < varianceLower {
 			s.sendDifficulty(c, newDiff)
 		}
 	}
@@ -490,7 +514,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 
 	params := make([]interface{}, 9)
 	params[0] = jobID
-	copy(params[1:8], masterParams) 
+	copy(params[1:8], masterParams)
 	params[8] = clean
 
 	if err := c.send(JSONRPCResponse{Method: "mining.notify", Params: params}); err != nil {
