@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 const maxShareAge = 72 * time.Hour
@@ -26,15 +26,15 @@ type PoolStats struct {
 }
 
 type ShareChain struct {
-	shares           map[string]*Share
-	mutex            sync.RWMutex
-	rpcClient        *rpc.Client
-	genesisHash      *chainhash.Hash
-	TipHash          *chainhash.Hash
-	FoundBlockChan   chan *Share
-	poolHashrate     float64
-	networkHashrate  float64
-	poolStatsMutex   sync.RWMutex
+	shares          map[string]*Share
+	mutex           sync.RWMutex
+	rpcClient       *rpc.Client
+	genesisHash     *chainhash.Hash
+	TipHash         *chainhash.Hash
+	FoundBlockChan  chan *Share
+	poolHashrate    float64
+	networkHashrate float64
+	poolStatsMutex  sync.RWMutex
 }
 
 func NewShareChain(rpcClient *rpc.Client) *ShareChain {
@@ -78,11 +78,12 @@ func (sc *ShareChain) AddShares(newShares []Share) int {
 	added := 0
 	for i := range newShares {
 		s := newShares[i]
-		if s.Hash == nil { continue }
+		if s.Hash == nil {
+			continue
+		}
 		hStr := s.Hash.String()
 		if _, exists := sc.shares[hStr]; !exists {
-			// [FIX] Force memory allocation to prevent map pointer corruption
-			shareCopy := s 
+			shareCopy := s
 			sc.shares[hStr] = &shareCopy
 			added++
 			sc.updateTip(&shareCopy)
@@ -96,7 +97,7 @@ func (sc *ShareChain) updateTip(s *Share) {
 		sc.TipHash = s.Hash
 		return
 	}
-	
+
 	currentTip := sc.shares[sc.TipHash.String()]
 	if currentTip != nil && s.ShareInfo.AbsHeight > currentTip.ShareInfo.AbsHeight {
 		sc.TipHash = s.Hash
@@ -123,11 +124,15 @@ func (sc *ShareChain) Load() error {
 	path := "sharechain.json"
 	b, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) { return nil }
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	var fileShares []Share
-	if err := json.Unmarshal(b, &fileShares); err != nil { return err }
+	if err := json.Unmarshal(b, &fileShares); err != nil {
+		return err
+	}
 	sc.AddShares(fileShares)
 	logging.Infof("Loaded %d shares from disk", len(fileShares))
 	return nil
@@ -136,12 +141,16 @@ func (sc *ShareChain) Load() error {
 func (sc *ShareChain) Commit() error {
 	sc.mutex.RLock()
 	sharesToSave := make([]Share, 0, len(sc.shares))
-	for _, s := range sc.shares { sharesToSave = append(sharesToSave, *s) }
+	for _, s := range sc.shares {
+		sharesToSave = append(sharesToSave, *s)
+	}
 	sc.mutex.RUnlock()
 
 	path := "sharechain.json"
 	b, err := json.MarshalIndent(sharesToSave, "", "  ")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(path, b, 0644)
 }
 
@@ -155,7 +164,9 @@ func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, win
 
 	for sharesGathered < windowSize {
 		share, exists := sc.shares[currentHash]
-		if !exists { break }
+		if !exists {
+			break
+		}
 		if share.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
 			payoutShares = append(payoutShares, share)
 			sharesGathered++
@@ -170,31 +181,35 @@ func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, win
 
 func (sc *ShareChain) updateStats() {
 	sc.mutex.RLock()
-	
 	shares := make([]*Share, 0, len(sc.shares))
-	for _, s := range sc.shares { shares = append(shares, s) }
+	for _, s := range sc.shares {
+		shares = append(shares, s)
+	}
 	sc.mutex.RUnlock()
 
 	orphanCount := 0
 	doaCount := 0
 
 	now := time.Now().Unix()
-	cutoff24h := now - (24 * 3600)
-	var work24h float64
+	windowSeconds := float64(3600) // 1-hour responsive window
+	cutoffWindow := now - int64(windowSeconds)
+	var workWindow float64
 
 	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 
 	for _, s := range shares {
 		switch s.ShareInfo.ShareData.StaleInfo {
-		case StaleInfoOrphan: orphanCount++
-		case StaleInfoDOA: doaCount++
+		case StaleInfoOrphan:
+			orphanCount++
+		case StaleInfoDOA:
+			doaCount++
 		}
 
-		if int64(s.ShareInfo.Timestamp) > cutoff24h && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+		if int64(s.ShareInfo.Timestamp) > cutoffWindow && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
 			if s.Target != nil && s.Target.Sign() > 0 {
 				difficulty := new(big.Int).Div(maxTarget, s.Target)
 				diffFloat, _ := difficulty.Float64()
-				work24h += diffFloat
+				workWindow += diffFloat
 			}
 		}
 	}
@@ -206,7 +221,9 @@ func (sc *ShareChain) updateStats() {
 	}
 
 	sc.poolStatsMutex.Lock()
-	sc.poolHashrate = (work24h * 16777216) / float64(24*3600)
+	calculatedHashrate := (workWindow * 16777216) / windowSeconds
+	sc.poolHashrate = calculatedHashrate
+
 	if err == nil {
 		sc.networkHashrate = netHash
 	}
@@ -223,14 +240,18 @@ func (sc *ShareChain) GetStats() PoolStats {
 	sc.mutex.RLock()
 	for _, s := range sc.shares {
 		switch s.ShareInfo.ShareData.StaleInfo {
-		case StaleInfoOrphan: orphan++
-		case StaleInfoDOA: doa++
+		case StaleInfoOrphan:
+			orphan++
+		case StaleInfoDOA:
+			doa++
 		}
 	}
 	sc.mutex.RUnlock()
 
 	eff := 100.0
-	if total > 0 { eff = float64(total-orphan-doa) / float64(total) * 100.0 }
+	if total > 0 {
+		eff = float64(total-orphan-doa) / float64(total) * 100.0
+	}
 
 	sc.poolStatsMutex.RLock()
 	pH := sc.poolHashrate
@@ -238,7 +259,9 @@ func (sc *ShareChain) GetStats() PoolStats {
 	sc.poolStatsMutex.RUnlock()
 
 	ttb := 0.0
-	if pH > 0 && nH > 0 { ttb = (nH / pH) * 150.0 }
+	if pH > 0 && nH > 0 {
+		ttb = (nH / pH) * 150.0
+	}
 
 	return PoolStats{
 		PoolHashrate:    pH,
@@ -256,13 +279,22 @@ func (sc *ShareChain) GetRecentShares(count int) ([]*Share, error) {
 	defer sc.mutex.RUnlock()
 
 	shareList := make([]*Share, 0, len(sc.shares))
-	for _, s := range sc.shares { shareList = append(shareList, s) }
+	for _, s := range sc.shares {
+		shareList = append(shareList, s)
+	}
 
 	sort.Slice(shareList, func(i, j int) bool {
-		return shareList[i].ShareInfo.Timestamp > shareList[j].ShareInfo.Timestamp
+		strA := shareList[i]
+		strB := shareList[j]
+		if strA == nil || strB == nil {
+			return false
+		}
+		return strA.ShareInfo.Timestamp > strB.ShareInfo.Timestamp
 	})
 
-	if count > len(shareList) { count = len(shareList) }
+	if count > len(shareList) {
+		count = len(shareList)
+	}
 	return shareList[:count], nil
 }
 
