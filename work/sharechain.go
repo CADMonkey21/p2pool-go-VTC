@@ -16,25 +16,27 @@ import (
 const maxShareAge = 72 * time.Hour
 
 type PoolStats struct {
-	PoolHashrate    float64 `json:"pool_hashrate"`
-	NetworkHashrate float64 `json:"network_hashrate"`
-	SharesTotal     int     `json:"shares_total"`
-	SharesOrphan    int     `json:"shares_orphan"`
-	SharesDead      int     `json:"shares_dead"`
-	Efficiency      float64 `json:"efficiency"`
-	TimeToBlock     float64 `json:"time_to_block_seconds"`
+	PoolHashrate      float64 `json:"pool_hashrate"`
+	NetworkHashrate   float64 `json:"network_hashrate"`
+	NetworkDifficulty float64 `json:"network_difficulty"`
+	SharesTotal       int     `json:"shares_total"`
+	SharesOrphan      int     `json:"shares_orphan"`
+	SharesDead        int     `json:"shares_dead"`
+	Efficiency        float64 `json:"efficiency"`
+	TimeToBlock       float64 `json:"time_to_block_seconds"`
 }
 
 type ShareChain struct {
-	shares          map[string]*Share
-	mutex           sync.RWMutex
-	rpcClient       *rpc.Client
-	genesisHash     *chainhash.Hash
-	TipHash         *chainhash.Hash
-	FoundBlockChan  chan *Share
-	poolHashrate    float64
-	networkHashrate float64
-	poolStatsMutex  sync.RWMutex
+	shares            map[string]*Share
+	mutex             sync.RWMutex
+	rpcClient         *rpc.Client
+	genesisHash       *chainhash.Hash
+	TipHash           *chainhash.Hash
+	FoundBlockChan    chan *Share
+	poolHashrate      float64
+	networkHashrate   float64
+	networkDifficulty float64
+	poolStatsMutex    sync.RWMutex
 }
 
 func NewShareChain(rpcClient *rpc.Client) *ShareChain {
@@ -216,8 +218,10 @@ func (sc *ShareChain) updateStats() {
 
 	info, err := sc.rpcClient.GetMiningInfo()
 	netHash := 0.0
+	netDiff := 0.0
 	if err == nil {
 		netHash = info.NetworkHashPS
+		netDiff = info.Difficulty
 	}
 
 	sc.poolStatsMutex.Lock()
@@ -226,6 +230,7 @@ func (sc *ShareChain) updateStats() {
 
 	if err == nil {
 		sc.networkHashrate = netHash
+		sc.networkDifficulty = netDiff
 	}
 	sc.poolStatsMutex.Unlock()
 }
@@ -256,6 +261,7 @@ func (sc *ShareChain) GetStats() PoolStats {
 	sc.poolStatsMutex.RLock()
 	pH := sc.poolHashrate
 	nH := sc.networkHashrate
+	nD := sc.networkDifficulty
 	sc.poolStatsMutex.RUnlock()
 
 	ttb := 0.0
@@ -264,13 +270,14 @@ func (sc *ShareChain) GetStats() PoolStats {
 	}
 
 	return PoolStats{
-		PoolHashrate:    pH,
-		NetworkHashrate: nH,
-		SharesTotal:     total,
-		SharesOrphan:    orphan,
-		SharesDead:      doa,
-		Efficiency:      eff,
-		TimeToBlock:     ttb,
+		PoolHashrate:      pH,
+		NetworkHashrate:   nH,
+		NetworkDifficulty: nD,
+		SharesTotal:       total,
+		SharesOrphan:      orphan,
+		SharesDead:        doa,
+		Efficiency:        eff,
+		TimeToBlock:       ttb,
 	}
 }
 

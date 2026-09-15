@@ -24,10 +24,10 @@ import (
 type BlockState int
 
 const (
-	StatePending BlockState = iota 
-	StateMature                    
-	StatePaid                      
-	StateOrphan                    
+	StatePending BlockState = iota
+	StateMature
+	StatePaid
+	StateOrphan
 )
 
 type PayoutBlock struct {
@@ -132,7 +132,7 @@ func (wm *WorkManager) fetchBlockTemplate() {
 	wm.TemplateMutex.Lock()
 	if _, exists := wm.Templates[tmpl.PreviousBlockHash]; !exists {
 		logging.Infof("New block template received for height %d", tmpl.Height)
-		wm.Templates = make(map[string]*BlockTemplate) 
+		wm.Templates = make(map[string]*BlockTemplate)
 		wm.Templates[tmpl.PreviousBlockHash] = &tmpl
 
 		wm.lastBlockUpdateMux.Lock()
@@ -152,7 +152,7 @@ func (wm *WorkManager) WatchBlockTemplate() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	wm.fetchBlockTemplate() 
+	wm.fetchBlockTemplate()
 
 	for {
 		select {
@@ -160,7 +160,7 @@ func (wm *WorkManager) WatchBlockTemplate() {
 			wm.fetchBlockTemplate()
 		case <-wm.ForceNewTemplate:
 			logging.Debugf("Forcing immediate template refresh.")
-			time.Sleep(250 * time.Millisecond) 
+			time.Sleep(250 * time.Millisecond)
 			wm.fetchBlockTemplate()
 		}
 	}
@@ -256,7 +256,7 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 		}
 
 		var address string
-		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 { 
+		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 {
 			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
 			if err != nil { continue }
 			hrp := "vtc"
@@ -284,7 +284,6 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 	return err
 }
 
-// Submitting a Block now references the local 'Share' type instead of wire protocol
 func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error {
 	coinbaseTxHashBytes := DblSha256(share.ShareInfo.ShareData.CoinBase)
 	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
@@ -381,4 +380,16 @@ func (wm *WorkManager) GetBlocksFoundInLast(window time.Duration) int {
 		if pb.FoundTime.After(cutoff) { n++ }
 	}
 	return n
+}
+
+// GetCurrentBlockReward returns the current block reward in VTC from the active template
+func (wm *WorkManager) GetCurrentBlockReward() float64 {
+	latestTemplate := wm.GetLatestTemplate()
+	
+	if latestTemplate == nil {
+		return 6.5 // Fallback default
+	}
+
+	// CoinbaseValue is in satoshis/base units; convert to VTC
+	return float64(latestTemplate.CoinbaseValue) / 1e8
 }

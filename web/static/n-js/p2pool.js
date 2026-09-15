@@ -14,10 +14,10 @@ function refreshStats() {
 
         // --- Update Top Toolbar ---
         $('#node_uptime').text(data.node_uptime);
-        $('#block-diff').text(parseFloat(data.network_difficulty).toFixed(6)); // Uses ID from index.html
+        $('#block-diff').text(parseFloat(parseFloat(data.network_difficulty).toFixed(2))); // Uses ID from index.html
         $('#active-miners').text(data.connected_miners); // Uses ID from index.html
         $('#last-block-found').text(data.last_block_found_ago); // Uses ID from index.html
-        
+
         if (data.connected_miners == 1) {
              $('#active-miners-label').text("Miner");
         } else {
@@ -29,16 +29,16 @@ function refreshStats() {
         $('#network_rate').text(data.global_network_hashrate);
         $('#global_rate').text(data.p2pool_network_hashrate);
         $('#local_rate').text(data.local_node_hashrate);
-        var shares_text = 'Total: ' + data.pool_shares_total + 
+        var shares_text = 'Total: ' + data.pool_shares_total +
                           ' (Orphan: ' + data.pool_shares_orphan +
                           ', Dead: ' + data.pool_shares_dead + ')';
         $('#shares').text(shares_text);
         $('#stats_blocks_found_daily').text(data.pool_blocks_found_24h);
-        $('#block-reward').text(data.block_reward + ' ' + currency_symbol); // Uses ID from index.html
+        $('#block-reward').text(parseFloat(parseFloat(data.block_reward).toFixed(4)) + ' ' + currency_symbol); // Uses ID from index.html
         $('#share_difficulty').text(data.min_share_difficulty);
         $('#expected_time_to_block').text(data.pool_time_to_block);
         $('#p2pool_version').text('p2pool-go-VTC'); // Hardcode our node name
-        
+
         // --- Update Modal Popups & Header Info ---
         $('#modal_share_difficulty').text(data.min_share_difficulty);
         var stratumHost = window.location.hostname || "YOUR_IP_HERE";
@@ -54,19 +54,19 @@ function refreshStats() {
         if (data.active_miners && data.active_miners.length > 0) {
             $.each(data.active_miners, function(index, miner) {
                 var tr = $('<tr/>').addClass('c-table__row');
-                
+
                 // [MODIFIED] Build the explorer URL based on the address prefix
                 var isTestnet = miner.address.startsWith('tvtc1');
-                var explorerBaseUrl = isTestnet ? 
-                                    'https://chainz.cryptoid.info/vtc-test/address.dws?' : 
+                var explorerBaseUrl = isTestnet ?
+                                    'https://chainz.cryptoid.info/vtc-test/address.dws?' :
                                     'https://chainz.cryptoid.info/vtc/address.dws?';
                 var explorerUrl = explorerBaseUrl + miner.address + '.htm';
-                
+
                 var addressLink = $('<a/>')
                                     .attr('href', explorerUrl)
                                     .attr('target', '_blank') // Opens in a new tab
                                     .text(miner.address);
-                
+
                 // [MODIFIED] Append the link instead of just text
                 tr.append($('<td/>').addClass('c-table__cell').append(addressLink));
 
@@ -74,7 +74,7 @@ function refreshStats() {
                 tr.append($('<td/>').addClass('c-table__cell').text(miner.rejected_percentage.toFixed(2) + '%'));
                 tr.append($('<td/>').addClass('c-table__cell').text(miner.share_difficulty.toFixed(3)));
                 tr.append($('<td/>').addClass('c-table__cell').text(miner.avg_time_to_share));
-                
+
                 // Find this miner's payout in the payouts_list
                 var payout = 0;
                 if(data.payouts_list) {
@@ -84,9 +84,9 @@ function refreshStats() {
                     }
                 }
                 tr.append($('<td/>').addClass('c-table__cell').text(payout.toFixed(8) + ' ' + currency_symbol));
-                
+
                 tr.append($('<td/>').addClass('c-table__cell').text(miner.est_24_hour_payout_vtc.toFixed(8) + ' ' + currency_symbol));
-                
+
                 minersTable.append(tr);
             });
         } else {
@@ -115,19 +115,19 @@ function refreshStats() {
             $('#num_payouts').text(data.payouts_list.length);
             $.each(data.payouts_list, function(index, payout) {
                 var tr = $('<tr/>').addClass('c-table__row');
-                
+
                 // [MODIFIED] Build the explorer URL for the payout address
                 var isTestnet = payout.address.startsWith('tvtc1');
-                var explorerBaseUrl = isTestnet ? 
-                                    'https://chainz.cryptoid.info/vtc-test/address.dws?' : 
+                var explorerBaseUrl = isTestnet ?
+                                    'https://chainz.cryptoid.info/vtc-test/address.dws?' :
                                     'https://chainz.cryptoid.info/vtc/address.dws?';
                 var explorerUrl = explorerBaseUrl + payout.address + '.htm';
-                
+
                 var addressLink = $('<a/>')
                                     .attr('href', explorerUrl)
                                     .attr('target', '_blank') // Opens in a new tab
                                     .text(payout.address);
-                
+
                 // [MODIFIED] Append the link instead of just text
                 tr.append($('<td/>').addClass('c-table__cell').append(addressLink));
                 tr.append($('<td/>').addClass('c-table__cell').text(payout.payout_vtc.toFixed(8)));
@@ -153,10 +153,10 @@ function refreshStats() {
 $(document).ready(function() {
     // Initial fetch
     refreshStats();
-    
+
     // Set interval to refresh data
     setInterval(refreshStats, reload_interval);
-    
+
     // We don't have graph data yet, so we'll just hide the graph buttons
     // You can re-enable this later if you implement graph history in the Go API
     $('#hour.hashrate').hide();
@@ -164,6 +164,6 @@ $(document).ready(function() {
     $('#week.hashrate').hide();
     $('#month.hashrate').hide();
     $('#year.hashrate').hide();
-    
+
     // [REMOVED] All old init/update logic
 });

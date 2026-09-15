@@ -77,6 +77,22 @@ func formatDurationAgo(t time.Time) string {
 	}
 }
 
+func formatTimeToBlock(seconds float64) string {
+	if seconds <= 0 {
+		return "Unknown"
+	}
+	d := time.Duration(seconds) * time.Second
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	if days > 0 {
+		return fmt.Sprintf("%d days", days)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%d hours", hours)
+	}
+	return fmt.Sprintf("%.0f minutes", d.Minutes())
+}
+
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -89,7 +105,12 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	activeMiners := d.stratum.GetClients()
 	lastBlockTime := d.workManager.GetLastBlockFoundTime()
 
-	// Build Active Miners list matching p2pool.js expected keys
+	blockReward := d.workManager.GetCurrentBlockReward()
+	minShareDiff := config.Active.Vardiff.MinDiff
+	if minShareDiff <= 0 {
+		minShareDiff = 0.05
+	}
+
 	var dashboardMiners []map[string]interface{}
 	for _, m := range activeMiners {
 		hr := d.stratum.GetHashrateForClient(m.ID)
@@ -107,16 +128,15 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		dashboardMiners = append(dashboardMiners, map[string]interface{}{
-			"address":               workerName,
-			"hashrate":              formatHashrate(hr),
-			"rejected_percentage":   rejPct,
-			"share_difficulty":      0.05,
-			"avg_time_to_share":     "0h 5m 0s",
+			"address":                 workerName,
+			"hashrate":                formatHashrate(hr),
+			"rejected_percentage":     rejPct,
+			"share_difficulty":        minShareDiff,
+			"avg_time_to_share":       "0h 5m 0s",
 			"est_24_hour_payout_vtc": 0.0,
 		})
 	}
 
-	// Build Recent Blocks list matching p2pool.js expected keys
 	recentBlocks, _ := d.workManager.GetRecentBlocks(10)
 	var dashboardBlocks []map[string]interface{}
 	for _, b := range recentBlocks {
@@ -128,7 +148,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]interface{}{
 		"node_uptime":             formatUptime(uptimeSec),
-		"network_difficulty":      32.74,
+		"network_difficulty":      poolStats.NetworkDifficulty,
 		"connected_miners":        len(activeMiners),
 		"last_block_found_ago":    formatDurationAgo(lastBlockTime),
 		"pool_fee":                config.Active.Fee,
@@ -139,9 +159,9 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"pool_shares_orphan":      poolStats.SharesOrphan,
 		"pool_shares_dead":        poolStats.SharesDead,
 		"pool_blocks_found_24h":   d.workManager.GetBlocksFoundInLast(24 * time.Hour),
-		"block_reward":            6.5,
-		"min_share_difficulty":    0.05,
-		"pool_time_to_block":      "2 hours",
+		"block_reward":            blockReward,
+		"min_share_difficulty":    minShareDiff,
+		"pool_time_to_block":      formatTimeToBlock(poolStats.TimeToBlock),
 		"stratum_port":            config.Active.StratumPort,
 		"active_miners":           dashboardMiners,
 		"payouts_list":            []interface{}{},
