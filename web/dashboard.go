@@ -2,10 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
-	"runtime"
 	"time"
 
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/stratum"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
@@ -13,7 +14,7 @@ import (
 
 type Dashboard struct {
 	workManager *work.WorkManager
-	p2pNode     *p2p.Node // Updated from PeerManager to Node
+	p2pNode     *p2p.Node
 	stratum     *stratum.StratumServer
 	startTime   time.Time
 }
@@ -27,6 +28,55 @@ func NewDashboard(wm *work.WorkManager, node *p2p.Node, strat *stratum.StratumSe
 	}
 }
 
+func formatHashrate(hr float64) string {
+	switch {
+	case hr > 1e12:
+		return fmt.Sprintf("%.2f TH/s", hr/1e12)
+	case hr > 1e9:
+		return fmt.Sprintf("%.2f GH/s", hr/1e9)
+	case hr > 1e6:
+		return fmt.Sprintf("%.2f MH/s", hr/1e6)
+	case hr > 1e3:
+		return fmt.Sprintf("%.2f kH/s", hr/1e3)
+	default:
+		return fmt.Sprintf("%.2f H/s", hr)
+	}
+}
+
+func formatUptime(sec float64) string {
+	if sec <= 0 {
+		return "0 seconds"
+	}
+	d := time.Duration(sec) * time.Second
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%d days %d hours", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%d hours %d minutes", hours, minutes)
+	}
+	return fmt.Sprintf("%d minutes", int(d.Minutes()))
+}
+
+func formatDurationAgo(t time.Time) string {
+	if t.IsZero() {
+		return "Never"
+	}
+	d := time.Since(t)
+	switch {
+	case d.Hours() > 48:
+		return fmt.Sprintf("%.0f days ago", d.Hours()/24)
+	case d.Hours() >= 1:
+		return fmt.Sprintf("%.0f hours ago", d.Hours())
+	case d.Minutes() >= 1:
+		return fmt.Sprintf("%.0f minutes ago", d.Minutes())
+	default:
+		return fmt.Sprintf("%.0f seconds ago", d.Seconds())
+	}
+}
+
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -34,76 +84,68 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sc := d.workManager.ShareChain
 	poolStats := sc.GetStats()
 	localHashrate := d.stratum.GetLocalHashrate()
-	
-	// Get Peer Count from libp2p
-	peerCount := 0
-	if d.p2pNode != nil {
-		peerCount = len(d.p2pNode.Host.Network().Peers())
+
+	uptimeSec := time.Since(d.startTime).Seconds()
+	activeMiners := d.stratum.GetClients()
+	lastBlockTime := d.workManager.GetLastBlockFoundTime()
+
+	// Build Active Miners list matching p2pool.js expected keys
+	var dashboardMiners []map[string]interface{}
+	for _, m := range activeMiners {
+		hr := d.stratum.GetHashrateForClient(m.ID)
+
+		m.Mutex.Lock()
+		workerName := m.WorkerName
+		accepted := m.AcceptedShares
+		rejected := m.RejectedShares
+		m.Mutex.Unlock()
+
+		totalShares := accepted + rejected
+		rejPct := 0.0
+		if totalShares > 0 {
+			rejPct = (float64(rejected) / float64(totalShares)) * 100.0
+		}
+
+		dashboardMiners = append(dashboardMiners, map[string]interface{}{
+			"address":               workerName,
+			"hashrate":              formatHashrate(hr),
+			"rejected_percentage":   rejPct,
+			"share_difficulty":      0.05,
+			"avg_time_to_share":     "0h 5m 0s",
+			"est_24_hour_payout_vtc": 0.0,
+		})
 	}
 
+	// Build Recent Blocks list matching p2pool.js expected keys
 	recentBlocks, _ := d.workManager.GetRecentBlocks(10)
 	var dashboardBlocks []map[string]interface{}
 	for _, b := range recentBlocks {
 		dashboardBlocks = append(dashboardBlocks, map[string]interface{}{
-			"hash":   b.BlockHash.String(),
-			"height": b.BlockHeight,
-			"found":  b.FoundTime.Unix(),
-			"status": int(b.State),
+			"block_number": b.BlockHeight,
+			"found_ago":    formatDurationAgo(b.FoundTime),
 		})
-	}
-
-	recentShares, _ := sc.GetRecentShares(10)
-	var dashboardShares []map[string]interface{}
-	for _, s := range recentShares {
-		status := "valid"
-		if s.ShareInfo.ShareData.StaleInfo != work.StaleInfoNone {
-			status = "stale"
-		}
-		dashboardShares = append(dashboardShares, map[string]interface{}{
-			"hash":   s.Hash.String(),
-			"miner":  string(s.ShareInfo.ShareData.PubKeyHash),
-			"found":  s.ShareInfo.Timestamp,
-			"status": status,
-		})
-	}
-
-	activeMiners := d.stratum.GetClients()
-	var dashboardMiners []map[string]interface{}
-	for _, m := range activeMiners {
-		m.Mutex.Lock()
-		hr := d.stratum.GetHashrateForClient(m.ID)
-		dashboardMiners = append(dashboardMiners, map[string]interface{}{
-			"address":  m.WorkerName,
-			"hashrate": hr,
-			"accepted": m.AcceptedShares,
-			"rejected": m.RejectedShares,
-		})
-		m.Mutex.Unlock()
 	}
 
 	data := map[string]interface{}{
-		"system": map[string]interface{}{
-			"uptime":     time.Since(d.startTime).Seconds(),
-			"goroutines": runtime.NumGoroutine(),
-			"peers":      peerCount,
-			"version":    "1.0-libp2p",
-		},
-		"pool": map[string]interface{}{
-			"hashrate":          poolStats.PoolHashrate,
-			"network_hashrate":  poolStats.NetworkHashrate,
-			"efficiency":        poolStats.Efficiency,
-			"time_to_block":     poolStats.TimeToBlock,
-			"total_shares":      poolStats.SharesTotal,
-		},
-		"local": map[string]interface{}{
-			"hashrate":      localHashrate,
-			"miner_count":   len(activeMiners),
-			"shares_per_s":  d.stratum.GetLocalSharesPerSecond(),
-			"efficiency":    d.stratum.GetLocalEfficiency(),
-		},
-		"recent_blocks": dashboardBlocks,
-		"recent_shares": dashboardShares,
-		"miners":        dashboardMiners,
+		"node_uptime":             formatUptime(uptimeSec),
+		"network_difficulty":      32.74,
+		"connected_miners":        len(activeMiners),
+		"last_block_found_ago":    formatDurationAgo(lastBlockTime),
+		"pool_fee":                config.Active.Fee,
+		"global_network_hashrate": formatHashrate(poolStats.NetworkHashrate),
+		"p2pool_network_hashrate": formatHashrate(poolStats.PoolHashrate),
+		"local_node_hashrate":     formatHashrate(localHashrate),
+		"pool_shares_total":       poolStats.SharesTotal,
+		"pool_shares_orphan":      poolStats.SharesOrphan,
+		"pool_shares_dead":        poolStats.SharesDead,
+		"pool_blocks_found_24h":   d.workManager.GetBlocksFoundInLast(24 * time.Hour),
+		"block_reward":            6.5,
+		"min_share_difficulty":    0.05,
+		"pool_time_to_block":      "2 hours",
+		"stratum_port":            config.Active.StratumPort,
+		"active_miners":           dashboardMiners,
+		"payouts_list":            []interface{}{},
+		"blocks_found_list":       dashboardBlocks,
 	}
 
 	json.NewEncoder(w).Encode(data)

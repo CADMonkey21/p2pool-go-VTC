@@ -158,22 +158,17 @@ func main() {
 	go workManager.WatchFoundBlocks()
 
 	/* ----- NEW LIBP2P NETWORKING ------------------------------------ */
-	// Initialize the new P2P Node on port 4001 (or any port you prefer)
 	p2pNode, err := p2p.NewNode(4001)
 	if err != nil {
 		logging.Fatalf("Failed to start p2p networking: %v", err)
 	}
 	defer p2pNode.Close()
 
-	// Connect to the mesh (Leave empty for local testing, add IPs later)
 	bootstrapPeers := []string{}
 	go p2pNode.Bootstrap(bootstrapPeers)
 
-	// Listen for shares coming from the network
 	go func() {
 		for shareBytes := range p2pNode.IncomingShares {
-			// Right now, just print it so we know it works!
-			// Later we will deserialize this and pass it to verthash.
 			logging.Infof("Received remote share over GossipSub: %s", string(shareBytes))
 		}
 	}()
@@ -197,10 +192,9 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// NOTE: Passing 'nil' for the old PeerManager argument temporarily to prevent compiler crashes.
-	// We will update the Dashboard to read from p2pNode next!
-	apiHandler := web.NewDashboard(workManager, nil, stratumSrv, startTime)
-	
+	// Initialize dashboard API and static file server
+	apiHandler := web.NewDashboard(workManager, p2pNode, stratumSrv, startTime)
+
 	mux.Handle("/api/stats", apiHandler)
 	mux.Handle("/", http.FileServer(http.Dir("./web/static")))
 
