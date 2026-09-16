@@ -93,6 +93,21 @@ func formatTimeToBlock(seconds float64) string {
 	return fmt.Sprintf("%.0f minutes", d.Minutes())
 }
 
+// formatAvgTime matches the specific "0h 5m 0s" format expected by the UI
+func formatAvgTime(seconds float64) string {
+	if seconds <= 0 {
+		return "Unknown"
+	}
+	if seconds > 86400*7 { // Cap at 1 week for extremely low hashrate miners
+		return "> 1 week"
+	}
+	d := time.Duration(seconds) * time.Second
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dh %dm %ds", h, m, s)
+}
+
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -111,7 +126,17 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		minShareDiff = 0.05
 	}
 
+	// Calculate baseline reward metrics for payout estimations
+	poolFeePct := config.Active.Fee / 100.0
+	netBlockReward := blockReward * (1.0 - poolFeePct)
+	expectedBlocks24h := 0.0
+	if poolStats.TimeToBlock > 0 {
+		expectedBlocks24h = (24.0 * 3600.0) / poolStats.TimeToBlock
+	}
+
 	var dashboardMiners []map[string]interface{}
+	var dashboardPayouts []map[string]interface{}
+
 	for _, m := range activeMiners {
 		hr := d.stratum.GetHashrateForClient(m.ID)
 
@@ -127,13 +152,41 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rejPct = (float64(rejected) / float64(totalShares)) * 100.0
 		}
 
+		// Calculate Payout Estimations for this miner
+		minerProportion := 0.0
+		effectivePoolHashrate := poolStats.PoolHashrate
+		
+		// [FIX] Cold-start sanity check: If local real-time hashrate temporarily 
+		// exceeds the rolling pool average, use local hashrate as the baseline.
+		if hr > effectivePoolHashrate {
+			effectivePoolHashrate = hr
+		}
+
+		if effectivePoolHashrate > 0 {
+			minerProportion = hr / effectivePoolHashrate
+		}
+		
+		payoutPerBlock := minerProportion * netBlockReward
+		est24HourPayout := payoutPerBlock * expectedBlocks24h
+
+		// Calculate Average Time to Share theoretically
+		timeToShareSec := 0.0
+		if hr > 0 && poolStats.NetworkDifficulty > 0 && poolStats.NetworkHashrate > 0 {
+			timeToShareSec = (minShareDiff / poolStats.NetworkDifficulty) * 150.0 * (poolStats.NetworkHashrate / hr)
+		}
+
 		dashboardMiners = append(dashboardMiners, map[string]interface{}{
-			"address":                 workerName,
-			"hashrate":                formatHashrate(hr),
-			"rejected_percentage":     rejPct,
-			"share_difficulty":        minShareDiff,
-			"avg_time_to_share":       "0h 5m 0s",
-			"est_24_hour_payout_vtc": 0.0,
+			"address":                workerName,
+			"hashrate":               formatHashrate(hr),
+			"rejected_percentage":    rejPct,
+			"share_difficulty":       minShareDiff,
+			"avg_time_to_share":      formatAvgTime(timeToShareSec),
+			"est_24_hour_payout_vtc": est24HourPayout,
+		})
+
+		dashboardPayouts = append(dashboardPayouts, map[string]interface{}{
+			"address":    workerName,
+			"payout_vtc": payoutPerBlock,
 		})
 	}
 
@@ -164,7 +217,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"pool_time_to_block":      formatTimeToBlock(poolStats.TimeToBlock),
 		"stratum_port":            config.Active.StratumPort,
 		"active_miners":           dashboardMiners,
-		"payouts_list":            []interface{}{},
+		"payouts_list":            dashboardPayouts,
 		"blocks_found_list":       dashboardBlocks,
 	}
 

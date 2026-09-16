@@ -274,14 +274,15 @@ func CreateShare(
 		return nil, err
 	}
 
-	coinbaseTxHash := DblSha256(coinbaseTxBytes)
-	merkleLinkBranches := coinbaseMerkleLinkBranches
-	if len(merkleLinkBranches) > 0 {
-		if len(merkleLinkBranches) > 0 && merkleLinkBranches[0] != nil {
-			merkleLinkBranches[0], _ = chainhash.NewHash(ReverseBytes(coinbaseTxHash))
+	// Safely deep copy the branches to prevent cross-miner memory corruption.
+	// We DO NOT modify the branch with the coinbase hash, as the branch 
+	// only requires the sibling hashes to compute the valid Merkle Root.
+	merkleLinkBranches := make([]*chainhash.Hash, len(coinbaseMerkleLinkBranches))
+	for i, h := range coinbaseMerkleLinkBranches {
+		if h != nil {
+			clone := *h
+			merkleLinkBranches[i] = &clone
 		}
-	} else {
-		merkleLinkBranches = []*chainhash.Hash{}
 	}
 
 	newTxHashesForShareInfo := []*chainhash.Hash{}
