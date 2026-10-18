@@ -1,20 +1,22 @@
-# p2pool-go-VTC Personal Configuration
+# p2pool-go-VTC Configuration
 
 # The network to run on. For Vertcoin mainnet, this must be "vertcoin".
 network: "vertcoin"
 
-# Set to true if running on a testnet (requires a testnet daemon).
+# Set to true if running on a testnet (requires a testnet vertcoind daemon).
 testnet: false
 
-# --- P2P Network Peers ---
-# List of initial peers to connect to. The more the better.
-peers:
-  - "p2poolvtc.com"
-#  - "127.0.0.1" This is if you run legacy node (python) on same machine.
+# --- P2P Network Peers (go-libp2p) ---
+# Local LAN nodes on the same network are discovered automatically via mDNS.
+# To connect to remote internet p2pool-go-VTC nodes, list their full libp2p
+# multiaddr (printed in the startup log as "P2P Connect Multiaddr").
+# Note: This Go mesh does not connect to legacy Python P2Pool nodes.
+peers: []
+#  - "/ip4/203.0.113.50/tcp/9348/p2p/12D3KooWL65LCCkfLnN2PaEjdXUm4BBHj24nzpABPhDatjNzPKwi"
 
 
 # --- RPC Connection Settings ---
-# These must match the settings in your vertcoin.conf file.
+# These must match the RPC settings in your vertcoin.conf file.
 rpcHost: "127.0.0.1"
 rpcPort: 5888
 rpcUser: "your_rpc_user"
@@ -22,70 +24,51 @@ rpcPass: "your_rpc_password"
 
 
 # --- Pool Settings ---
-# Your personal Vertcoin address for receiving pool fee payouts.
-poolAddress: "tvtc1q09pd5kr6pvcjdp809uc34esd42wag4ckkmxpz9"
-# The fee (in percent) that the pool will take.
+# Your Vertcoin address for receiving the pool operator fee directly in the coinbase transaction.
+poolAddress: "vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l"
+
+# The fee (in percent) that the node embeds for the pool operator in solved blocks (e.g., 1.0 = 1%).
 fee: 1.0
-# How many shares are considered for payouts when a block is found (Pay-Per-Last-N-Shares).
-# 8640 shares is equivalent to a 3-day window on the Vertcoin network.
-pplns_window: 8640
+
+# How many shares are considered in the rolling PPLNS window when calculating direct coinbase payouts.
+pplns_window: 2160
 
 
 # --- Port Settings ---
-# The port your miners will connect to. Remember to open ports in firewall & router settings.
+# Multiplexed port (cmux) for both Stratum miner connections and the HTTP Web Dashboard.
 stratumPort: 9172
 
-# The port that other p2pool nodes will connect to.
+# The TCP port for go-libp2p GossipSub and Kademlia DHT node-to-node communication.
+# Port-forward this port (9348/tcp) on your router if connecting with external internet peers.
 p2pPort: 9348
 
 
 # --- General Settings ---
-# The level of detail for logging.
+# The level of detail for console and p2pool.log output.
 # Options: "debug", "info", "warn", "error"
-# This can be overridden at startup with the -loglevel flag.
+# Recommended: "info" (shows accepted shares, consensus checks, and found blocks).
 loglevel: "info"
 
-# (Optional) Timeout in seconds to wait for a P2P peer before starting
-# the stratum server anyway. Set to 0 to wait forever (default).
-# A good value is 300 (5 minutes) to allow miners to connect
-# even if the P2P network is temporarily unavailable.
-p2pSyncTimeout: 300
 
 # --- Verthash Settings ---
-# (Optional) The full path to your verthash.dat file.
-# If you leave this blank, the node will check default locations,
-# such as ~/.vertcoin/verthash.dat
-verthash_dat_file: ""
+# Full path to your verthash.dat file (approx. 1.2 GB).
+# Standard install example: "/home/user/.vertcoin/verthash.dat"
+# Snap install example:     "/home/user/snap/vertcoin-core/common/.vertcoin/verthash.dat"
+verthash_dat_file: "/home/user/.vertcoin/verthash.dat"
 
 
-# --- Variable Difficulty Settings ---
-# A stable configuration for smooth, automatic difficulty adjustments.
+# --- Variable Difficulty (Vardiff) Settings ---
+# Automatically adjusts individual miner share difficulty to maintain steady submissions.
 vardiff:
-  # The ideal time in seconds between shares submitted by a miner.
-  # The pool will adjust difficulty to try and meet this target.
-  targetTime: 3.0
+  # Target time (in seconds) between shares submitted by a miner.
+  targetTime: 5.0
 
-  # How often (in seconds) the pool will check a miner's performance
-  # and adjust their difficulty. This should be several times longer
-  # than targetTime to get a good average.
-  # This MUST be longer than the targetTime. 2-5x
-  retargetTime: 15.0
+  # How often (in seconds) the pool evaluates a miner's submission rate to adjust difficulty.
+  # Should be 2x to 6x longer than targetTime.
+  retargetTime: 30.0
 
-  # The allowed variance from targetTime before difficulty is adjusted.
-  # (e.g., 0.30 means the share time must be 30% faster or slower than
-  # the target to trigger a difficulty change). This prevents tiny,
-  # frequent adjustments. 0.30 is a standard value.
+  # Allowed fractional variance from targetTime before triggering a difficulty change (0.30 = ±30%).
   variance: 0.30
 
-  # The absolute minimum difficulty that will be assigned to a miner.
-  # This prevents difficulty from dropping too low for very slow miners.
-  # 0.01 is a reasonable floor for most hardware.
+  # Minimum share difficulty floor assigned to miners on connect.
   minDiff: 0.01
-
-# --- Testing Settings ---
-# !! WARNING: FOR TESTING ONLY !!
-# forceBlockFind: true
-# (Optional) Set to true to treat EVERY accepted share as a
-# block. This is used to test the block submission and
-# daemon rejection logic. This will NOT find a real block.
-# DO NOT run this on mainnet.
