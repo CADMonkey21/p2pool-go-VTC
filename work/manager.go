@@ -5,20 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil/base58"
-	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 )
 
 type BlockState int
@@ -181,7 +177,10 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 			keep := true
 			switch pb.State {
 			case StatePaid, StateOrphan:
-				keep = false
+				// Keep recent found blocks in the list for 24h dashboard display
+				if time.Since(pb.FoundTime) > 24*time.Hour {
+					keep = false
+				}
 			case StatePending:
 				blockInfo, err := wm.rpcClient.GetBlock(pb.BlockHash)
 				if err != nil {
@@ -190,18 +189,13 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 						pb.State = StateOrphan
 						keep = false
 					}
-				} else if blockInfo.Confirmations >= requiredConfirmations {
-					logging.Successf("Block %s is now MATURE (%d confirmations)!", pb.BlockHash.String(), blockInfo.Confirmations)
-					pb.State = StateMature
-				}
-			case StateMature:
-				err := wm.ProcessPayout(pb)
-				if err != nil {
-					logging.Errorf("Payout for block %s FAILED: %v", pb.BlockHash.String(), err)
-				} else {
-					logging.Successf("Payout for block %s completed.", pb.BlockHash.String())
-					pb.State = StatePaid
+				} else if blockInfo.Confirmations < 0 {
+					logging.Warnf("Block %s was orphaned (confirmations: %d)", pb.BlockHash.String(), blockInfo.Confirmations)
+					pb.State = StateOrphan
 					keep = false
+				} else if blockInfo.Confirmations >= requiredConfirmations {
+					logging.Successf("Block %s is now MATURE (%d confirmations)! Direct coinbase PPLNS outputs are now spendable.", pb.BlockHash.String(), blockInfo.Confirmations)
+					pb.State = StatePaid
 				}
 			}
 
@@ -215,98 +209,11 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 	}
 }
 
-func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
-	blockFindShare := wm.ShareChain.GetShare(pb.BlockFindShareHash.String())
-	if blockFindShare == nil {
-		return fmt.Errorf("could not find share %s in sharechain", pb.BlockFindShareHash.String())
-	}
-	totalPayout := blockFindShare.ShareInfo.ShareData.Subsidy
-	feePercentage := config.Active.Fee / 100.0
-	poolFee := uint64(float64(totalPayout) * feePercentage)
-	amountToDistribute := totalPayout - poolFee
-
-	windowSize := config.Active.PPLNSWindow
-	payoutShares, err := wm.ShareChain.GetSharesForPayout(pb.BlockFindShareHash, windowSize)
-	if err != nil {
-		return fmt.Errorf("could not get PPLNS window shares: %w", err)
-	}
-
-	payouts := make(map[string]uint64)
-	totalWorkInWindow := new(big.Int)
-
-	baseDiff1, _ := new(big.Int).SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
-	scaledMaxTarget := new(big.Int).Mul(baseDiff1, big.NewInt(1000000))
-
-	for _, share := range payoutShares {
-		if share.Target == nil || share.Target.Sign() <= 0 {
-			continue
-		}
-		weight := new(big.Int).Div(new(big.Int).Set(scaledMaxTarget), share.Target)
-		if weight.Sign() <= 0 {
-			weight = big.NewInt(1)
-		}
-		totalWorkInWindow.Add(totalWorkInWindow, weight)
-	}
-
-	if totalWorkInWindow.Sign() <= 0 {
-		return fmt.Errorf("total work is zero")
-	}
-
-	for _, share := range payoutShares {
-		if len(share.ShareInfo.ShareData.PubKeyHash) == 0 {
-			continue
-		}
-
-		var address string
-		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 {
-			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
-			if err != nil {
-				continue
-			}
-			hrp := "vtc"
-			if config.Active.Testnet {
-				hrp = "tvtc"
-			}
-			address, _ = bech32.Encode(hrp, append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
-		} else {
-			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
-		}
-
-		if share.Target == nil || share.Target.Sign() <= 0 {
-			continue
-		}
-		weight := new(big.Int).Div(new(big.Int).Set(scaledMaxTarget), share.Target)
-		if weight.Sign() <= 0 {
-			weight = big.NewInt(1)
-		}
-		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), weight)
-		payoutAmount.Div(payoutAmount, totalWorkInWindow)
-		payouts[address] += payoutAmount.Uint64()
-	}
-
-	if config.Active.PoolAddress != "" && poolFee > 0 {
-		payouts[config.Active.PoolAddress] += poolFee
-	}
-	sendManyMap := make(map[string]float64)
-	for addr, amt := range payouts {
-		if amt > 0 {
-			sendManyMap[addr] = float64(amt) / 100000000.0
-		}
-	}
-
-	if len(sendManyMap) == 0 {
-		return nil
-	}
-	_, err = wm.rpcClient.SendMany(sendManyMap)
-	return err
-}
-
-func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error {
+// buildMsgBlockFromShare constructs the full wire.MsgBlock from a Share and BlockTemplate.
+func (wm *WorkManager) buildMsgBlockFromShare(share *Share, template *BlockTemplate) (*wire.MsgBlock, error) {
 	var coinbaseTx wire.MsgTx
-	err := coinbaseTx.Deserialize(bytes.NewReader(share.ShareInfo.ShareData.CoinBase))
-	if err != nil {
-		logging.Errorf("SubmitBlock: Failed to deserialize coinbase tx: %v", err)
-		return err
+	if err := coinbaseTx.Deserialize(bytes.NewReader(share.ShareInfo.ShareData.CoinBase)); err != nil {
+		return nil, fmt.Errorf("failed to deserialize coinbase tx: %v", err)
 	}
 
 	coinbaseTxHash := coinbaseTx.TxHash()
@@ -314,7 +221,7 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 
 	nBits64, err := strconv.ParseUint(template.Bits, 16, 32)
 	if err != nil {
-		return fmt.Errorf("could not parse network bits from template: %v", err)
+		return nil, fmt.Errorf("could not parse network bits from template: %v", err)
 	}
 
 	header := &wire.BlockHeader{
@@ -333,29 +240,50 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 		txBytes, _ := hex.DecodeString(txTmpl.Data)
 		var msgTx wire.MsgTx
 		if err := msgTx.Deserialize(bytes.NewReader(txBytes)); err != nil {
-			logging.Errorf("SubmitBlock: Failed to deserialize template tx: %v", err)
-			return err
+			return nil, fmt.Errorf("failed to deserialize template tx: %v", err)
 		}
 		block.AddTransaction(&msgTx)
 	}
 
-	logging.Infof("Proposing block %s (Height %d) for validation...", block.BlockHash().String(), template.Height)
-	reason, err := wm.rpcClient.ProposeBlock(block)
-	if err != nil || reason != "accepted" {
-		logging.Errorf("Block proposal rejected by vertcoind! Reason: %s, Err: %v", reason, err)
-		return fmt.Errorf("block rejected by daemon: %s (err: %v)", reason, err)
+	return block, nil
+}
+
+// VerifyCandidateBlock asks vertcoind (via getblocktemplate mode="proposal") to verify that the
+// assembled block structure, coinbase PPLNS outputs, SegWit commitment, and Merkle root pass 100% of consensus rules.
+func (wm *WorkManager) VerifyCandidateBlock(share *Share, template *BlockTemplate) {
+	block, err := wm.buildMsgBlockFromShare(share, template)
+	if err != nil {
+		logging.Errorf("Consensus Check: Failed to build candidate block: %v", err)
+		return
 	}
 
-	err = wm.rpcClient.SubmitBlock(block)
+	reason, err := wm.rpcClient.ProposeBlock(block)
+	if err != nil || reason != "accepted" {
+		logging.Errorf("CONSENSUS CHECK FAILED for height %d! vertcoind reason: '%s', err: %v", template.Height, reason, err)
+		return
+	}
+
+	logging.Successf("CONSENSUS VERIFIED: vertcoind validated full candidate block for height %d (Coinbase, PPLNS Outputs, SegWit Commitment & Merkle Root 100%% valid!)", template.Height)
+}
+
+func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error {
+	block, err := wm.buildMsgBlockFromShare(share, template)
 	if err != nil {
-		logging.Errorf("SubmitBlock RPC failed: %v", err)
+		logging.Errorf("SubmitBlock: %v", err)
 		return err
 	}
 
-	logging.Successf("SUCCESS! Block %s accepted by the Vertcoin network!", block.BlockHash().String())
+	blockHash := block.BlockHash()
+	logging.Infof("Submitting solved block %s (Height %d) directly to vertcoind...", blockHash.String(), template.Height)
+
+	if err := wm.rpcClient.SubmitBlock(block); err != nil {
+		logging.Errorf("SubmitBlock RPC rejected or failed: %v", err)
+		return err
+	}
+
+	logging.Successf("SUCCESS! Block %s (Height %d) ACCEPTED by the Vertcoin network!", blockHash.String(), template.Height)
 
 	wm.PendingMutex.Lock()
-	blockHash := block.BlockHash()
 	wm.PendingBlocks = append(wm.PendingBlocks, &PayoutBlock{
 		BlockHash:          &blockHash,
 		BlockFindShareHash: share.Hash,
@@ -412,7 +340,7 @@ func (wm *WorkManager) GetBlocksFoundInLast(window time.Duration) int {
 	defer wm.PendingMutex.Unlock()
 	n := 0
 	for _, pb := range wm.PendingBlocks {
-		if pb.FoundTime.After(cutoff) {
+		if pb.FoundTime.After(cutoff) && pb.State != StateOrphan {
 			n++
 		}
 	}

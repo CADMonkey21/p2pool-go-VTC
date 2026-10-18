@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil/base58"
-	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
+	"github.com/btcsuite/btcd/btcutil/base58"
+	"github.com/btcsuite/btcd/btcutil/bech32"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 )
 
 type Share struct {
@@ -182,6 +182,7 @@ func CreateShare(
 	wtxidMerkleRoot *chainhash.Hash,
 	txidMerkleLinkBranches []*chainhash.Hash,
 	coinbaseMerkleLinkBranches []*chainhash.Hash,
+	prebuiltCoinbaseBytes []byte,
 ) (*Share, error) {
 	nonceBytes, err := hex.DecodeString(nonceHex)
 	if err != nil || len(nonceBytes) != 4 {
@@ -199,7 +200,7 @@ func CreateShare(
 	var pkhVersion byte
 
 	if strings.HasPrefix(strings.ToLower(payoutAddress), "vtc1") || strings.HasPrefix(strings.ToLower(payoutAddress), "tvtc1") {
-		hrp, decodedBech32, err := bech32.Decode(payoutAddress)
+		hrp, decodedBech32, err := bech32.Decode(strings.ToLower(payoutAddress))
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode bech32 payout address '%s': %v", payoutAddress, err)
 		}
@@ -228,9 +229,14 @@ func CreateShare(
 
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
 
-	coinbaseTxBytes, err := CreateCoinbaseTx(job, payoutAddress, extraNonce1, extraNonce2, witnessCommitment)
-	if err != nil {
-		return nil, err
+	var coinbaseTxBytes []byte
+	if len(prebuiltCoinbaseBytes) > 0 {
+		coinbaseTxBytes = prebuiltCoinbaseBytes
+	} else {
+		coinbaseTxBytes, err = CreateCoinbaseTx(job, payoutAddress, extraNonce1, extraNonce2, witnessCommitment, shareChain)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	merkleLinkBranches := make([]*chainhash.Hash, len(coinbaseMerkleLinkBranches))
@@ -243,7 +249,11 @@ func CreateShare(
 
 	newTxHashesForShareInfo := []*chainhash.Hash{}
 	for _, tx := range job.Transactions {
-		h, _ := chainhash.NewHashFromStr(tx.TxID)
+		txIDStr := tx.TxID
+		if txIDStr == "" {
+			txIDStr = tx.Hash
+		}
+		h, _ := chainhash.NewHashFromStr(txIDStr)
 		newTxHashesForShareInfo = append(newTxHashesForShareInfo, h)
 	}
 

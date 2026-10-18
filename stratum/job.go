@@ -1,19 +1,20 @@
 package stratum
 
 import (
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 type Job struct {
 	ID            string
 	BlockTemplate *work.BlockTemplate
 	ExtraNonce1   string
-	Difficulty    float64 // This is the new field
+	Difficulty    float64
+	Coinb1        string
+	Coinb2        string
 
-	// [NEW] Fields for pre-calculated data
-	WitnessCommitment    []byte
-	WTXIDMerkleRoot      *chainhash.Hash
-	TXIDMerkleLink       []*chainhash.Hash
+	WitnessCommitment  []byte
+	WTXIDMerkleRoot    *chainhash.Hash
+	TXIDMerkleLink     []*chainhash.Hash
 	CoinbaseMerkleLink []*chainhash.Hash
 }

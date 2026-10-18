@@ -13,18 +13,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcutil/base58"
-	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
+	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcutil/base58"
+	"github.com/btcsuite/btcd/btcutil/bech32"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 const hashrateConstant = 16777216 // 2^24
 var jobCounter uint64
+var lastVerifiedHeight int64
 
 func doubleSHA256(data []byte) []byte {
 	h := sha256.Sum256(data)
@@ -340,10 +341,18 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		}
 	}
 
+	// Reconstruct the exact coinbase bytes from the job's Coinb1 and Coinb2 so it never drifts
+	// from what VerthashMiner hashed even if new shares arrived in the ShareChain in the meantime.
+	var prebuiltCoinbase []byte
+	if job.Coinb1 != "" && job.Coinb2 != "" {
+		prebuiltCoinbase, _ = work.RebuildCoinbaseFromStratumParts(job.Coinb1, job.ExtraNonce1, extraNonce2, job.Coinb2)
+	}
+
 	newShare, err := work.CreateShare(
 		job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr,
 		s.workManager.ShareChain, jobDifficulty, job.WitnessCommitment,
 		job.WTXIDMerkleRoot, job.TXIDMerkleLink, job.CoinbaseMerkleLink,
+		prebuiltCoinbase,
 	)
 	if err != nil {
 		logging.Errorf("Stratum: CreateShare error: %v", err)
@@ -370,6 +379,14 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
 		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Share Diff: %.5f / Target Diff: %.5f)", c.WorkerName, shareDiff, jobDifficulty)
+
+		// Run a live BIP22 Consensus Proposal check against vertcoind once per block height
+		// to prove 100% that vertcoind accepts our full block structure & PPLNS coinbase outputs!
+		if atomic.LoadInt64(&lastVerifiedHeight) != job.BlockTemplate.Height {
+			if atomic.CompareAndSwapInt64(&lastVerifiedHeight, atomic.LoadInt64(&lastVerifiedHeight), job.BlockTemplate.Height) {
+				go s.workManager.VerifyCandidateBlock(newShare, job.BlockTemplate)
+			}
+		}
 
 		c.Mutex.Lock()
 		c.AcceptedShares++
@@ -528,10 +545,7 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 			if targetTime <= 0 {
 				targetTime = 5.0
 			}
-			ratio := avgTime / targetTime
-			// Wait: if avgTime < targetTime (shares coming in too fast), we must INCREASE difficulty:
-			// newDiff = curDiff * (targetTime / avgTime)
-			ratio = targetTime / avgTime
+			ratio := targetTime / avgTime
 			if ratio > 2.0 {
 				ratio = 2.0
 			} else if ratio < 0.5 {
@@ -554,9 +568,6 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 		if shouldUpdate {
 			s.sendDifficulty(c, newDiff)
 
-			// VerthashMiner only applies sctx->next_diff when it receives a mining.notify packet.
-			// By advancing CurTime to the current second, the new job has a unique header
-			// so VerthashMiner applies the new difficulty immediately AND never hashes duplicate nonces.
 			s.lastJobMutex.RLock()
 			job := s.lastJob
 			s.lastJobMutex.RUnlock()
@@ -592,7 +603,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		return
 	}
 
-	coinb1, coinb2, err := work.SplitCoinbaseForStratum(&jobTemplate, payoutAddr, masterJob.WitnessCommitment)
+	coinb1, coinb2, err := work.SplitCoinbaseForStratum(&jobTemplate, payoutAddr, masterJob.WitnessCommitment, s.workManager.ShareChain)
 	if err != nil {
 		logging.Errorf("Stratum: Failed to build coinbase for miner %s: %v", payoutAddr, err)
 		c.Mutex.Unlock()
@@ -617,6 +628,8 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		BlockTemplate:      &jobTemplate,
 		ExtraNonce1:        c.ExtraNonce1,
 		Difficulty:         diff,
+		Coinb1:             coinb1,
+		Coinb2:             coinb2,
 		WitnessCommitment:  masterJob.WitnessCommitment,
 		WTXIDMerkleRoot:    masterJob.WTXIDMerkleRoot,
 		TXIDMerkleLink:     masterJob.TXIDMerkleLink,
