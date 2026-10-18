@@ -11,7 +11,9 @@ testnet: false
 # To connect to remote internet p2pool-go-VTC nodes, list their full libp2p
 # multiaddr (printed in the startup log as "P2P Connect Multiaddr").
 # Note: This Go mesh does not connect to legacy Python P2Pool nodes.
-peers: []
+peers:
+  - "/ip4/138.68.53.157/tcp/9348/p2p/12D3KooWNiQ2TSXEhFgZrsJuuk9xxNheph8b23pK4RHaPSQFNDwU"
+  - "/dns4/p2poolvtc.com/tcp/9348/p2p/12D3KooWNiQ2TSXEhFgZrsJuuk9xxNheph8b23pK4RHaPSQFNDwU"
 #  - "/ip4/203.0.113.50/tcp/9348/p2p/12D3KooWL65LCCkfLnN2PaEjdXUm4BBHj24nzpABPhDatjNzPKwi"
 
 
