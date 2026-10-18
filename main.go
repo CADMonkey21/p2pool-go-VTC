@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/soheilhy/cmux"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
@@ -166,19 +169,49 @@ func main() {
 	go workManager.WatchMaturedBlocks()
 	go workManager.WatchFoundBlocks()
 
-	/* ----- NEW LIBP2P NETWORKING ------------------------------------ */
-	p2pNode, err := p2p.NewNode(4001)
+	/* ----- LIBP2P NETWORKING ---------------------------------------- */
+	p2pPort := config.Active.P2PPort
+	if p2pPort <= 0 {
+		p2pPort = 4001
+	}
+	p2pNode, err := p2p.NewNode(p2pPort)
 	if err != nil {
 		logging.Fatalf("Failed to start p2p networking: %v", err)
 	}
 	defer p2pNode.Close()
 
-	bootstrapPeers := []string{}
-	go p2pNode.Bootstrap(bootstrapPeers)
+	go p2pNode.Bootstrap(config.Active.Peers)
 
 	go func() {
 		for shareBytes := range p2pNode.IncomingShares {
-			logging.Infof("Received remote share over GossipSub: %s", string(shareBytes))
+			var remoteShare work.Share
+			if err := json.Unmarshal(shareBytes, &remoteShare); err != nil {
+				logging.Warnf("P2P: Failed to unmarshal incoming peer share: %v", err)
+				continue
+			}
+			if err := remoteShare.CalculateHashes(); err != nil {
+				logging.Warnf("P2P: Failed to calculate hashes for incoming peer share: %v", err)
+				continue
+			}
+			if valid, reason := remoteShare.IsValid(); !valid {
+				logging.Warnf("P2P: Rejected invalid peer share (%s)", reason)
+				continue
+			}
+
+			added := sc.AddShares([]work.Share{remoteShare})
+			if added > 0 {
+				logging.Infof("P2P: Validated and added remote peer share %s to ShareChain", remoteShare.Hash.String()[:12])
+
+				// Check if the peer's share also solved a network block
+				netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
+				powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
+				if powInt.Cmp(netTarget) <= 0 {
+					select {
+					case sc.FoundBlockChan <- &remoteShare:
+					default:
+					}
+				}
+			}
 		}
 	}()
 	/* ---------------------------------------------------------------- */

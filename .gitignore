@@ -19,3 +19,5 @@ config.yaml
 
 p2pool-go-vtc
 sharechain.json
+peer.key
+p2pool.log
