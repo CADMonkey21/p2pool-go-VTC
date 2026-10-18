@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"regexp"
 )
 
 // ANSI Color Codes
@@ -28,15 +29,37 @@ const (
 )
 
 var logLevel = LogLevelError // the default
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// plainTextWriter strips ANSI color codes before writing to the log file on disk.
+type plainTextWriter struct {
+	w io.Writer
+}
+
+func (p *plainTextWriter) Write(data []byte) (int, error) {
+	cleaned := ansiRegex.ReplaceAll(data, nil)
+	if _, err := p.w.Write(cleaned); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
 
 func SetLogLevel(newLevel int) {
 	logLevel = LogLevel(newLevel)
 }
 
+func GetLogLevel() LogLevel {
+	return logLevel
+}
+
 func SetLogFile(logFile io.Writer) {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	logOutput := io.MultiWriter(os.Stdout, logFile)
-	log.SetOutput(logOutput)
+	if logFile != nil {
+		logOutput := io.MultiWriter(os.Stdout, &plainTextWriter{w: logFile})
+		log.SetOutput(logOutput)
+	} else {
+		log.SetOutput(os.Stdout)
+	}
 }
 
 func getPrefix(level string) string {
@@ -95,53 +118,48 @@ func Errorf(format string, args ...interface{}) {
 
 func Debugln(args ...interface{}) {
 	if logLevel >= LogLevelDebug {
-		log.Println(append([]interface{}{Cyan + getPrefix("DEBUG")}, args...)...)
+		log.Println( Cyan + getPrefix("DEBUG") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
 func Infoln(args ...interface{}) {
 	if logLevel >= LogLevelInfo {
-		log.Println(append([]interface{}{White + getPrefix("INFO")}, args...)...)
+		log.Println(White + getPrefix("INFO") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
 func Warnln(args ...interface{}) {
 	if logLevel >= LogLevelWarning {
-		log.Println(append([]interface{}{Yellow + getPrefix("WARN")}, args...)...)
+		log.Println(Yellow + getPrefix("WARN") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
 func Errorln(args ...interface{}) {
 	if logLevel >= LogLevelError {
-		log.Println(append([]interface{}{Red + getPrefix("ERROR")}, args...)...)
+		log.Println(Red + getPrefix("ERROR") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
 func Debug(args ...interface{}) {
 	if logLevel >= LogLevelDebug {
-		log.Print(append([]interface{}{Cyan + getPrefix("DEBUG")}, args...)...)
+		log.Print(Cyan + getPrefix("DEBUG") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
 func Info(args ...interface{}) {
 	if logLevel >= LogLevelInfo {
-		log.Print(append([]interface{}{White + getPrefix("INFO")}, args...)...)
+		log.Print(White + getPrefix("INFO") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
 func Warn(args ...interface{}) {
 	if logLevel >= LogLevelWarning {
-		log.Print(append([]interface{}{Yellow + getPrefix("WARN")}, args...)...)
+		log.Print(Yellow + getPrefix("WARN") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
 func Error(args ...interface{}) {
 	if logLevel >= LogLevelError {
-		log.Print(append([]interface{}{Red + getPrefix("ERROR")}, args...)...)
+		log.Print(Red + getPrefix("ERROR") + " " + fmt.Sprint(args...) + Reset)
 	}
-}
-
-// [NEW] GetLogLevel returns the current logging level.
-func GetLogLevel() LogLevel {
-	return logLevel
 }

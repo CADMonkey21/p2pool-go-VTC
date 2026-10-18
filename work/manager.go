@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -26,12 +27,22 @@ const (
 	StateOrphan
 )
 
+const blocksFile = "blocks.json"
+
 type PayoutBlock struct {
 	BlockHash          *chainhash.Hash
 	BlockFindShareHash *chainhash.Hash
 	BlockHeight        int32
 	FoundTime          time.Time
 	State              BlockState
+}
+
+type persistedBlock struct {
+	BlockHash   string     `json:"block_hash"`
+	ShareHash   string     `json:"share_hash"`
+	BlockHeight int32      `json:"block_height"`
+	FoundTime   time.Time  `json:"found_time"`
+	State       BlockState `json:"state"`
 }
 
 type WorkManager struct {
@@ -56,7 +67,86 @@ func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 		NewBlockChan:     make(chan *BlockTemplate, 10),
 		ForceNewTemplate: make(chan bool, 1),
 	}
+	wm.LoadBlocks()
 	return wm
+}
+
+// LoadBlocks restores found block history from blocks.json on startup.
+func (wm *WorkManager) LoadBlocks() {
+	wm.PendingMutex.Lock()
+	defer wm.PendingMutex.Unlock()
+
+	data, err := os.ReadFile(blocksFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logging.Warnf("Could not read %s: %v", blocksFile, err)
+		}
+		return
+	}
+
+	var diskBlocks []persistedBlock
+	if err := json.Unmarshal(data, &diskBlocks); err != nil {
+		logging.Warnf("Failed to unmarshal %s: %v", blocksFile, err)
+		return
+	}
+
+	loaded := make([]*PayoutBlock, 0, len(diskBlocks))
+	for _, db := range diskBlocks {
+		bh, _ := chainhash.NewHashFromStr(db.BlockHash)
+		sh, _ := chainhash.NewHashFromStr(db.ShareHash)
+		if bh == nil {
+			bh = &chainhash.Hash{}
+		}
+		if sh == nil {
+			sh = &chainhash.Hash{}
+		}
+		loaded = append(loaded, &PayoutBlock{
+			BlockHash:          bh,
+			BlockFindShareHash: sh,
+			BlockHeight:        db.BlockHeight,
+			FoundTime:          db.FoundTime,
+			State:              db.State,
+		})
+	}
+	wm.PendingBlocks = loaded
+	logging.Infof("Loaded %d found block(s) from %s", len(wm.PendingBlocks), blocksFile)
+}
+
+// SaveBlocks writes the current found blocks list to blocks.json.
+func (wm *WorkManager) SaveBlocks() {
+	wm.PendingMutex.Lock()
+	defer wm.PendingMutex.Unlock()
+	wm.saveBlocksLocked()
+}
+
+func (wm *WorkManager) saveBlocksLocked() {
+	diskBlocks := make([]persistedBlock, 0, len(wm.PendingBlocks))
+	for _, pb := range wm.PendingBlocks {
+		bhStr := ""
+		if pb.BlockHash != nil {
+			bhStr = pb.BlockHash.String()
+		}
+		shStr := ""
+		if pb.BlockFindShareHash != nil {
+			shStr = pb.BlockFindShareHash.String()
+		}
+		diskBlocks = append(diskBlocks, persistedBlock{
+			BlockHash:   bhStr,
+			ShareHash:   shStr,
+			BlockHeight: pb.BlockHeight,
+			FoundTime:   pb.FoundTime,
+			State:       pb.State,
+		})
+	}
+
+	data, err := json.MarshalIndent(diskBlocks, "", "  ")
+	if err != nil {
+		logging.Errorf("Failed to marshal found blocks: %v", err)
+		return
+	}
+	if err := os.WriteFile(blocksFile, data, 0644); err != nil {
+		logging.Errorf("Failed to write %s: %v", blocksFile, err)
+	}
 }
 
 func (wm *WorkManager) IsSynced() bool {
@@ -70,7 +160,11 @@ func (wm *WorkManager) WatchFoundBlocks() {
 		wm.PendingMutex.Lock()
 		isKnown := false
 		for _, pb := range wm.PendingBlocks {
-			if pb.BlockFindShareHash.IsEqual(share.Hash) {
+			if pb.BlockFindShareHash != nil && share.Hash != nil && pb.BlockFindShareHash.IsEqual(share.Hash) {
+				isKnown = true
+				break
+			}
+			if pb.BlockHeight == share.ShareInfo.AbsHeight {
 				isKnown = true
 				break
 			}
@@ -93,6 +187,7 @@ func (wm *WorkManager) WatchFoundBlocks() {
 				FoundTime:          time.Unix(int64(share.ShareInfo.Timestamp), 0),
 				State:              StatePending,
 			})
+			wm.saveBlocksLocked()
 		}
 		wm.PendingMutex.Unlock()
 	}
@@ -171,31 +266,41 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 	for {
 		<-ticker.C
 		var keptBlocks []*PayoutBlock
+		changed := false
 
 		wm.PendingMutex.Lock()
 		for _, pb := range wm.PendingBlocks {
 			keep := true
 			switch pb.State {
 			case StatePaid, StateOrphan:
-				// Keep recent found blocks in the list for 24h dashboard display
-				if time.Since(pb.FoundTime) > 24*time.Hour {
+				// Keep found blocks for 7 days in history so recent_blocks_table stays populated
+				if time.Since(pb.FoundTime) > 7*24*time.Hour {
 					keep = false
+					changed = true
 				}
 			case StatePending:
+				if pb.BlockHash == nil || pb.BlockHash.IsEqual(&chainhash.Hash{}) {
+					pb.State = StatePaid
+					changed = true
+					break
+				}
 				blockInfo, err := wm.rpcClient.GetBlock(pb.BlockHash)
 				if err != nil {
 					if rpcErr, ok := err.(*rpc.RPCError); ok && rpcErr.Code == -5 {
 						logging.Warnf("Block %s appears orphaned", pb.BlockHash.String())
 						pb.State = StateOrphan
 						keep = false
+						changed = true
 					}
 				} else if blockInfo.Confirmations < 0 {
 					logging.Warnf("Block %s was orphaned (confirmations: %d)", pb.BlockHash.String(), blockInfo.Confirmations)
 					pb.State = StateOrphan
 					keep = false
+					changed = true
 				} else if blockInfo.Confirmations >= requiredConfirmations {
 					logging.Successf("Block %s is now MATURE (%d confirmations)! Direct coinbase PPLNS outputs are now spendable.", pb.BlockHash.String(), blockInfo.Confirmations)
 					pb.State = StatePaid
+					changed = true
 				}
 			}
 
@@ -205,6 +310,9 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 		}
 
 		wm.PendingBlocks = keptBlocks
+		if changed {
+			wm.saveBlocksLocked()
+		}
 		wm.PendingMutex.Unlock()
 	}
 }
@@ -291,6 +399,7 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 		FoundTime:          time.Now(),
 		State:              StatePending,
 	})
+	wm.saveBlocksLocked()
 	wm.PendingMutex.Unlock()
 
 	wm.TemplateMutex.Lock()
