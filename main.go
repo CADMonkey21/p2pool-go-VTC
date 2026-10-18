@@ -85,8 +85,13 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 		stats := sc.GetStats()
 		localHashrate := ss.GetLocalHashrate()
 
+		peerCount := 0
+		if p2pNode != nil && p2pNode.Host != nil {
+			peerCount = len(p2pNode.Host.Network().Peers())
+		}
+
 		effectivePoolHashrate := stats.PoolHashrate
-		if localHashrate > effectivePoolHashrate {
+		if peerCount == 0 || localHashrate > effectivePoolHashrate {
 			effectivePoolHashrate = localHashrate
 		}
 
@@ -99,11 +104,6 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 		connectedMiners := len(ss.GetClients())
 		blocksFound24h := workManager.GetBlocksFoundInLast(24 * time.Hour)
 		lastBlockFoundTime := workManager.GetLastBlockFoundTime()
-
-		peerCount := 0
-		if p2pNode != nil {
-			peerCount = len(p2pNode.Host.Network().Peers())
-		}
 
 		logging.Infof("================================= Stats Update =================================")
 		logging.Infof("Peers: %d  |  Miners: %d  |  GoRoutines: %d", peerCount, connectedMiners, runtime.NumGoroutine())

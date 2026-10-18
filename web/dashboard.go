@@ -3,7 +3,9 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
@@ -140,9 +142,14 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		minShareDiff = 0.01
 	}
 
-	// Use localHashrate if the 1-hour sharechain rolling average is still ramping up
+	peerCount := 0
+	if d.p2pNode != nil && d.p2pNode.Host != nil {
+		peerCount = len(d.p2pNode.Host.Network().Peers())
+	}
+
+	// When no external P2P peers are connected, the local node is 100% of the P2Pool network.
 	effectivePoolHashrate := poolStats.PoolHashrate
-	if localHashrate > effectivePoolHashrate {
+	if peerCount == 0 || localHashrate > effectivePoolHashrate {
 		effectivePoolHashrate = localHashrate
 	}
 
@@ -151,7 +158,6 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		effectiveTimeToBlock = (poolStats.NetworkHashrate / effectivePoolHashrate) * 150.0
 	}
 
-	// Calculate baseline reward metrics for payout estimations
 	poolFeePct := config.Active.Fee / 100.0
 	netBlockReward := blockReward * (1.0 - poolFeePct)
 	expectedBlocks24h := 0.0
@@ -161,6 +167,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Aggregate client connections by wallet address (workerName)
 	minerMap := make(map[string]*aggregatedMiner)
+	var defaultMinerAddr string
 	for _, m := range activeMiners {
 		hr := d.stratum.GetHashrateForClient(m.ID)
 
@@ -173,6 +180,8 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if workerName == "" {
 			workerName = "Unknown"
+		} else if defaultMinerAddr == "" {
+			defaultMinerAddr = workerName
 		}
 		if curDiff <= 0 {
 			curDiff = minShareDiff
@@ -192,28 +201,54 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Compute real PPLNS payouts from the ShareChain (matching actual coinbase generation)
+	totalRewardSats := int64(math.Round(blockReward * 1e8))
+	if defaultMinerAddr == "" {
+		defaultMinerAddr = config.Active.PoolAddress
+	}
+	pplnsOutputs := work.CalculatePPLNSOutputs(totalRewardSats, defaultMinerAddr, sc)
+	pplnsPayoutMap := make(map[string]float64)
+	for _, out := range pplnsOutputs {
+		pplnsPayoutMap[out.Address] = float64(out.Amount) / 1e8
+	}
+
 	var dashboardMiners []map[string]interface{}
 	var dashboardPayouts []map[string]interface{}
 
-	for _, am := range minerMap {
+	// Sort active miners by address for consistent UI ordering
+	sortedMinerAddrs := make([]string, 0, len(minerMap))
+	for addr := range minerMap {
+		sortedMinerAddrs = append(sortedMinerAddrs, addr)
+	}
+	sort.Strings(sortedMinerAddrs)
+
+	for _, addr := range sortedMinerAddrs {
+		am := minerMap[addr]
 		totalShares := am.totalAccepted + am.totalRejected
 		rejPct := 0.0
 		if totalShares > 0 {
 			rejPct = (float64(am.totalRejected) / float64(totalShares)) * 100.0
 		}
 
-		minerProportion := 0.0
-		if am.totalHashrate > effectivePoolHashrate {
-			effectivePoolHashrate = am.totalHashrate
-		}
-		if effectivePoolHashrate > 0 {
-			minerProportion = am.totalHashrate / effectivePoolHashrate
+		// Use the miner's actual PPLNS coinbase payout if present in the sharechain;
+		// otherwise fall back to proportional live hashrate for brand-new miners.
+		payoutPerBlock, hasPPLNS := pplnsPayoutMap[am.address]
+		if !hasPPLNS {
+			minerProportion := 0.0
+			if effectivePoolHashrate > 0 {
+				minerProportion = am.totalHashrate / effectivePoolHashrate
+				if minerProportion > 1.0 {
+					minerProportion = 1.0
+				}
+			}
+			payoutPerBlock = minerProportion * netBlockReward
+			if payoutPerBlock > 0 {
+				pplnsPayoutMap[am.address] = payoutPerBlock
+			}
 		}
 
-		payoutPerBlock := minerProportion * netBlockReward
 		est24HourPayout := payoutPerBlock * expectedBlocks24h
 
-		// Calculate Average Time to Share using the miner's live vardiff difficulty
 		timeToShareSec := 0.0
 		if am.totalHashrate > 0 {
 			timeToShareSec = (am.currentDiff * hashrateConstant) / am.totalHashrate
@@ -227,10 +262,32 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"avg_time_to_share":      formatAvgTime(timeToShareSec),
 			"est_24_hour_payout_vtc": est24HourPayout,
 		})
+	}
 
+	// Populate Top 50 Payouts table from all PPLNS recipients (sorted highest payout first)
+	type payoutItem struct {
+		addr   string
+		amount float64
+	}
+	var allPayouts []payoutItem
+	for addr, amt := range pplnsPayoutMap {
+		if addr != "" && addr != "Unknown" && amt > 0 {
+			allPayouts = append(allPayouts, payoutItem{addr: addr, amount: amt})
+		}
+	}
+	sort.Slice(allPayouts, func(i, j int) bool {
+		if allPayouts[i].amount == allPayouts[j].amount {
+			return allPayouts[i].addr < allPayouts[j].addr
+		}
+		return allPayouts[i].amount > allPayouts[j].amount
+	})
+	if len(allPayouts) > 50 {
+		allPayouts = allPayouts[:50]
+	}
+	for _, p := range allPayouts {
 		dashboardPayouts = append(dashboardPayouts, map[string]interface{}{
-			"address":    am.address,
-			"payout_vtc": payoutPerBlock,
+			"address":    p.addr,
+			"payout_vtc": p.amount,
 		})
 	}
 
