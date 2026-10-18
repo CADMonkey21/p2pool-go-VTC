@@ -33,21 +33,31 @@ func doubleSHA256(data []byte) []byte {
 }
 
 func isValidVtcAddress(addr string) bool {
+	addr = strings.TrimSpace(addr)
 	if strings.HasPrefix(strings.ToLower(addr), "vtc1") || strings.HasPrefix(strings.ToLower(addr), "tvtc1") {
-		hrp, _, err := bech32.Decode(addr)
+		hrp, _, err := bech32.Decode(strings.ToLower(addr))
 		expectedHrp := "vtc"
-		if config.Active.Testnet { expectedHrp = "tvtc" }
+		if config.Active.Testnet {
+			expectedHrp = "tvtc"
+		}
+		if err != nil {
+			logging.Errorf("Bech32 decode failed for address '%s': %v", addr, err)
+		}
 		return err == nil && hrp == expectedHrp
 	}
 
 	decoded := base58.Decode(addr)
-	if len(decoded) < 5 { return false }
+	if len(decoded) < 5 {
+		return false
+	}
 	payload := decoded[:len(decoded)-4]
 	checksum := decoded[len(decoded)-4:]
 
 	expected := doubleSHA256(payload)[:4]
 	for i := 0; i < 4; i++ {
-		if checksum[i] != expected[i] { return false }
+		if checksum[i] != expected[i] {
+			return false
+		}
 	}
 
 	version := payload[0]
@@ -58,30 +68,42 @@ func isValidVtcAddress(addr string) bool {
 }
 
 func extractID(raw *json.RawMessage) interface{} {
-	if raw == nil { return nil }
+	if raw == nil {
+		return nil
+	}
 	var v interface{}
-	if err := json.Unmarshal(*raw, &v); err != nil { return nil }
+	if err := json.Unmarshal(*raw, &v); err != nil {
+		return nil
+	}
 	return v
 }
 
+// TargetToDiff converts a 256-bit hash/target into VerthashMiner difficulty units (Diff 1 = 0x000000ffff..., 2^24).
 func TargetToDiff(target *big.Int) float64 {
-	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
-	if target == nil || target.Sign() <= 0 { return 0 }
-	resultFloat := new(big.Float).Quo(new(big.Float).SetInt(maxTarget), new(big.Float).SetInt(target))
+	maxTarget, _ := new(big.Int).SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
+	if target == nil || target.Sign() <= 0 {
+		return 0
+	}
+	resultFloat := new(big.Float).SetPrec(256).Quo(new(big.Float).SetPrec(256).SetInt(maxTarget), new(big.Float).SetPrec(256).SetInt(target))
 	f64, _ := resultFloat.Float64()
 	return f64
 }
 
-func buildMasterNotifyParams(tmpl *work.BlockTemplate) []interface{} {
-	return []interface{}{
-		tmpl.PreviousBlockHash,
-		"01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704",
-		"000000000000000000000000000000",
-		[]string{},
-		"20000000",
-		tmpl.Bits,
-		fmt.Sprintf("%x", tmpl.CurTime),
+// formatStratumPrevHash correctly prepares prevhash for VerthashMiner / ccminer.
+func formatStratumPrevHash(rpcPrevHashHex string) string {
+	h, err := chainhash.NewHashFromStr(rpcPrevHashHex)
+	if err != nil {
+		return rpcPrevHashHex
 	}
+	leBytes := h.CloneBytes() // 32-byte internal little-endian
+	stratumBytes := make([]byte, 32)
+	for i := 0; i < 32; i += 4 {
+		stratumBytes[i+0] = leBytes[i+3]
+		stratumBytes[i+1] = leBytes[i+2]
+		stratumBytes[i+2] = leBytes[i+1]
+		stratumBytes[i+3] = leBytes[i+0]
+	}
+	return hex.EncodeToString(stratumBytes)
 }
 
 type StratumServer struct {
@@ -112,7 +134,9 @@ func (s *StratumServer) Serve(listener net.Listener) error {
 	logging.Infof("Stratum: Listening for miners on %s", listener.Addr())
 	for {
 		conn, err := listener.Accept()
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		go s.handleMinerConnection(conn)
 	}
 }
@@ -127,7 +151,9 @@ func (s *StratumServer) GetLocalEfficiency() float64 {
 		c.Mutex.Unlock()
 	}
 	totalShares := totalAccepted + totalRejected
-	if totalShares == 0 { return 100.0 }
+	if totalShares == 0 {
+		return 100.0
+	}
 	return (float64(totalAccepted) / float64(totalShares)) * 100.0
 }
 
@@ -158,7 +184,9 @@ func (s *StratumServer) GetClients() []*Client {
 	s.clientsMutex.RLock()
 	defer s.clientsMutex.RUnlock()
 	clients := make([]*Client, 0, len(s.clients))
-	for _, c := range s.clients { clients = append(clients, c) }
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
 	return clients
 }
 
@@ -167,19 +195,27 @@ func (s *StratumServer) GetHashrateForClient(id uint64) float64 {
 	client, ok := s.clients[id]
 	s.clientsMutex.RUnlock()
 
-	if !ok { return 0.0 }
+	if !ok {
+		return 0.0
+	}
 	client.Mutex.Lock()
 	defer client.Mutex.Unlock()
 
 	datums, span := client.LocalRateMonitor.GetDatumsInLast(10 * time.Minute)
-	if len(datums) < 5 || span < 30*time.Second { return 0.0 }
+	if len(datums) < 2 || span < 5*time.Second {
+		return 0.0
+	}
 	workTotal := 0.0
-	for _, d := range datums { workTotal += d.Work }
+	for _, d := range datums {
+		workTotal += d.Work
+	}
 	return (workTotal * hashrateConstant) / span.Seconds()
 }
 
 func (s *StratumServer) dropClient(c *Client) {
-	if c.closed.Load() { return }
+	if c.closed.Load() {
+		return
+	}
 	c.closed.Store(true)
 
 	c.Conn.Close()
@@ -200,15 +236,21 @@ func (s *StratumServer) jobBroadcaster() {
 
 		wtxidMerkleRoot, witnessCommitment, _ := work.CalculateWitnessCommitment(&jobTemplate)
 
-		dummyCoinbaseHash := work.DblSha256([]byte{})
-		txHashesForLink := [][]byte{work.ReverseBytes(dummyCoinbaseHash)}
+		dummyCoinbaseHash := make([]byte, 32)
+		txHashesForLink := [][]byte{dummyCoinbaseHash}
 		for _, tx := range jobTemplate.Transactions {
-			txHashBytes, _ := hex.DecodeString(tx.Hash)
-			txHashesForLink = append(txHashesForLink, work.ReverseBytes(txHashBytes))
+			txIDStr := tx.TxID
+			if txIDStr == "" {
+				txIDStr = tx.Hash
+			}
+			txHash, err := chainhash.NewHashFromStr(txIDStr)
+			if err != nil {
+				logging.Errorf("Stratum: Failed to parse TxID %s: %v", txIDStr, err)
+				continue
+			}
+			txHashesForLink = append(txHashesForLink, txHash.CloneBytes())
 		}
 		merkleLinkBranches := work.CalculateMerkleLink(txHashesForLink, 0)
-
-		masterParams := buildMasterNotifyParams(&jobTemplate)
 
 		newJob := &Job{
 			ID:                 fmt.Sprintf("%d", newJobID),
@@ -226,7 +268,7 @@ func (s *StratumServer) jobBroadcaster() {
 		clients := s.GetClients()
 		for _, c := range clients {
 			if c.Authorized && !c.closed.Load() {
-				go s.sendMiningJob(c, &jobTemplate, true, masterParams)
+				go s.sendMiningJob(c, &jobTemplate, true)
 			}
 		}
 	}
@@ -247,15 +289,19 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 	for {
 		client.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 		var req JSONRPCRequest
-		if err := decoder.Decode(&req); err != nil { return }
-		
-		// This updates the timer used by our new Idle Watcher
+		if err := decoder.Decode(&req); err != nil {
+			return
+		}
+
 		client.LastActivity = time.Now()
 
 		switch req.Method {
-		case "mining.subscribe": s.handleSubscribe(client, &req)
-		case "mining.authorize": s.handleAuthorize(client, &req)
-		case "mining.submit": s.handleSubmit(client, &req)
+		case "mining.subscribe":
+			s.handleSubscribe(client, &req)
+		case "mining.authorize":
+			s.handleAuthorize(client, &req)
+		case "mining.submit":
+			s.handleSubmit(client, &req)
 		}
 	}
 }
@@ -274,7 +320,9 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	job, jobExists := c.ActiveJobs[jobID]
 	payoutAddr := c.WorkerName
 	jobDifficulty := 0.0
-	if jobExists { jobDifficulty = job.Difficulty }
+	if jobExists {
+		jobDifficulty = job.Difficulty
+	}
 	c.Mutex.Unlock()
 
 	if !jobExists {
@@ -285,12 +333,20 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
+	if jobDifficulty <= 0 {
+		jobDifficulty = config.Active.Vardiff.MinDiff
+		if jobDifficulty <= 0 {
+			jobDifficulty = 0.01
+		}
+	}
+
 	newShare, err := work.CreateShare(
 		job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr,
 		s.workManager.ShareChain, jobDifficulty, job.WitnessCommitment,
 		job.WTXIDMerkleRoot, job.TXIDMerkleLink, job.CoinbaseMerkleLink,
 	)
 	if err != nil {
+		logging.Errorf("Stratum: CreateShare error: %v", err)
 		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{26, "Internal error", nil}})
 		return
 	}
@@ -306,14 +362,14 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	jobPrevHash, _ := chainhash.NewHashFromStr(job.BlockTemplate.PreviousBlockHash)
 	if latestPrevHash != nil && !jobPrevHash.IsEqual(latestPrevHash) {
 		isStale = true
-		newShare.ShareInfo.ShareData.StaleInfo = 255
+		newShare.ShareInfo.ShareData.StaleInfo = 254 // DOA
 	}
 
 	accepted, reason := newShare.IsValid()
 	if accepted && !isStale {
 		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
 		shareDiff := TargetToDiff(powInt)
-		logging.Successf("SHARE ACCEPTED from %s (Diff: %.2f)", c.WorkerName, shareDiff)
+		logging.Successf("SHARE ACCEPTED from %s (Share Diff: %.5f / Target Diff: %.5f)", c.WorkerName, shareDiff, jobDifficulty)
 
 		c.Mutex.Lock()
 		c.AcceptedShares++
@@ -337,18 +393,28 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		}
 
 		if powInt.Cmp(netTarget) <= 0 {
-			logging.Successf("!!!! BLOCK FOUND !!!! Share meets network target!")
-			go s.workManager.SubmitBlock(newShare, job.BlockTemplate)
+			logging.Successf("!!!! BLOCK FOUND !!!! Share meets network target! Submitting to vertcoind...")
+			go func() {
+				if err := s.workManager.SubmitBlock(newShare, job.BlockTemplate); err != nil {
+					logging.Errorf("CRITICAL: Block submission failed: %v", err)
+				}
+			}()
 		}
 	} else {
-		if isStale { reason = "Stale share (DOA)" }
-		logging.Warnf("Stratum: Share rejected – %s", reason)
+		if isStale {
+			reason = "Stale share (DOA)"
+		}
+		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
+		actualDiff := TargetToDiff(powInt)
+		logging.Warnf("Stratum: Share rejected – %s (Actual Diff: %.6f vs Needed: %.6f)", reason, actualDiff, jobDifficulty)
 		c.Mutex.Lock()
 		c.RejectedShares++
 		c.Mutex.Unlock()
 	}
 
-	if isStale { go s.workManager.ShareChain.AddShares([]work.Share{*newShare}) }
+	if isStale && accepted {
+		go s.workManager.ShareChain.AddShares([]work.Share{*newShare})
+	}
 	_ = c.send(JSONRPCResponse{ID: id, Result: accepted && !isStale, Error: nil})
 }
 
@@ -369,51 +435,77 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	}
 
 	var params []string
-	json.Unmarshal(*req.Params, &params)
-	addr := strings.Split(params[0], ".")[0]
+	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) == 0 {
+		_ = c.send(JSONRPCResponse{ID: id, Result: false, Error: []interface{}{24, "Malformed authorize params", nil}})
+		go s.dropClient(c)
+		return
+	}
+
+	addr := strings.TrimSpace(strings.Split(params[0], ".")[0])
+	logging.Infof("Stratum: Miner authorizing address: '%s'", addr)
 
 	if !isValidVtcAddress(addr) {
+		logging.Errorf("Stratum: Rejected invalid VTC address: '%s'", addr)
 		_ = c.send(JSONRPCResponse{ID: id, Result: false, Error: []interface{}{24, "Invalid VTC address", nil}})
 		go s.dropClient(c)
 		return
 	}
 
 	c.Mutex.Lock()
-	c.WorkerName = strings.ToLower(addr)
+	if strings.HasPrefix(strings.ToLower(addr), "vtc1") || strings.HasPrefix(strings.ToLower(addr), "tvtc1") {
+		c.WorkerName = strings.ToLower(addr)
+	} else {
+		c.WorkerName = addr
+	}
 	c.Authorized = true
 	c.Mutex.Unlock()
 
+	minDiff := config.Active.Vardiff.MinDiff
+	if minDiff <= 0 {
+		minDiff = 0.01
+	}
+
 	_ = c.send(JSONRPCResponse{ID: id, Result: true, Error: nil})
-	s.sendDifficulty(c, config.Active.Vardiff.MinDiff)
+	s.sendDifficulty(c, minDiff)
 
 	s.lastJobMutex.RLock()
 	job := s.lastJob
 	s.lastJobMutex.RUnlock()
 	if job != nil {
 		jobTemplate := *job.BlockTemplate
-		go s.sendMiningJob(c, &jobTemplate, true, buildMasterNotifyParams(&jobTemplate))
+		go s.sendMiningJob(c, &jobTemplate, true)
 	}
 }
 
 func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
-	if c.closed.Load() { return }
+	if c.closed.Load() {
+		return
+	}
 	c.Mutex.Lock()
 	c.CurrentDifficulty = diff
 	c.Mutex.Unlock()
 	_ = c.send(JSONRPCResponse{Method: "mining.set_difficulty", Params: []interface{}{diff}})
 }
 
-// [CRITICAL FIX] Mathematically constrained Vardiff loop with Time-Decay and Max Cap
 func (s *StratumServer) vardiffLoop(c *Client) {
 	retargetSecs := time.Duration(config.Active.Vardiff.RetargetTime) * time.Second
+	if retargetSecs <= 0 {
+		retargetSecs = 30 * time.Second
+	}
 	ticker := time.NewTicker(retargetSecs)
 	defer ticker.Stop()
 
-	maxDiff := 10000.0 // Hard ceiling to prevent infinite scaling loops
+	minDiff := config.Active.Vardiff.MinDiff
+	if minDiff <= 0 {
+		minDiff = 0.01
+	}
+	maxDiff := 10.0
 
 	for {
 		<-ticker.C
-		if c.closed.Load() { return }
+		if c.closed.Load() {
+			return
+		}
 
 		c.Mutex.Lock()
 		if !c.Authorized {
@@ -421,101 +513,139 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 			continue
 		}
 
-		// --- TIME DECAY (IDLE WATCHER) ---
-		// If the miner hasn't communicated in longer than the retarget window,
-		// they are struggling. We must decay the difficulty and skip the frozen average math.
-		idleTime := time.Since(c.LastActivity)
-		if idleTime > retargetSecs {
-			newDiff := c.CurrentDifficulty * 0.5 // Halve the difficulty
+		datums, span := c.LocalRateMonitor.GetDatumsInLast(retargetSecs)
+		curDiff := c.CurrentDifficulty
+		if curDiff <= 0 {
+			curDiff = minDiff
+		}
 
-			if newDiff < config.Active.Vardiff.MinDiff {
-				newDiff = config.Active.Vardiff.MinDiff
+		var newDiff float64
+		if len(datums) == 0 {
+			newDiff = curDiff * 0.5
+		} else {
+			avgTime := span.Seconds() / float64(len(datums))
+			targetTime := config.Active.Vardiff.TargetTime
+			if targetTime <= 0 {
+				targetTime = 5.0
 			}
-
-			curDiff := c.CurrentDifficulty
-			c.Mutex.Unlock()
-
-			// Only push the new difficulty if it actually changed
-			if newDiff < curDiff {
-				s.sendDifficulty(c, newDiff)
+			ratio := avgTime / targetTime
+			// Wait: if avgTime < targetTime (shares coming in too fast), we must INCREASE difficulty:
+			// newDiff = curDiff * (targetTime / avgTime)
+			ratio = targetTime / avgTime
+			if ratio > 2.0 {
+				ratio = 2.0
+			} else if ratio < 0.5 {
+				ratio = 0.5
 			}
-			continue // Skip normal rolling average calculation!
+			newDiff = curDiff * ratio
 		}
 
-		// --- ROLLING AVERAGE CALCULATION ---
-		datums, span := c.LocalRateMonitor.GetDatumsInLast(c.LocalRateMonitor.maxLookbackTime)
-
-		// We need at least 2 datums to calculate a meaningful time span
-		if len(datums) < 2 {
-			c.Mutex.Unlock()
-			continue
-		}
-
-		avgTime := span.Seconds() / float64(len(datums))
-		if avgTime <= 0 { avgTime = 1 }
-
-		ratio := float64(config.Active.Vardiff.TargetTime) / avgTime
-
-		// Clamp the jump multiplier. It can NEVER increase more than 1.5x or decrease more than 0.5x.
-		if ratio > 1.5 {
-			ratio = 1.5
-		} else if ratio < 0.5 {
-			ratio = 0.5
-		}
-
-		newDiff := c.CurrentDifficulty * ratio
-
-		// Enforce Floors and Ceilings
-		if newDiff < config.Active.Vardiff.MinDiff {
-			newDiff = config.Active.Vardiff.MinDiff
+		if newDiff < minDiff {
+			newDiff = minDiff
 		}
 		if newDiff > maxDiff {
 			newDiff = maxDiff
 		}
 
-		curDiff := c.CurrentDifficulty
+		diffChangeRatio := newDiff / curDiff
+		shouldUpdate := diffChangeRatio < 0.85 || diffChangeRatio > 1.15
 		c.Mutex.Unlock()
 
-		// Apply the variance buffer to avoid spamming the miner with micro-adjustments
-		varianceUpper := 1.0 + config.Active.Vardiff.Variance
-		varianceLower := 1.0 - config.Active.Vardiff.Variance
-		
-		if (newDiff/curDiff) > varianceUpper || (newDiff/curDiff) < varianceLower {
+		if shouldUpdate {
 			s.sendDifficulty(c, newDiff)
+
+			// VerthashMiner only applies sctx->next_diff when it receives a mining.notify packet.
+			// By advancing CurTime to the current second, the new job has a unique header
+			// so VerthashMiner applies the new difficulty immediately AND never hashes duplicate nonces.
+			s.lastJobMutex.RLock()
+			job := s.lastJob
+			s.lastJobMutex.RUnlock()
+			if job != nil {
+				jobTemplate := *job.BlockTemplate
+				nowUnix := time.Now().Unix()
+				if nowUnix > jobTemplate.CurTime {
+					jobTemplate.CurTime = nowUnix
+				} else {
+					jobTemplate.CurTime++
+				}
+				go s.sendMiningJob(c, &jobTemplate, false)
+			}
 		}
 	}
 }
 
-func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean bool, masterParams []interface{}) {
-	if c.closed.Load() || tmpl == nil { return }
+func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean bool) {
+	if c.closed.Load() || tmpl == nil {
+		return
+	}
 
 	c.Mutex.Lock()
 	jobID := fmt.Sprintf("%d", atomic.AddUint64(&jobCounter, 1))
 	jobTemplate := *tmpl
+	payoutAddr := c.WorkerName
 
 	s.lastJobMutex.RLock()
 	masterJob := s.lastJob
 	s.lastJobMutex.RUnlock()
-	if masterJob == nil { c.Mutex.Unlock(); return }
+	if masterJob == nil {
+		c.Mutex.Unlock()
+		return
+	}
+
+	coinb1, coinb2, err := work.SplitCoinbaseForStratum(&jobTemplate, payoutAddr, masterJob.WitnessCommitment)
+	if err != nil {
+		logging.Errorf("Stratum: Failed to build coinbase for miner %s: %v", payoutAddr, err)
+		c.Mutex.Unlock()
+		return
+	}
+
+	merkleBranchHex := make([]string, len(masterJob.CoinbaseMerkleLink))
+	for i, branchHash := range masterJob.CoinbaseMerkleLink {
+		merkleBranchHex[i] = hex.EncodeToString(branchHash.CloneBytes())
+	}
+
+	diff := c.CurrentDifficulty
+	if diff <= 0 {
+		diff = config.Active.Vardiff.MinDiff
+		if diff <= 0 {
+			diff = 0.01
+		}
+	}
 
 	job := &Job{
-		ID: jobID, BlockTemplate: &jobTemplate, ExtraNonce1: c.ExtraNonce1, Difficulty: c.CurrentDifficulty,
-		WitnessCommitment: masterJob.WitnessCommitment, WTXIDMerkleRoot: masterJob.WTXIDMerkleRoot,
-		TXIDMerkleLink: masterJob.TXIDMerkleLink, CoinbaseMerkleLink: masterJob.CoinbaseMerkleLink,
+		ID:                 jobID,
+		BlockTemplate:      &jobTemplate,
+		ExtraNonce1:        c.ExtraNonce1,
+		Difficulty:         diff,
+		WitnessCommitment:  masterJob.WitnessCommitment,
+		WTXIDMerkleRoot:    masterJob.WTXIDMerkleRoot,
+		TXIDMerkleLink:     masterJob.TXIDMerkleLink,
+		CoinbaseMerkleLink: masterJob.CoinbaseMerkleLink,
 	}
 
 	if clean && len(c.ActiveJobs) > 20 {
 		keys := make([]string, 0, len(c.ActiveJobs))
-		for k := range c.ActiveJobs { keys = append(keys, k) }
-		for i := 0; i < len(keys)/2; i++ { delete(c.ActiveJobs, keys[i]) }
+		for k := range c.ActiveJobs {
+			keys = append(keys, k)
+		}
+		for i := 0; i < len(keys)/2; i++ {
+			delete(c.ActiveJobs, keys[i])
+		}
 	}
 	c.ActiveJobs[jobID] = job
 	c.Mutex.Unlock()
 
-	params := make([]interface{}, 9)
-	params[0] = jobID
-	copy(params[1:8], masterParams)
-	params[8] = clean
+	params := []interface{}{
+		jobID,
+		formatStratumPrevHash(jobTemplate.PreviousBlockHash),
+		coinb1,
+		coinb2,
+		merkleBranchHex,
+		fmt.Sprintf("%08x", jobTemplate.Version),
+		jobTemplate.Bits,
+		fmt.Sprintf("%08x", jobTemplate.CurTime),
+		clean,
+	}
 
 	if err := c.send(JSONRPCResponse{Method: "mining.notify", Params: params}); err != nil {
 		go s.dropClient(c)

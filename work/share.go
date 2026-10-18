@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"math/big"
 	"strings"
 	"time"
@@ -19,10 +18,6 @@ import (
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
 )
-
-/* -------------------------------------------------------------------- */
-/* Share Structs (Ported from old wire protocol)                        */
-/* -------------------------------------------------------------------- */
 
 type Share struct {
 	Type           uint64
@@ -99,39 +94,13 @@ const (
 	StaleInfoDOA    = StaleInfo(254)
 )
 
-/* -------------------------------------------------------------------- */
-/* Hashing & Validation Methods                                         */
-/* -------------------------------------------------------------------- */
-
-func legacyHeaderSerialize(w io.Writer, header *wire.BlockHeader) error {
-	err := binary.Write(w, binary.LittleEndian, header.Version)
-	if err != nil {
-		return err
-	}
-
-	if _, err := w.Write(util.ReverseBytes(header.PrevBlock.CloneBytes())); err != nil {
-		return err
-	}
-	if _, err := w.Write(util.ReverseBytes(header.MerkleRoot.CloneBytes())); err != nil {
-		return err
-	}
-
-	if err := binary.Write(w, binary.LittleEndian, uint32(header.Timestamp.Unix())); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.LittleEndian, header.Bits); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.LittleEndian, header.Nonce); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
-	coinbaseTxHashBytes := util.Sha256d(s.ShareInfo.ShareData.CoinBase)
-	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
-	merkleRoot := util.ComputeMerkleRootFromLink(coinbaseTxHash, s.MerkleLink.Branch, s.MerkleLink.Index)
+	var coinbaseTx wire.MsgTx
+	if err := coinbaseTx.Deserialize(bytes.NewReader(s.ShareInfo.ShareData.CoinBase)); err != nil {
+		return nil, fmt.Errorf("failed to deserialize coinbase tx: %v", err)
+	}
+	coinbaseTxHash := coinbaseTx.TxHash()
+	merkleRoot := util.ComputeMerkleRootFromLink(&coinbaseTxHash, s.MerkleLink.Branch, s.MerkleLink.Index)
 
 	header := &wire.BlockHeader{
 		Version:    s.MinHeader.Version,
@@ -151,14 +120,8 @@ func (s *Share) CalculateHash() error {
 		return fmt.Errorf("could not construct header to calculate hash: %v", err)
 	}
 
-	var hdrBuf bytes.Buffer
-	err = legacyHeaderSerialize(&hdrBuf, header)
-	if err != nil {
-		return fmt.Errorf("could not serialize header for hash: %v", err)
-	}
-
-	blockHashBytes := util.Sha256d(hdrBuf.Bytes())
-	s.Hash, _ = chainhash.NewHash(blockHashBytes)
+	blockHash := header.BlockHash()
+	s.Hash = &blockHash
 	return nil
 }
 
@@ -168,19 +131,19 @@ func (s *Share) CalculatePOWHash() error {
 		return fmt.Errorf("could not construct header to calculate PoW: %v", err)
 	}
 
-	var hdrBuf bytes.Buffer
-	err = legacyHeaderSerialize(&hdrBuf, header)
-	if err != nil {
+	var stdBuf bytes.Buffer
+	if err := header.Serialize(&stdBuf); err != nil {
 		return fmt.Errorf("could not serialize header for PoW: %v", err)
 	}
-	logging.Debugf("[DIAG] Serialized Header for Hashing: %x", hdrBuf.Bytes())
+	baseHdr := stdBuf.Bytes()
 
-	powBytesLE, err := p2pnet.ActiveNetwork.Verthash.Hash(hdrBuf.Bytes())
+	powBytesLE, err := p2pnet.ActiveNetwork.Verthash.Hash(baseHdr)
 	if err != nil {
 		return fmt.Errorf("verthash failed during PoW recalculation: %v", err)
 	}
 
-	s.POWHash, _ = chainhash.NewHash(util.ReverseBytes(powBytesLE))
+	powBE := util.ReverseBytes(powBytesLE)
+	s.POWHash, _ = chainhash.NewHash(powBE)
 	return nil
 }
 
@@ -210,10 +173,6 @@ func (s *Share) IsValid() (bool, string) {
 	return false, "hash is greater than target"
 }
 
-/* -------------------------------------------------------------------- */
-/* Share Creation Engine                                                */
-/* -------------------------------------------------------------------- */
-
 func CreateShare(
 	job *BlockTemplate,
 	extraNonce1, extraNonce2, nTimeHex, nonceHex, payoutAddress string,
@@ -225,15 +184,16 @@ func CreateShare(
 	coinbaseMerkleLinkBranches []*chainhash.Hash,
 ) (*Share, error) {
 	nonceBytes, err := hex.DecodeString(nonceHex)
-	if err != nil {
-		return nil, err
+	if err != nil || len(nonceBytes) != 4 {
+		return nil, fmt.Errorf("invalid nonce hex: %v", err)
 	}
 
 	nTimeBytes, err := hex.DecodeString(nTimeHex)
-	if err != nil {
-		return nil, err
+	if err != nil || len(nTimeBytes) != 4 {
+		return nil, fmt.Errorf("invalid nTime hex: %v", err)
 	}
 	nTimeUint32 := binary.BigEndian.Uint32(nTimeBytes)
+	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
 
 	var pkh []byte
 	var pkhVersion byte
@@ -267,16 +227,12 @@ func CreateShare(
 	shareBits := binary.BigEndian.Uint32(nBitsBytes)
 
 	prevBlockHash, _ := chainhash.NewHashFromStr(job.PreviousBlockHash)
-	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
 
 	coinbaseTxBytes, err := CreateCoinbaseTx(job, payoutAddress, extraNonce1, extraNonce2, witnessCommitment)
 	if err != nil {
 		return nil, err
 	}
 
-	// Safely deep copy the branches to prevent cross-miner memory corruption.
-	// We DO NOT modify the branch with the coinbase hash, as the branch 
-	// only requires the sibling hashes to compute the valid Merkle Root.
 	merkleLinkBranches := make([]*chainhash.Hash, len(coinbaseMerkleLinkBranches))
 	for i, h := range coinbaseMerkleLinkBranches {
 		if h != nil {

@@ -196,8 +196,10 @@ func (sc *ShareChain) updateStats() {
 	windowSeconds := float64(3600) // 1-hour responsive window
 	cutoffWindow := now - int64(windowSeconds)
 	var workWindow float64
+	var earliestShareTime int64 = now
 
-	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	maxTarget, _ := new(big.Int).SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
+	maxTargetFloat := new(big.Float).SetPrec(256).SetInt(maxTarget)
 
 	for _, s := range shares {
 		switch s.ShareInfo.ShareData.StaleInfo {
@@ -207,13 +209,26 @@ func (sc *ShareChain) updateStats() {
 			doaCount++
 		}
 
-		if int64(s.ShareInfo.Timestamp) > cutoffWindow && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+		ts := int64(s.ShareInfo.Timestamp)
+		if ts > cutoffWindow && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
 			if s.Target != nil && s.Target.Sign() > 0 {
-				difficulty := new(big.Int).Div(maxTarget, s.Target)
-				diffFloat, _ := difficulty.Float64()
+				targetFloat := new(big.Float).SetPrec(256).SetInt(s.Target)
+				diffFloatBig := new(big.Float).SetPrec(256).Quo(maxTargetFloat, targetFloat)
+				diffFloat, _ := diffFloatBig.Float64()
 				workWindow += diffFloat
+				if ts < earliestShareTime {
+					earliestShareTime = ts
+				}
 			}
 		}
+	}
+
+	effectiveWindow := float64(now - earliestShareTime)
+	if effectiveWindow < 10.0 {
+		effectiveWindow = 10.0
+	}
+	if effectiveWindow > windowSeconds {
+		effectiveWindow = windowSeconds
 	}
 
 	info, err := sc.rpcClient.GetMiningInfo()
@@ -225,7 +240,7 @@ func (sc *ShareChain) updateStats() {
 	}
 
 	sc.poolStatsMutex.Lock()
-	calculatedHashrate := (workWindow * 16777216) / windowSeconds
+	calculatedHashrate := (workWindow * 16777216) / effectiveWindow
 	sc.poolHashrate = calculatedHashrate
 
 	if err == nil {

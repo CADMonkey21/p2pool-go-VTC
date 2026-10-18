@@ -24,15 +24,18 @@ func ReverseBytes(b []byte) []byte {
 }
 
 // DiffToTarget converts a stratum difficulty float into a 256-bit target.
+// Uses VerthashMiner's native Diff-1 target (0x000000ffff000000..., 2^24 = 16,777,216 hashes per diff 1).
 func DiffToTarget(diff float64) *big.Int {
+	if diff <= 0 {
+		diff = 0.000001
+	}
 	maxTarget := new(big.Int)
-	maxTarget.SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+	maxTarget.SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
 
-	// Use big.Float for precise division to avoid rounding errors
-	maxTargetFloat := new(big.Float).SetInt(maxTarget)
-	diffFloat := new(big.Float).SetFloat64(diff)
+	maxTargetFloat := new(big.Float).SetPrec(256).SetInt(maxTarget)
+	diffFloat := new(big.Float).SetPrec(256).SetFloat64(diff)
 
-	targetFloat := new(big.Float).Quo(maxTargetFloat, diffFloat)
+	targetFloat := new(big.Float).SetPrec(256).Quo(maxTargetFloat, diffFloat)
 
 	targetInt, _ := targetFloat.Int(nil)
 	return targetInt
@@ -42,20 +45,18 @@ func DiffToTarget(diff float64) *big.Int {
 func CalculateMerkleLink(hashes [][]byte, index int) []*chainhash.Hash {
 	branches := []*chainhash.Hash{}
 	for len(hashes) > 1 {
-		if index^1 < len(hashes) {
-			h, _ := chainhash.NewHash(hashes[index^1])
-			branches = append(branches, h)
+		if len(hashes)%2 != 0 {
+			hashes = append(hashes, hashes[len(hashes)-1])
 		}
+
+		h, _ := chainhash.NewHash(hashes[index^1])
+		branches = append(branches, h)
 
 		var nextLevel [][]byte
 		for i := 0; i < len(hashes); i += 2 {
-			if i+1 < len(hashes) {
-				combined := append(hashes[i], hashes[i+1]...)
-				newHash := DblSha256(combined)
-				nextLevel = append(nextLevel, newHash)
-			} else {
-				nextLevel = append(nextLevel, hashes[i])
-			}
+			combined := append(hashes[i], hashes[i+1]...)
+			newHash := DblSha256(combined)
+			nextLevel = append(nextLevel, newHash)
 		}
 		hashes = nextLevel
 		index /= 2
@@ -64,24 +65,22 @@ func CalculateMerkleLink(hashes [][]byte, index int) []*chainhash.Hash {
 }
 
 // CalculateMerkleLinkFromHashes computes the merkle branches from a list of chainhash.Hash pointers.
-// This is needed for the WTXID merkle tree calculation.
 func CalculateMerkleLinkFromHashes(hashes []*chainhash.Hash, index int) []*chainhash.Hash {
 	branches := []*chainhash.Hash{}
 	for len(hashes) > 1 {
-		if index^1 < len(hashes) {
-			branches = append(branches, hashes[index^1])
+		if len(hashes)%2 != 0 {
+			hashes = append(hashes, hashes[len(hashes)-1])
 		}
+
+		clone := *hashes[index^1]
+		branches = append(branches, &clone)
 
 		var nextLevel []*chainhash.Hash
 		for i := 0; i < len(hashes); i += 2 {
-			if i+1 < len(hashes) {
-				combined := append(hashes[i][:], hashes[i+1][:]...)
-				newHashBytes := DblSha256(combined)
-				newHash, _ := chainhash.NewHash(newHashBytes)
-				nextLevel = append(nextLevel, newHash)
-			} else {
-				nextLevel = append(nextLevel, hashes[i])
-			}
+			combined := append(hashes[i][:], hashes[i+1][:]...)
+			newHashBytes := DblSha256(combined)
+			newHash, _ := chainhash.NewHash(newHashBytes)
+			nextLevel = append(nextLevel, newHash)
 		}
 		hashes = nextLevel
 		index /= 2

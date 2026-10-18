@@ -12,6 +12,8 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 )
 
+const hashrateConstant = 16777216.0 // 2^24 hashes per 1.0 difficulty
+
 type Dashboard struct {
 	workManager *work.WorkManager
 	p2pNode     *p2p.Node
@@ -105,7 +107,18 @@ func formatAvgTime(seconds float64) string {
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
 	s := int(d.Seconds()) % 60
+	if s == 0 && seconds > 0 && h == 0 && m == 0 {
+		return fmt.Sprintf("0h 0m %.1fs", seconds)
+	}
 	return fmt.Sprintf("%dh %dm %ds", h, m, s)
+}
+
+type aggregatedMiner struct {
+	address       string
+	totalHashrate float64
+	totalAccepted uint64
+	totalRejected uint64
+	currentDiff   float64
 }
 
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -123,20 +136,30 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	blockReward := d.workManager.GetCurrentBlockReward()
 	minShareDiff := config.Active.Vardiff.MinDiff
 	if minShareDiff <= 0 {
-		minShareDiff = 0.05
+		minShareDiff = 0.01
+	}
+
+	// Use localHashrate if the 1-hour sharechain rolling average is still ramping up
+	effectivePoolHashrate := poolStats.PoolHashrate
+	if localHashrate > effectivePoolHashrate {
+		effectivePoolHashrate = localHashrate
+	}
+
+	effectiveTimeToBlock := poolStats.TimeToBlock
+	if effectivePoolHashrate > 0 && poolStats.NetworkHashrate > 0 {
+		effectiveTimeToBlock = (poolStats.NetworkHashrate / effectivePoolHashrate) * 150.0
 	}
 
 	// Calculate baseline reward metrics for payout estimations
 	poolFeePct := config.Active.Fee / 100.0
 	netBlockReward := blockReward * (1.0 - poolFeePct)
 	expectedBlocks24h := 0.0
-	if poolStats.TimeToBlock > 0 {
-		expectedBlocks24h = (24.0 * 3600.0) / poolStats.TimeToBlock
+	if effectiveTimeToBlock > 0 {
+		expectedBlocks24h = (24.0 * 3600.0) / effectiveTimeToBlock
 	}
 
-	var dashboardMiners []map[string]interface{}
-	var dashboardPayouts []map[string]interface{}
-
+	// Aggregate client connections by wallet address (workerName)
+	minerMap := make(map[string]*aggregatedMiner)
 	for _, m := range activeMiners {
 		hr := d.stratum.GetHashrateForClient(m.ID)
 
@@ -144,48 +167,68 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		workerName := m.WorkerName
 		accepted := m.AcceptedShares
 		rejected := m.RejectedShares
+		curDiff := m.CurrentDifficulty
 		m.Mutex.Unlock()
 
-		totalShares := accepted + rejected
+		if workerName == "" {
+			workerName = "Unknown"
+		}
+		if curDiff <= 0 {
+			curDiff = minShareDiff
+		}
+
+		if _, exists := minerMap[workerName]; !exists {
+			minerMap[workerName] = &aggregatedMiner{
+				address:     workerName,
+				currentDiff: curDiff,
+			}
+		}
+		minerMap[workerName].totalHashrate += hr
+		minerMap[workerName].totalAccepted += accepted
+		minerMap[workerName].totalRejected += rejected
+		if curDiff > minerMap[workerName].currentDiff {
+			minerMap[workerName].currentDiff = curDiff
+		}
+	}
+
+	var dashboardMiners []map[string]interface{}
+	var dashboardPayouts []map[string]interface{}
+
+	for _, am := range minerMap {
+		totalShares := am.totalAccepted + am.totalRejected
 		rejPct := 0.0
 		if totalShares > 0 {
-			rejPct = (float64(rejected) / float64(totalShares)) * 100.0
+			rejPct = (float64(am.totalRejected) / float64(totalShares)) * 100.0
 		}
 
-		// Calculate Payout Estimations for this miner
 		minerProportion := 0.0
-		effectivePoolHashrate := poolStats.PoolHashrate
-		
-		// [FIX] Cold-start sanity check: If local real-time hashrate temporarily 
-		// exceeds the rolling pool average, use local hashrate as the baseline.
-		if hr > effectivePoolHashrate {
-			effectivePoolHashrate = hr
+		if am.totalHashrate > effectivePoolHashrate {
+			effectivePoolHashrate = am.totalHashrate
+		}
+		if effectivePoolHashrate > 0 {
+			minerProportion = am.totalHashrate / effectivePoolHashrate
 		}
 
-		if effectivePoolHashrate > 0 {
-			minerProportion = hr / effectivePoolHashrate
-		}
-		
 		payoutPerBlock := minerProportion * netBlockReward
 		est24HourPayout := payoutPerBlock * expectedBlocks24h
 
-		// Calculate Average Time to Share theoretically
+		// Calculate Average Time to Share using the miner's live vardiff difficulty
 		timeToShareSec := 0.0
-		if hr > 0 && poolStats.NetworkDifficulty > 0 && poolStats.NetworkHashrate > 0 {
-			timeToShareSec = (minShareDiff / poolStats.NetworkDifficulty) * 150.0 * (poolStats.NetworkHashrate / hr)
+		if am.totalHashrate > 0 {
+			timeToShareSec = (am.currentDiff * hashrateConstant) / am.totalHashrate
 		}
 
 		dashboardMiners = append(dashboardMiners, map[string]interface{}{
-			"address":                workerName,
-			"hashrate":               formatHashrate(hr),
+			"address":                am.address,
+			"hashrate":               formatHashrate(am.totalHashrate),
 			"rejected_percentage":    rejPct,
-			"share_difficulty":       minShareDiff,
+			"share_difficulty":       am.currentDiff,
 			"avg_time_to_share":      formatAvgTime(timeToShareSec),
 			"est_24_hour_payout_vtc": est24HourPayout,
 		})
 
 		dashboardPayouts = append(dashboardPayouts, map[string]interface{}{
-			"address":    workerName,
+			"address":    am.address,
 			"payout_vtc": payoutPerBlock,
 		})
 	}
@@ -202,11 +245,11 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"node_uptime":             formatUptime(uptimeSec),
 		"network_difficulty":      poolStats.NetworkDifficulty,
-		"connected_miners":        len(activeMiners),
+		"connected_miners":        len(minerMap),
 		"last_block_found_ago":    formatDurationAgo(lastBlockTime),
 		"pool_fee":                config.Active.Fee,
 		"global_network_hashrate": formatHashrate(poolStats.NetworkHashrate),
-		"p2pool_network_hashrate": formatHashrate(poolStats.PoolHashrate),
+		"p2pool_network_hashrate": formatHashrate(effectivePoolHashrate),
 		"local_node_hashrate":     formatHashrate(localHashrate),
 		"pool_shares_total":       poolStats.SharesTotal,
 		"pool_shares_orphan":      poolStats.SharesOrphan,
@@ -214,7 +257,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"pool_blocks_found_24h":   d.workManager.GetBlocksFoundInLast(24 * time.Hour),
 		"block_reward":            blockReward,
 		"min_share_difficulty":    minShareDiff,
-		"pool_time_to_block":      formatTimeToBlock(poolStats.TimeToBlock),
+		"pool_time_to_block":      formatTimeToBlock(effectiveTimeToBlock),
 		"stratum_port":            config.Active.StratumPort,
 		"active_miners":           dashboardMiners,
 		"payouts_list":            dashboardPayouts,

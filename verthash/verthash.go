@@ -36,12 +36,11 @@ func EnsureVerthashDatafileWithProgress(file string, progress chan float64) erro
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("Could not crate or verify Verthash file")
+			return fmt.Errorf("Could not create or verify Verthash file")
 		}
 	}
 
 	return nil
-
 }
 
 func MakeVerthashDatafileIfNotExists(file string) error {
@@ -61,9 +60,7 @@ func MakeVerthashDatafile(file string) error {
 
 func MakeVerthashDatafileWithProgress(file string, progress chan float64) error {
 	pk := sha3.Sum256([]byte("Verthash Proof-of-Space Datafile"))
-
 	NewGraph(17, file, pk[:], progress)
-
 	return nil
 }
 
@@ -83,24 +80,12 @@ func VerifyVerthashDatafile(file string) (bool, error) {
 type Verthash struct {
 	datFileContent []byte
 	datFile        *os.File
+	datFileSize    int64
 }
 
-// [FIX] This is the new byte-wise FNV-1a update function
-func fnv1a_b(hash uint32, b byte) uint32 {
-	return (hash ^ uint32(b)) * 0x1000193
-}
-
-// [FIX] This function hashes a uint32 (as 4 bytes) into the hash state,
-// processing bytes in little-endian order to match the C++ implementation.
-func fnv1a_u32(hash uint32, v uint32) uint32 {
-	// Extract bytes in little-endian order
-	// C++ implementation casts `uint32_t*` to `unsigned char*`
-	// which on a little-endian architecture means processing b0, b1, b2, b3.
-	hash = fnv1a_b(hash, byte(v))
-	hash = fnv1a_b(hash, byte(v>>8))
-	hash = fnv1a_b(hash, byte(v>>16))
-	hash = fnv1a_b(hash, byte(v>>24))
-	return hash
+// Official Verthash 32-bit FNV-1a function
+func fnv1a(a, b uint32) uint32 {
+	return (a ^ b) * 0x1000193
 }
 
 func NewVerthash(datFileLocation string, keepInRam bool) (*Verthash, error) {
@@ -108,11 +93,20 @@ func NewVerthash(datFileLocation string, keepInRam bool) (*Verthash, error) {
 	var err error
 	if keepInRam {
 		v.datFileContent, err = ioutil.ReadFile(datFileLocation)
+		if err != nil {
+			return nil, err
+		}
+		v.datFileSize = int64(len(v.datFileContent))
 	} else {
 		v.datFile, err = os.Open(datFileLocation)
-	}
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		s, err := v.datFile.Stat()
+		if err != nil {
+			return nil, err
+		}
+		v.datFileSize = s.Size()
 	}
 
 	return &v, nil
@@ -121,7 +115,7 @@ func NewVerthash(datFileLocation string, keepInRam bool) (*Verthash, error) {
 func (v *Verthash) Close() {
 	if v.datFileContent != nil {
 		v.datFileContent = []byte{}
-	} else {
+	} else if v.datFile != nil {
 		v.datFile.Close()
 	}
 }
@@ -141,10 +135,9 @@ func (v *Verthash) SumVerthash(input []byte) ([32]byte, error) {
 		copy(p0[i*VerthashP0Size:], digest64[:])
 	}
 
-	buf := bytes.NewBuffer(p0)
 	p0Index := make([]uint32, len(p0)/4)
 	for i := 0; i < len(p0Index); i++ {
-		binary.Read(buf, binary.LittleEndian, &p0Index[i])
+		p0Index[i] = binary.LittleEndian.Uint32(p0[i*4 : (i+1)*4])
 	}
 
 	seekIndexes := make([]uint32, VerthashIndexes)
@@ -156,48 +149,31 @@ func (v *Verthash) SumVerthash(input []byte) ([32]byte, error) {
 		}
 	}
 
-	var datFileSize int64
+	mdiv := ((uint32(v.datFileSize) - VerthashHashOutSize) / VerthashByteAlignment) + 1
+	valueAccumulator := uint32(0x811c9dc5)
 
-	if v.datFileContent == nil {
-		s, err := v.datFile.Stat()
-		if err != nil {
-			return [32]byte{}, err
-		}
-		datFileSize = s.Size()
-	} else {
-		datFileSize = int64(len(v.datFileContent))
-	}
-
-	var valueAccumulator uint32
-	var mdiv uint32
-	mdiv = ((uint32(datFileSize) - VerthashHashOutSize) / VerthashByteAlignment) + 1
-	valueAccumulator = uint32(0x811c9dc5) // FNV1_32_INIT
-	buf = bytes.NewBuffer(p1[:])
 	p1Arr := make([]uint32, VerthashHashOutSize/4)
 	for i := 0; i < len(p1Arr); i++ {
-		binary.Read(buf, binary.LittleEndian, &p1Arr[i])
+		p1Arr[i] = binary.LittleEndian.Uint32(p1[i*4 : (i+1)*4])
 	}
-	for i := uint32(0); i < VerthashIndexes; i++ {
-		// [FIX] This is the corrected hashing logic.
-		// The hash is calculated using the current valueAccumulator state,
-		// and then valueAccumulator is updated with the new hash for the next loop.
-		hash_for_offset := fnv1a_u32(valueAccumulator, seekIndexes[i])
-		offset := (hash_for_offset % mdiv) * VerthashByteAlignment
-		valueAccumulator = hash_for_offset // Update accumulator
 
-		data := make([]byte, 32)
+	data := make([]byte, 32)
+	for i := uint32(0); i < VerthashIndexes; i++ {
+		offset := (fnv1a(seekIndexes[i], valueAccumulator) % mdiv) * VerthashByteAlignment
+
 		if v.datFileContent != nil {
 			data = v.datFileContent[offset : offset+VerthashHashOutSize]
 		} else {
-			v.datFile.Seek(int64(offset), 0)
-			v.datFile.Read(data)
+			_, err := v.datFile.ReadAt(data, int64(offset))
+			if err != nil {
+				return [32]byte{}, err
+			}
 		}
 
 		for i2 := uint32(0); i2 < VerthashHashOutSize/4; i2++ {
-			value := binary.LittleEndian.Uint32(data[i2*4 : ((i2 + 1) * 4)])
-			// [FIX] Use the byte-wise fnv1a_u32 function for hashing
-			p1Arr[i2] = fnv1a_u32(p1Arr[i2], value)
-			valueAccumulator = fnv1a_u32(valueAccumulator, value)
+			value := binary.LittleEndian.Uint32(data[i2*4 : (i2+1)*4])
+			p1Arr[i2] = fnv1a(p1Arr[i2], value)
+			valueAccumulator = fnv1a(valueAccumulator, value)
 		}
 	}
 

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
-	// Vendored code (verthash.go, graph.go) is in this package directly
 )
 
 // Verthasher is an interface for a Verthash implementation.
@@ -64,7 +63,7 @@ func New(configuredDatFilePath string) (Verthasher, error) {
 		return nil, fmt.Errorf("verthash.dat not found")
 	}
 
-	keepInRam := false
+	keepInRam := true
 	hasher, err := NewVerthash(finalPathToUse, keepInRam)
 	if err != nil {
 		return nil, fmt.Errorf("verthasher: failed to initialize with verthash.dat '%s': %w", finalPathToUse, err)
@@ -111,11 +110,9 @@ type DummyVerthasher struct {
 func NewDummyVerthasher(configuredDatFilePath string) (Verthasher, error) {
 	log.Println("Verthash: Initializing DUMMY Verthasher...")
 	finalPathToUse := configuredDatFilePath
-	if configuredDatFilePath == "" { /* ... path checking ... */
-	} else { /* ... path checking ... */
-	}
 	return &DummyVerthasher{datFilePath: finalPathToUse, initialized: true}, nil
 }
+
 func (dv *DummyVerthasher) Hash(headerData []byte) ([]byte, error) {
 	if !dv.initialized {
 		return nil, fmt.Errorf("dummy verthasher not initialized")
@@ -132,4 +129,5 @@ func (dv *DummyVerthasher) Hash(headerData []byte) ([]byte, error) {
 	log.Printf("Verthash: DUMMY Hash produced (first 8 bytes): %x...", dummyHash[:8])
 	return dummyHash, nil
 }
-func (dv *DummyVerthasher) Close() { /* Nothing to close */ }
+
+func (dv *DummyVerthasher) Close() {}

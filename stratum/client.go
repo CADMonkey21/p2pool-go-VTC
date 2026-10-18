@@ -37,7 +37,6 @@ type RateMonitor struct {
 func NewRateMonitor(maxLookbackTime time.Duration) *RateMonitor {
 	return &RateMonitor{
 		maxLookbackTime: maxLookbackTime,
-		// [FIX] Correctly initialize the empty slice of anonymous structs
 		datums: make([]struct {
 			Timestamp float64
 			Datum     ShareDatum
@@ -82,22 +81,21 @@ func (rm *RateMonitor) GetDatumsInLast(dt time.Duration) ([]ShareDatum, time.Dur
 		}
 	}
 
+	// Calculate the true active duration for the requested window (dt)
 	var actualDuration time.Duration
-	if rm.firstTimestamp != 0 && (now-rm.firstTimestamp) < dt.Seconds() {
-		actualDuration = time.Duration((now - rm.firstTimestamp) * float64(time.Second))
-	} else if len(rm.datums) > 1 && (rm.datums[len(rm.datums)-1].Timestamp-rm.datums[0].Timestamp) > 0 {
-		actualDuration = time.Duration((rm.datums[len(rm.datums)-1].Timestamp - rm.datums[0].Timestamp) * float64(time.Second))
-	} else if len(rm.datums) > 0 {
-		actualDuration = time.Duration((now - rm.datums[0].Timestamp) * float64(time.Second))
-		if actualDuration <= 0 {
-			actualDuration = time.Second
-		}
+	if rm.firstTimestamp == 0 {
+		actualDuration = time.Second
 	} else {
-		actualDuration = time.Duration(0)
+		elapsedSinceFirst := now - rm.firstTimestamp
+		if elapsedSinceFirst < dt.Seconds() {
+			actualDuration = time.Duration(elapsedSinceFirst * float64(time.Second))
+		} else {
+			actualDuration = dt
+		}
 	}
 
-	if actualDuration <= 0 {
-		actualDuration = time.Duration(1 * float64(time.Second))
+	if actualDuration < time.Second {
+		actualDuration = time.Second
 	}
 	return filteredDatums, actualDuration
 }
@@ -107,14 +105,16 @@ func (rm *RateMonitor) prune() {
 		return
 	}
 	earliestTime := float64(time.Now().UnixNano())/float64(time.Second) - rm.maxLookbackTime.Seconds()
-	firstValidIndex := 0
+	firstValidIndex := -1
 	for i, entry := range rm.datums {
 		if entry.Timestamp > earliestTime {
 			firstValidIndex = i
 			break
 		}
 	}
-	if firstValidIndex > 0 {
+	if firstValidIndex == -1 {
+		rm.datums = rm.datums[:0]
+	} else if firstValidIndex > 0 {
 		rm.datums = rm.datums[firstValidIndex:]
 	}
 }

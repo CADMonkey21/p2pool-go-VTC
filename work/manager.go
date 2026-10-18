@@ -171,9 +171,6 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 	defer ticker.Stop()
 
 	var requiredConfirmations int64 = 100
-	if config.Active.Testnet {
-		requiredConfirmations = 2
-	}
 
 	for {
 		<-ticker.C
@@ -194,7 +191,7 @@ func (wm *WorkManager) WatchMaturedBlocks() {
 						keep = false
 					}
 				} else if blockInfo.Confirmations >= requiredConfirmations {
-					logging.Successf("✅ Block %s is now MATURE!", pb.BlockHash.String())
+					logging.Successf("Block %s is now MATURE (%d confirmations)!", pb.BlockHash.String(), blockInfo.Confirmations)
 					pb.State = StateMature
 				}
 			case StateMature:
@@ -236,14 +233,19 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 
 	payouts := make(map[string]uint64)
 	totalWorkInWindow := new(big.Int)
-	maxTarget, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
+
+	baseDiff1, _ := new(big.Int).SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
+	scaledMaxTarget := new(big.Int).Mul(baseDiff1, big.NewInt(1000000))
 
 	for _, share := range payoutShares {
 		if share.Target == nil || share.Target.Sign() <= 0 {
 			continue
 		}
-		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), share.Target)
-		totalWorkInWindow.Add(totalWorkInWindow, difficulty)
+		weight := new(big.Int).Div(new(big.Int).Set(scaledMaxTarget), share.Target)
+		if weight.Sign() <= 0 {
+			weight = big.NewInt(1)
+		}
+		totalWorkInWindow.Add(totalWorkInWindow, weight)
 	}
 
 	if totalWorkInWindow.Sign() <= 0 {
@@ -258,36 +260,57 @@ func (wm *WorkManager) ProcessPayout(pb *PayoutBlock) error {
 		var address string
 		if share.ShareInfo.ShareData.PubKeyHashVersion == 0x00 {
 			converted, err := bech32.ConvertBits(share.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
-			if err != nil { continue }
+			if err != nil {
+				continue
+			}
 			hrp := "vtc"
-			if config.Active.Testnet { hrp = "tvtc" }
+			if config.Active.Testnet {
+				hrp = "tvtc"
+			}
 			address, _ = bech32.Encode(hrp, append([]byte{share.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
 		} else {
 			address = base58.CheckEncode(share.ShareInfo.ShareData.PubKeyHash, share.ShareInfo.ShareData.PubKeyHashVersion)
 		}
 
-		if share.Target == nil || share.Target.Sign() <= 0 { continue }
-		difficulty := new(big.Int).Div(new(big.Int).Set(maxTarget), share.Target)
-		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), difficulty)
+		if share.Target == nil || share.Target.Sign() <= 0 {
+			continue
+		}
+		weight := new(big.Int).Div(new(big.Int).Set(scaledMaxTarget), share.Target)
+		if weight.Sign() <= 0 {
+			weight = big.NewInt(1)
+		}
+		payoutAmount := new(big.Int).Mul(big.NewInt(int64(amountToDistribute)), weight)
 		payoutAmount.Div(payoutAmount, totalWorkInWindow)
 		payouts[address] += payoutAmount.Uint64()
 	}
 
-	payouts[config.Active.PoolAddress] += poolFee
+	if config.Active.PoolAddress != "" && poolFee > 0 {
+		payouts[config.Active.PoolAddress] += poolFee
+	}
 	sendManyMap := make(map[string]float64)
 	for addr, amt := range payouts {
-		if amt > 0 { sendManyMap[addr] = float64(amt) / 100000000.0 }
+		if amt > 0 {
+			sendManyMap[addr] = float64(amt) / 100000000.0
+		}
 	}
 
-	if len(sendManyMap) == 0 { return nil }
+	if len(sendManyMap) == 0 {
+		return nil
+	}
 	_, err = wm.rpcClient.SendMany(sendManyMap)
 	return err
 }
 
 func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error {
-	coinbaseTxHashBytes := DblSha256(share.ShareInfo.ShareData.CoinBase)
-	coinbaseTxHash, _ := chainhash.NewHash(coinbaseTxHashBytes)
-	merkleRoot := util.ComputeMerkleRootFromLink(coinbaseTxHash, share.MerkleLink.Branch, share.MerkleLink.Index)
+	var coinbaseTx wire.MsgTx
+	err := coinbaseTx.Deserialize(bytes.NewReader(share.ShareInfo.ShareData.CoinBase))
+	if err != nil {
+		logging.Errorf("SubmitBlock: Failed to deserialize coinbase tx: %v", err)
+		return err
+	}
+
+	coinbaseTxHash := coinbaseTx.TxHash()
+	merkleRoot := util.ComputeMerkleRootFromLink(&coinbaseTxHash, share.MerkleLink.Branch, share.MerkleLink.Index)
 
 	nBits64, err := strconv.ParseUint(template.Bits, 16, 32)
 	if err != nil {
@@ -303,30 +326,33 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 		Nonce:      share.MinHeader.Nonce,
 	}
 
-	var coinbaseTx wire.MsgTx
-	err = coinbaseTx.Deserialize(bytes.NewReader(share.ShareInfo.ShareData.CoinBase))
-	if err != nil { return err }
-
 	block := wire.NewMsgBlock(header)
 	block.AddTransaction(&coinbaseTx)
 
 	for _, txTmpl := range template.Transactions {
 		txBytes, _ := hex.DecodeString(txTmpl.Data)
 		var msgTx wire.MsgTx
-		_ = msgTx.Deserialize(bytes.NewReader(txBytes))
+		if err := msgTx.Deserialize(bytes.NewReader(txBytes)); err != nil {
+			logging.Errorf("SubmitBlock: Failed to deserialize template tx: %v", err)
+			return err
+		}
 		block.AddTransaction(&msgTx)
 	}
 
-	logging.Infof("Proposing block %s for validation...", block.BlockHash().String())
+	logging.Infof("Proposing block %s (Height %d) for validation...", block.BlockHash().String(), template.Height)
 	reason, err := wm.rpcClient.ProposeBlock(block)
 	if err != nil || reason != "accepted" {
-		return fmt.Errorf("block rejected by daemon: %s", reason)
+		logging.Errorf("Block proposal rejected by vertcoind! Reason: %s, Err: %v", reason, err)
+		return fmt.Errorf("block rejected by daemon: %s (err: %v)", reason, err)
 	}
 
 	err = wm.rpcClient.SubmitBlock(block)
-	if err != nil { return err }
+	if err != nil {
+		logging.Errorf("SubmitBlock RPC failed: %v", err)
+		return err
+	}
 
-	logging.Successf("SUCCESS! Block %s accepted by the network!", block.BlockHash().String())
+	logging.Successf("SUCCESS! Block %s accepted by the Vertcoin network!", block.BlockHash().String())
 
 	wm.PendingMutex.Lock()
 	blockHash := block.BlockHash()
@@ -343,7 +369,10 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 	delete(wm.Templates, template.PreviousBlockHash)
 	wm.TemplateMutex.Unlock()
 
-	select { case wm.ForceNewTemplate <- true: default: }
+	select {
+	case wm.ForceNewTemplate <- true:
+	default:
+	}
 	return nil
 }
 
@@ -355,9 +384,13 @@ func (wm *WorkManager) GetRecentBlocks(count int) ([]PayoutBlock, error) {
 		return wm.PendingBlocks[i].BlockHeight > wm.PendingBlocks[j].BlockHeight
 	})
 
-	if count > len(wm.PendingBlocks) { count = len(wm.PendingBlocks) }
+	if count > len(wm.PendingBlocks) {
+		count = len(wm.PendingBlocks)
+	}
 	result := make([]PayoutBlock, count)
-	for i := 0; i < count; i++ { result[i] = *wm.PendingBlocks[i] }
+	for i := 0; i < count; i++ {
+		result[i] = *wm.PendingBlocks[i]
+	}
 	return result, nil
 }
 
@@ -366,7 +399,9 @@ func (wm *WorkManager) GetLastBlockFoundTime() time.Time {
 	defer wm.PendingMutex.Unlock()
 	var lastTime time.Time
 	for _, b := range wm.PendingBlocks {
-		if b.FoundTime.After(lastTime) { lastTime = b.FoundTime }
+		if b.FoundTime.After(lastTime) {
+			lastTime = b.FoundTime
+		}
 	}
 	return lastTime
 }
@@ -377,19 +412,17 @@ func (wm *WorkManager) GetBlocksFoundInLast(window time.Duration) int {
 	defer wm.PendingMutex.Unlock()
 	n := 0
 	for _, pb := range wm.PendingBlocks {
-		if pb.FoundTime.After(cutoff) { n++ }
+		if pb.FoundTime.After(cutoff) {
+			n++
+		}
 	}
 	return n
 }
 
-// GetCurrentBlockReward returns the current block reward in VTC from the active template
 func (wm *WorkManager) GetCurrentBlockReward() float64 {
 	latestTemplate := wm.GetLatestTemplate()
-	
 	if latestTemplate == nil {
-		return 6.5 // Fallback default
+		return 6.25
 	}
-
-	// CoinbaseValue is in satoshis/base units; convert to VTC
 	return float64(latestTemplate.CoinbaseValue) / 1e8
 }
