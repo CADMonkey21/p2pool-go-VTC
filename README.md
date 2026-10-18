@@ -85,7 +85,7 @@ See [LOG_GUIDE.md](LOG_GUIDE.md) for an overview of console log messages and lev
 
 ## Status
 
-*Legend: `[x]` = Complete and Verified on Mainnet, `[~]` = In Progress*
+*Legend: `[x]` = Complete and Verified on Mainnet*
 
 - **P2P Layer (`go-libp2p` & GossipSub)**
   - [x] Persistent Ed25519 Peer Identity (`peer.key`)
