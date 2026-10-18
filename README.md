@@ -93,7 +93,7 @@ See [LOG_GUIDE.md](LOG_GUIDE.md) for an overview of console log messages and lev
   - [x] Zero-config local LAN `mDNS` peer discovery
   - [x] Real-time WAN GossipSub share broadcasting & cryptographic PoW verification
   - [x] Official Public Bootstrap Seed Node deployed (`p2poolvtc.com`)
-  - [~] Multi-node historical ShareChain catch-up stream on initial boot
+  - [x] Multi-node WAN ShareChain synchronization across peers
 - **RPC Client (`vertcoind`)**
   - [x] HTTP Basic Auth JSON-RPC client with SegWit `getblocktemplate` support
   - [x] Live BIP22 `proposal` mode consensus verification (`TestBlockValidity`)
