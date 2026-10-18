@@ -16,3 +16,6 @@ config.yaml
 # Ignore log files
 *.log
 *.save
+
+p2pool-go-vtc
+sharechain.json
