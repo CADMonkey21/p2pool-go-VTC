@@ -82,12 +82,21 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 		stats := sc.GetStats()
 		localHashrate := ss.GetLocalHashrate()
 
+		effectivePoolHashrate := stats.PoolHashrate
+		if localHashrate > effectivePoolHashrate {
+			effectivePoolHashrate = localHashrate
+		}
+
+		effectiveTimeToBlock := stats.TimeToBlock
+		if effectivePoolHashrate > 0 && stats.NetworkHashrate > 0 {
+			effectiveTimeToBlock = (stats.NetworkHashrate / effectivePoolHashrate) * 150.0
+		}
+
 		workManager := ss.GetWorkManager()
 		connectedMiners := len(ss.GetClients())
 		blocksFound24h := workManager.GetBlocksFoundInLast(24 * time.Hour)
 		lastBlockFoundTime := workManager.GetLastBlockFoundTime()
 
-		// Get peer count from libp2p Host
 		peerCount := 0
 		if p2pNode != nil {
 			peerCount = len(p2pNode.Host.Network().Peers())
@@ -96,12 +105,12 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 		logging.Infof("================================= Stats Update =================================")
 		logging.Infof("Peers: %d  |  Miners: %d  |  GoRoutines: %d", peerCount, connectedMiners, runtime.NumGoroutine())
 		logging.Infof("--------------------------------------------------------------------------------")
-		logging.Infof("P2Pool Network Hashrate: %s (%.2f%% efficient)", formatHashrate(stats.PoolHashrate), stats.Efficiency)
+		logging.Infof("P2Pool Network Hashrate: %s (%.2f%% efficient)", formatHashrate(effectivePoolHashrate), stats.Efficiency)
 		logging.Infof("Your Node's Hashrate: %s", formatHashrate(localHashrate))
 		logging.Infof("Global VTC Hashrate: %s", formatHashrate(stats.NetworkHashrate))
 		logging.Infof("--------------------------------------------------------------------------------")
 		logging.Infof("Share Chain: %d total, %d orphan, %d dead", stats.SharesTotal, stats.SharesOrphan, stats.SharesDead)
-		logging.Infof("Est. Time to Block: %s", formatDuration(stats.TimeToBlock))
+		logging.Infof("Est. Time to Block: %s", formatDuration(effectiveTimeToBlock))
 		logging.Infof("Blocks Found (24h): %d  |  Last Block Found: %s", blocksFound24h, formatDurationAgo(lastBlockFoundTime))
 		logging.Infof("================================================================================")
 	}

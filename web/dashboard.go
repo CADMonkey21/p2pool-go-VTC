@@ -84,15 +84,16 @@ func formatTimeToBlock(seconds float64) string {
 		return "Unknown"
 	}
 	d := time.Duration(seconds) * time.Second
-	days := int(d.Hours() / 24)
-	hours := int(d.Hours()) % 24
-	if days > 0 {
-		return fmt.Sprintf("%d days", days)
+	switch {
+	case seconds > 86400*2:
+		return fmt.Sprintf("%.1f days", d.Hours()/24)
+	case seconds >= 3600:
+		return fmt.Sprintf("%.1f hours", d.Hours())
+	case seconds >= 60:
+		return fmt.Sprintf("%.1f minutes", d.Minutes())
+	default:
+		return fmt.Sprintf("%.1f seconds", d.Seconds())
 	}
-	if hours > 0 {
-		return fmt.Sprintf("%d hours", hours)
-	}
-	return fmt.Sprintf("%.0f minutes", d.Minutes())
 }
 
 // formatAvgTime matches the specific "0h 5m 0s" format expected by the UI

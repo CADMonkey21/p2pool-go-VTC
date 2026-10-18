@@ -288,7 +288,7 @@ func CreateShare(
 			FarShareHash:         nil,
 			MaxBits:              shareBits,
 			Bits:                 shareBits,
-			Timestamp:            int32(nTimeUint32),
+			Timestamp:            int32(time.Now().Unix()),
 			AbsHeight:            int32(job.Height),
 			AbsWork:              new(big.Int),
 		},
