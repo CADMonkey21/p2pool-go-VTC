@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"time"
@@ -23,7 +22,6 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-// P2PNetworkTopic is the GossipSub channel everyone subscribes to
 const P2PNetworkTopic = "vtc-p2pool-shares-v1"
 const SyncProtocolID = protocol.ID("/p2pool/sync/1.0.0")
 const peerKeyFile = "peer.key"
@@ -34,19 +32,18 @@ type SyncPayload struct {
 }
 
 type Node struct {
-	Host             host.Host
-	DHT              *dht.IpfsDHT
-	PubSub           *pubsub.PubSub
-	Topic            *pubsub.Topic
-	Sub              *pubsub.Subscription
-	ctx              context.Context
-	cancel           context.CancelFunc
-	IncomingShares   chan []byte
-	GetSyncDataFunc  func() ([]byte, []byte)
-	OnSyncDataFunc   func(sharesJSON []byte, blocksJSON []byte)
+	Host            host.Host
+	DHT             *dht.IpfsDHT
+	PubSub          *pubsub.PubSub
+	Topic           *pubsub.Topic
+	Sub             *pubsub.Subscription
+	ctx             context.Context
+	cancel          context.CancelFunc
+	IncomingShares  chan []byte
+	GetSyncDataFunc func() ([]byte, []byte)
+	OnSyncDataFunc  func(sharesJSON []byte, blocksJSON []byte)
 }
 
-// mdnsNotifee automatically connects to any p2pool-go-VTC nodes discovered on the local LAN
 type mdnsNotifee struct {
 	n   *Node
 	h   host.Host
@@ -66,7 +63,6 @@ func (m *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	}
 }
 
-// loadOrCreateIdentity loads a persistent Ed25519 Peer ID key from disk, or creates one if missing.
 func loadOrCreateIdentity() (crypto.PrivKey, error) {
 	if data, err := os.ReadFile(peerKeyFile); err == nil {
 		if priv, err := crypto.UnmarshalPrivateKey(data); err == nil {
@@ -85,7 +81,6 @@ func loadOrCreateIdentity() (crypto.PrivKey, error) {
 	return priv, nil
 }
 
-// NewNode initializes the Libp2p stack with a persistent Peer ID, Kademlia DHT, mDNS, and GossipSub.
 func NewNode(listenPort int) (*Node, error) {
 	if listenPort <= 0 {
 		listenPort = 4001
@@ -144,20 +139,8 @@ func NewNode(listenPort int) (*Node, error) {
 		IncomingShares: make(chan []byte, 1000),
 	}
 
-	// Register historical ShareChain & Blocks sync stream handler
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
 
-	// Automatically trigger sync whenever a new peer connects to us
-	h.Network().Notify(&network.NotifyBundle{
-		ConnectedF: func(net network.Network, conn network.Conn) {
-			go func(pid peer.ID) {
-				time.Sleep(2 * time.Second)
-				node.SyncWithPeer(pid)
-			}(conn.RemotePeer())
-		},
-	})
-
-	// Start zero-config mDNS peer discovery for local network nodes
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
 		logging.Warnf("P2P: mDNS discovery could not start: %v", err)
@@ -174,24 +157,35 @@ func NewNode(listenPort int) (*Node, error) {
 	return node, nil
 }
 
+// handleSyncStream performs a 2-way exchange: reads the caller's SyncPayload, then sends our SyncPayload back.
 func (n *Node) handleSyncStream(s network.Stream) {
 	defer s.Close()
-	if n.GetSyncDataFunc == nil {
+	if n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
 		return
 	}
+
+	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
+
+	// 1. Read incoming payload from the dialing peer
+	var incoming SyncPayload
+	if err := json.NewDecoder(s).Decode(&incoming); err == nil {
+		go n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
+	}
+
+	// 2. Send our local payload back to the dialing peer
 	sharesJSON, blocksJSON := n.GetSyncDataFunc()
-	payload := SyncPayload{
+	outgoing := SyncPayload{
 		Shares: sharesJSON,
 		Blocks: blocksJSON,
 	}
-	_ = s.SetWriteDeadline(time.Now().Add(60 * time.Second))
-	if err := json.NewEncoder(s).Encode(&payload); err != nil {
-		logging.Warnf("P2P Sync: Failed sending sync payload to peer %s: %v", s.Conn().RemotePeer(), err)
+	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
+		logging.Warnf("P2P Sync: Failed sending sync response to peer %s: %v", s.Conn().RemotePeer(), err)
 	}
 }
 
+// SyncWithPeer performs a 2-way exchange: sends our SyncPayload to the peer, then reads the peer's SyncPayload.
 func (n *Node) SyncWithPeer(pid peer.ID) {
-	if pid == n.Host.ID() || n.OnSyncDataFunc == nil {
+	if pid == n.Host.ID() || n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(n.ctx, 60*time.Second)
@@ -204,23 +198,31 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 	}
 	defer s.Close()
 
-	_ = s.SetReadDeadline(time.Now().Add(60 * time.Second))
-	data, err := io.ReadAll(s)
-	if err != nil || len(data) == 0 {
+	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
+
+	// 1. Send our local payload to the peer
+	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	outgoing := SyncPayload{
+		Shares: sharesJSON,
+		Blocks: blocksJSON,
+	}
+	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
+		logging.Warnf("P2P Sync: Failed sending sync request to %s: %v", pid, err)
 		return
 	}
 
-	var payload SyncPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		logging.Warnf("P2P Sync: Failed to decode sync payload from %s: %v", pid, err)
+	// 2. Read the peer's payload back
+	var incoming SyncPayload
+	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+		logging.Warnf("P2P Sync: Failed decoding sync response from %s: %v", pid, err)
 		return
 	}
 
-	n.OnSyncDataFunc(payload.Shares, payload.Blocks)
+	n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
 }
 
 func (n *Node) periodicSyncLoop() {
-	ticker := time.NewTicker(2 * time.Minute)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -234,7 +236,6 @@ func (n *Node) periodicSyncLoop() {
 	}
 }
 
-// Bootstrap connects to the DHT and known bootstrap peers from config.yaml
 func (n *Node) Bootstrap(bootstrapPeers []string) error {
 	if err := n.DHT.Bootstrap(n.ctx); err != nil {
 		return err
@@ -274,12 +275,10 @@ func (n *Node) Bootstrap(bootstrapPeers []string) error {
 	return nil
 }
 
-// BroadcastShare sends a JSON byte array of a share to all nodes
 func (n *Node) BroadcastShare(shareData []byte) error {
 	return n.Topic.Publish(n.ctx, shareData)
 }
 
-// listenLoop catches shares from peers and forwards them to app logic
 func (n *Node) listenLoop() {
 	for {
 		msg, err := n.Sub.Next(n.ctx)
@@ -299,7 +298,6 @@ func (n *Node) listenLoop() {
 	}
 }
 
-// Close gracefully shuts down the libp2p stack
 func (n *Node) Close() {
 	n.cancel()
 	if err := n.Host.Close(); err != nil {

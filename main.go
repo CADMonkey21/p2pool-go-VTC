@@ -168,9 +168,9 @@ func main() {
 	}
 	defer p2pNode.Close()
 
-	// Wire automatic P2P historical ShareChain and Blocks synchronization
+	// Wire bidirectional P2P ShareChain and Blocks synchronization
 	p2pNode.GetSyncDataFunc = func() ([]byte, []byte) {
-		shares := sc.GetAllShares()
+		shares := sc.GetSharesForSync(3000)
 		sBytes, _ := json.Marshal(shares)
 		bBytes := workManager.GetPersistedBlocksJSON()
 		return sBytes, bBytes
@@ -183,18 +183,22 @@ func main() {
 				var validShares []work.Share
 				for i := range peerShares {
 					s := peerShares[i]
-					if !sc.HasShare(s.Hash.String()) {
-						if err := s.CalculateHashes(); err == nil {
-							if ok, _ := s.IsValid(); ok {
-								validShares = append(validShares, s)
-							}
+					if s.Hash == nil {
+						_ = s.CalculateHash()
+					}
+					if s.Hash != nil && !sc.HasShare(s.Hash.String()) {
+						if s.POWHash == nil {
+							_ = s.CalculatePOWHash()
+						}
+						if ok, _ := s.IsValid(); ok {
+							validShares = append(validShares, s)
 						}
 					}
 				}
 				if len(validShares) > 0 {
 					added := sc.AddShares(validShares)
 					if added > 0 {
-						logging.Successf("P2P Sync: Hydrated %d missing historical shares from peer!", added)
+						logging.Successf("P2P Sync: Hydrated %d missing shares from peer!", added)
 						_ = sc.Commit()
 					}
 				}
@@ -203,7 +207,7 @@ func main() {
 		if len(blocksJSON) > 0 {
 			addedBlocks := workManager.MergeRemoteBlocksJSON(blocksJSON)
 			if addedBlocks > 0 {
-				logging.Successf("P2P Sync: Hydrated %d missing historical found block(s) from peer!", addedBlocks)
+				logging.Successf("P2P Sync: Hydrated %d missing found block(s) from peer!", addedBlocks)
 			}
 		}
 	}
