@@ -121,7 +121,6 @@ type aggregatedMiner struct {
 	totalAccepted uint64
 	totalRejected uint64
 	currentDiff   float64
-	isLocal       bool
 }
 
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +141,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		minShareDiff = 0.01
 	}
 
-	// Aggregate local Stratum client connections by wallet address
+	// 1. Aggregate ONLY local Stratum client connections for the "Active Miners" table
 	minerMap := make(map[string]*aggregatedMiner)
 	var defaultMinerAddr string
 	for _, m := range activeMiners {
@@ -168,7 +167,6 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			minerMap[workerName] = &aggregatedMiner{
 				address:     workerName,
 				currentDiff: curDiff,
-				isLocal:     true,
 			}
 		}
 		minerMap[workerName].totalHashrate += hr
@@ -179,34 +177,25 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Merge remote P2P network miners discovered via the ShareChain in the last 10 minutes
+	// 2. Calculate true P2Pool Network Hashrate combining local + remote P2P ShareChain miners
 	netMiners := sc.GetNetworkMiners(10 * time.Minute)
+	var networkMinersHashrate float64
 	for addr, nm := range netMiners {
-		if defaultMinerAddr == "" {
-			defaultMinerAddr = addr
+		if localMiner, isLocal := minerMap[addr]; isLocal && localMiner.totalHashrate > nm.Hashrate {
+			networkMinersHashrate += localMiner.totalHashrate
+		} else {
+			networkMinersHashrate += nm.Hashrate
 		}
-		if existing, exists := minerMap[addr]; !exists {
-			minerMap[addr] = &aggregatedMiner{
-				address:       addr,
-				totalHashrate: nm.Hashrate,
-				totalAccepted: uint64(nm.ShareCount),
-				totalRejected: 0,
-				currentDiff:   nm.ShareDiff,
-				isLocal:       false,
-			}
-		} else if !existing.isLocal || nm.Hashrate > existing.totalHashrate {
-			existing.totalHashrate = nm.Hashrate
+	}
+	for addr, lm := range minerMap {
+		if _, inNet := netMiners[addr]; !inNet {
+			networkMinersHashrate += lm.totalHashrate
 		}
 	}
 
-	// Calculate total P2Pool Network Hashrate across all active network miners
-	var sumMinerHashrate float64
-	for _, am := range minerMap {
-		sumMinerHashrate += am.totalHashrate
-	}
 	effectivePoolHashrate := poolStats.PoolHashrate
-	if sumMinerHashrate > effectivePoolHashrate {
-		effectivePoolHashrate = sumMinerHashrate
+	if networkMinersHashrate > effectivePoolHashrate {
+		effectivePoolHashrate = networkMinersHashrate
 	}
 	if localHashrate > effectivePoolHashrate {
 		effectivePoolHashrate = localHashrate
@@ -224,7 +213,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		expectedBlocks24h = (24.0 * 3600.0) / effectiveTimeToBlock
 	}
 
-	// Compute real PPLNS payouts from the ShareChain
+	// 3. Compute real PPLNS payouts from the synchronized ShareChain (includes all nodes' miners)
 	totalRewardSats := int64(math.Round(blockReward * 1e8))
 	if defaultMinerAddr == "" {
 		defaultMinerAddr = config.Active.PoolAddress
