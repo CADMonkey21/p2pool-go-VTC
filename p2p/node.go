@@ -40,6 +40,8 @@ type Node struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	IncomingShares  chan []byte
+	bootstrapPeers  []string
+	syncMutex       sync.Mutex
 	GetSyncDataFunc func() ([]byte, []byte)
 	OnSyncDataFunc  func(sharesJSON []byte, blocksJSON []byte)
 }
@@ -157,7 +159,6 @@ func NewNode(listenPort int) (*Node, error) {
 	return node, nil
 }
 
-// handleSyncStream performs a 2-way exchange: reads the caller's SyncPayload, then sends our SyncPayload back.
 func (n *Node) handleSyncStream(s network.Stream) {
 	defer s.Close()
 	if n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
@@ -166,55 +167,60 @@ func (n *Node) handleSyncStream(s network.Stream) {
 
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 
-	// 1. Read incoming payload from the dialing peer
 	var incoming SyncPayload
-	if err := json.NewDecoder(s).Decode(&incoming); err == nil {
-		go n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
+	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+		return
 	}
+	go n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
 
-	// 2. Send our local payload back to the dialing peer
 	sharesJSON, blocksJSON := n.GetSyncDataFunc()
 	outgoing := SyncPayload{
 		Shares: sharesJSON,
 		Blocks: blocksJSON,
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
-		logging.Warnf("P2P Sync: Failed sending sync response to peer %s: %v", s.Conn().RemotePeer(), err)
+		logging.Debugf("P2P Sync: Failed sending sync response to peer %s: %v", s.Conn().RemotePeer(), err)
+		return
 	}
+	_ = s.CloseWrite()
+	time.Sleep(500 * time.Millisecond)
 }
 
-// SyncWithPeer performs a 2-way exchange: sends our SyncPayload to the peer, then reads the peer's SyncPayload.
 func (n *Node) SyncWithPeer(pid peer.ID) {
 	if pid == n.Host.ID() || n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
 		return
 	}
+	if !n.syncMutex.TryLock() {
+		return
+	}
+	defer n.syncMutex.Unlock()
+
 	ctx, cancel := context.WithTimeout(n.ctx, 60*time.Second)
 	defer cancel()
 
 	s, err := n.Host.NewStream(ctx, pid, SyncProtocolID)
 	if err != nil {
-		logging.Debugf("P2P Sync: Peer %s does not support sync stream yet: %v", pid, err)
+		logging.Debugf("P2P Sync: Peer %s stream open err: %v", pid, err)
 		return
 	}
 	defer s.Close()
 
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 
-	// 1. Send our local payload to the peer
 	sharesJSON, blocksJSON := n.GetSyncDataFunc()
 	outgoing := SyncPayload{
 		Shares: sharesJSON,
 		Blocks: blocksJSON,
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
-		logging.Warnf("P2P Sync: Failed sending sync request to %s: %v", pid, err)
+		logging.Debugf("P2P Sync: Failed sending sync request to %s: %v", pid, err)
 		return
 	}
+	_ = s.CloseWrite()
 
-	// 2. Read the peer's payload back
 	var incoming SyncPayload
 	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
-		logging.Warnf("P2P Sync: Failed decoding sync response from %s: %v", pid, err)
+		logging.Debugf("P2P Sync: Failed decoding sync response from %s: %v", pid, err)
 		return
 	}
 
@@ -229,7 +235,12 @@ func (n *Node) periodicSyncLoop() {
 		case <-n.ctx.Done():
 			return
 		case <-ticker.C:
-			for _, pid := range n.Host.Network().Peers() {
+			peers := n.Host.Network().Peers()
+			if len(peers) == 0 && len(n.bootstrapPeers) > 0 {
+				go n.Bootstrap(n.bootstrapPeers)
+				continue
+			}
+			for _, pid := range peers {
 				go n.SyncWithPeer(pid)
 			}
 		}
@@ -237,10 +248,14 @@ func (n *Node) periodicSyncLoop() {
 }
 
 func (n *Node) Bootstrap(bootstrapPeers []string) error {
+	if len(bootstrapPeers) > 0 {
+		n.bootstrapPeers = bootstrapPeers
+	}
 	if err := n.DHT.Bootstrap(n.ctx); err != nil {
 		return err
 	}
 
+	seenPeers := make(map[peer.ID]bool)
 	var wg sync.WaitGroup
 	for _, peerAddr := range bootstrapPeers {
 		if peerAddr == "" {
@@ -256,9 +271,10 @@ func (n *Node) Bootstrap(bootstrapPeers []string) error {
 			logging.Warnf("P2P: Bootstrap address '%s' is missing /p2p/<PeerID>: %v", peerAddr, err)
 			continue
 		}
-		if peerinfo.ID == n.Host.ID() {
+		if peerinfo.ID == n.Host.ID() || seenPeers[peerinfo.ID] {
 			continue
 		}
+		seenPeers[peerinfo.ID] = true
 
 		wg.Add(1)
 		go func(pi peer.AddrInfo) {
