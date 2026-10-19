@@ -26,10 +26,6 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 )
 
-/* -------------------------------------------------------------------- */
-/* Helpers                                                              */
-/* -------------------------------------------------------------------- */
-
 func formatHashrate(hr float64) string {
 	switch {
 	case hr > 1e12:
@@ -119,21 +115,15 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 	}
 }
 
-/* -------------------------------------------------------------------- */
-/* main                                                                 */
-/* -------------------------------------------------------------------- */
-
 func main() {
 	startTime := time.Now()
 
-	/* ----- start-up & logging ---------------------------------------- */
 	logging.Infof("🚀  p2pool-go (GossipSub mesh) starting up")
 
 	logFile, _ := os.OpenFile("p2pool.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
 	defer logFile.Close()
 	logging.SetLogFile(logFile)
 
-	/* ----- configuration -------------------------------------------- */
 	config.LoadConfig()
 
 	switch config.Active.LogLevel {
@@ -156,7 +146,6 @@ func main() {
 
 	p2pnet.SetNetwork(config.Active.Network, config.Active.Testnet, verthashEngine)
 
-	/* ----- RPC, share chain, work manager --------------------------- */
 	rpcClient := rpc.NewClient(config.Active)
 	sc := work.NewShareChain(rpcClient)
 
@@ -169,7 +158,6 @@ func main() {
 	go workManager.WatchMaturedBlocks()
 	go workManager.WatchFoundBlocks()
 
-	/* ----- LIBP2P NETWORKING ---------------------------------------- */
 	p2pPort := config.Active.P2PPort
 	if p2pPort <= 0 {
 		p2pPort = 4001
@@ -179,6 +167,46 @@ func main() {
 		logging.Fatalf("Failed to start p2p networking: %v", err)
 	}
 	defer p2pNode.Close()
+
+	// Wire automatic P2P historical ShareChain and Blocks synchronization
+	p2pNode.GetSyncDataFunc = func() ([]byte, []byte) {
+		shares := sc.GetAllShares()
+		sBytes, _ := json.Marshal(shares)
+		bBytes := workManager.GetPersistedBlocksJSON()
+		return sBytes, bBytes
+	}
+
+	p2pNode.OnSyncDataFunc = func(sharesJSON []byte, blocksJSON []byte) {
+		if len(sharesJSON) > 0 {
+			var peerShares []work.Share
+			if err := json.Unmarshal(sharesJSON, &peerShares); err == nil && len(peerShares) > 0 {
+				var validShares []work.Share
+				for i := range peerShares {
+					s := peerShares[i]
+					if !sc.HasShare(s.Hash.String()) {
+						if err := s.CalculateHashes(); err == nil {
+							if ok, _ := s.IsValid(); ok {
+								validShares = append(validShares, s)
+							}
+						}
+					}
+				}
+				if len(validShares) > 0 {
+					added := sc.AddShares(validShares)
+					if added > 0 {
+						logging.Successf("P2P Sync: Hydrated %d missing historical shares from peer!", added)
+						_ = sc.Commit()
+					}
+				}
+			}
+		}
+		if len(blocksJSON) > 0 {
+			addedBlocks := workManager.MergeRemoteBlocksJSON(blocksJSON)
+			if addedBlocks > 0 {
+				logging.Successf("P2P Sync: Hydrated %d missing historical found block(s) from peer!", addedBlocks)
+			}
+		}
+	}
 
 	go p2pNode.Bootstrap(config.Active.Peers)
 
@@ -202,7 +230,6 @@ func main() {
 			if added > 0 {
 				logging.Infof("P2P: Validated and added remote peer share %s to ShareChain", remoteShare.Hash.String()[:12])
 
-				// Check if the peer's share also solved a network block
 				netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
 				powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
 				if powInt.Cmp(netTarget) <= 0 {
@@ -214,14 +241,9 @@ func main() {
 			}
 		}
 	}()
-	/* ---------------------------------------------------------------- */
 
-	/* ----- Stratum server instance ---------------------------------- */
 	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 
-	/* =================================================================
-	   Single TCP listener, multiplexed via cmux
-	   ================================================================= */
 	addr := fmt.Sprintf(":%d", config.Active.StratumPort)
 	baseListener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -233,8 +255,6 @@ func main() {
 	stratumL := m.Match(cmux.Any())
 
 	mux := http.NewServeMux()
-
-	// Initialize dashboard API and static file server
 	apiHandler := web.NewDashboard(workManager, p2pNode, stratumSrv, startTime)
 
 	mux.Handle("/api/stats", apiHandler)
@@ -252,7 +272,6 @@ func main() {
 		}
 	}()
 
-	/* ----- misc goroutines & shutdown handler ----------------------- */
 	go logStats(p2pNode, sc, stratumSrv)
 
 	shutdownChan := make(chan os.Signal, 1)

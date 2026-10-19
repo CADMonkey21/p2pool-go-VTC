@@ -3,9 +3,12 @@ package p2p
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/libp2p/go-libp2p"
@@ -13,28 +16,39 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
 )
 
 // P2PNetworkTopic is the GossipSub channel everyone subscribes to
 const P2PNetworkTopic = "vtc-p2pool-shares-v1"
+const SyncProtocolID = protocol.ID("/p2pool/sync/1.0.0")
 const peerKeyFile = "peer.key"
 
+type SyncPayload struct {
+	Shares json.RawMessage `json:"shares"`
+	Blocks json.RawMessage `json:"blocks"`
+}
+
 type Node struct {
-	Host           host.Host
-	DHT            *dht.IpfsDHT
-	PubSub         *pubsub.PubSub
-	Topic          *pubsub.Topic
-	Sub            *pubsub.Subscription
-	ctx            context.Context
-	cancel         context.CancelFunc
-	IncomingShares chan []byte
+	Host             host.Host
+	DHT              *dht.IpfsDHT
+	PubSub           *pubsub.PubSub
+	Topic            *pubsub.Topic
+	Sub              *pubsub.Subscription
+	ctx              context.Context
+	cancel           context.CancelFunc
+	IncomingShares   chan []byte
+	GetSyncDataFunc  func() ([]byte, []byte)
+	OnSyncDataFunc   func(sharesJSON []byte, blocksJSON []byte)
 }
 
 // mdnsNotifee automatically connects to any p2pool-go-VTC nodes discovered on the local LAN
 type mdnsNotifee struct {
+	n   *Node
 	h   host.Host
 	ctx context.Context
 }
@@ -48,6 +62,7 @@ func (m *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 		logging.Warnf("P2P mDNS: Failed to connect to local peer %s: %v", pi.ID, err)
 	} else {
 		logging.Successf("P2P mDNS: Connected to local LAN peer %s!", pi.ID)
+		go m.n.SyncWithPeer(pi.ID)
 	}
 }
 
@@ -118,12 +133,6 @@ func NewNode(listenPort int) (*Node, error) {
 		return nil, fmt.Errorf("failed to subscribe: %w", err)
 	}
 
-	// Start zero-config mDNS peer discovery for local network nodes
-	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{h: h, ctx: ctx})
-	if err := mdnsService.Start(); err != nil {
-		logging.Warnf("P2P: mDNS discovery could not start: %v", err)
-	}
-
 	node := &Node{
 		Host:           h,
 		DHT:            kaddht,
@@ -135,14 +144,94 @@ func NewNode(listenPort int) (*Node, error) {
 		IncomingShares: make(chan []byte, 1000),
 	}
 
+	// Register historical ShareChain & Blocks sync stream handler
+	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
+
+	// Automatically trigger sync whenever a new peer connects to us
+	h.Network().Notify(&network.NotifyBundle{
+		ConnectedF: func(net network.Network, conn network.Conn) {
+			go func(pid peer.ID) {
+				time.Sleep(2 * time.Second)
+				node.SyncWithPeer(pid)
+			}(conn.RemotePeer())
+		},
+	})
+
+	// Start zero-config mDNS peer discovery for local network nodes
+	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
+	if err := mdnsService.Start(); err != nil {
+		logging.Warnf("P2P: mDNS discovery could not start: %v", err)
+	}
+
 	logging.Infof("P2P Node started! Persistent Peer ID: %s", h.ID())
 	for _, addr := range h.Addrs() {
 		logging.Infof("P2P Connect Multiaddr: %s/p2p/%s", addr.String(), h.ID())
 	}
 
 	go node.listenLoop()
+	go node.periodicSyncLoop()
 
 	return node, nil
+}
+
+func (n *Node) handleSyncStream(s network.Stream) {
+	defer s.Close()
+	if n.GetSyncDataFunc == nil {
+		return
+	}
+	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	payload := SyncPayload{
+		Shares: sharesJSON,
+		Blocks: blocksJSON,
+	}
+	_ = s.SetWriteDeadline(time.Now().Add(60 * time.Second))
+	if err := json.NewEncoder(s).Encode(&payload); err != nil {
+		logging.Warnf("P2P Sync: Failed sending sync payload to peer %s: %v", s.Conn().RemotePeer(), err)
+	}
+}
+
+func (n *Node) SyncWithPeer(pid peer.ID) {
+	if pid == n.Host.ID() || n.OnSyncDataFunc == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(n.ctx, 60*time.Second)
+	defer cancel()
+
+	s, err := n.Host.NewStream(ctx, pid, SyncProtocolID)
+	if err != nil {
+		logging.Debugf("P2P Sync: Peer %s does not support sync stream yet: %v", pid, err)
+		return
+	}
+	defer s.Close()
+
+	_ = s.SetReadDeadline(time.Now().Add(60 * time.Second))
+	data, err := io.ReadAll(s)
+	if err != nil || len(data) == 0 {
+		return
+	}
+
+	var payload SyncPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		logging.Warnf("P2P Sync: Failed to decode sync payload from %s: %v", pid, err)
+		return
+	}
+
+	n.OnSyncDataFunc(payload.Shares, payload.Blocks)
+}
+
+func (n *Node) periodicSyncLoop() {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-ticker.C:
+			for _, pid := range n.Host.Network().Peers() {
+				go n.SyncWithPeer(pid)
+			}
+		}
+	}
 }
 
 // Bootstrap connects to the DHT and known bootstrap peers from config.yaml
@@ -177,6 +266,7 @@ func (n *Node) Bootstrap(bootstrapPeers []string) error {
 				logging.Warnf("P2P: Failed to connect to bootstrap peer %s: %v", pi.ID, err)
 			} else {
 				logging.Successf("P2P: Connected to bootstrap node: %s", pi.ID)
+				n.SyncWithPeer(pi.ID)
 			}
 		}(*peerinfo)
 	}

@@ -463,3 +463,75 @@ func (wm *WorkManager) GetCurrentBlockReward() float64 {
 	}
 	return float64(latestTemplate.CoinbaseValue) / 1e8
 }
+
+func (wm *WorkManager) GetPersistedBlocksJSON() []byte {
+	wm.PendingMutex.Lock()
+	defer wm.PendingMutex.Unlock()
+
+	diskBlocks := make([]persistedBlock, 0, len(wm.PendingBlocks))
+	for _, pb := range wm.PendingBlocks {
+		bhStr := ""
+		if pb.BlockHash != nil {
+			bhStr = pb.BlockHash.String()
+		}
+		shStr := ""
+		if pb.BlockFindShareHash != nil {
+			shStr = pb.BlockFindShareHash.String()
+		}
+		diskBlocks = append(diskBlocks, persistedBlock{
+			BlockHash:   bhStr,
+			ShareHash:   shStr,
+			BlockHeight: pb.BlockHeight,
+			FoundTime:   pb.FoundTime,
+			State:       pb.State,
+		})
+	}
+	b, _ := json.Marshal(diskBlocks)
+	return b
+}
+
+func (wm *WorkManager) MergeRemoteBlocksJSON(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+	var remoteBlocks []persistedBlock
+	if err := json.Unmarshal(data, &remoteBlocks); err != nil {
+		return 0
+	}
+
+	wm.PendingMutex.Lock()
+	defer wm.PendingMutex.Unlock()
+
+	added := 0
+	for _, rb := range remoteBlocks {
+		exists := false
+		for _, pb := range wm.PendingBlocks {
+			if pb.BlockHeight == rb.BlockHeight {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			bh, _ := chainhash.NewHashFromStr(rb.BlockHash)
+			sh, _ := chainhash.NewHashFromStr(rb.ShareHash)
+			if bh == nil {
+				bh = &chainhash.Hash{}
+			}
+			if sh == nil {
+				sh = &chainhash.Hash{}
+			}
+			wm.PendingBlocks = append(wm.PendingBlocks, &PayoutBlock{
+				BlockHash:          bh,
+				BlockFindShareHash: sh,
+				BlockHeight:        rb.BlockHeight,
+				FoundTime:          rb.FoundTime,
+				State:              rb.State,
+			})
+			added++
+		}
+	}
+	if added > 0 {
+		wm.saveBlocksLocked()
+	}
+	return added
+}

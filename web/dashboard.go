@@ -98,12 +98,11 @@ func formatTimeToBlock(seconds float64) string {
 	}
 }
 
-// formatAvgTime matches the specific "0h 5m 0s" format expected by the UI
 func formatAvgTime(seconds float64) string {
 	if seconds <= 0 {
 		return "Unknown"
 	}
-	if seconds > 86400*7 { // Cap at 1 week for extremely low hashrate miners
+	if seconds > 86400*7 {
 		return "> 1 week"
 	}
 	d := time.Duration(seconds) * time.Second
@@ -122,6 +121,7 @@ type aggregatedMiner struct {
 	totalAccepted uint64
 	totalRejected uint64
 	currentDiff   float64
+	isLocal       bool
 }
 
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -142,30 +142,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		minShareDiff = 0.01
 	}
 
-	peerCount := 0
-	if d.p2pNode != nil && d.p2pNode.Host != nil {
-		peerCount = len(d.p2pNode.Host.Network().Peers())
-	}
-
-	// When no external P2P peers are connected, the local node is 100% of the P2Pool network.
-	effectivePoolHashrate := poolStats.PoolHashrate
-	if peerCount == 0 || localHashrate > effectivePoolHashrate {
-		effectivePoolHashrate = localHashrate
-	}
-
-	effectiveTimeToBlock := poolStats.TimeToBlock
-	if effectivePoolHashrate > 0 && poolStats.NetworkHashrate > 0 {
-		effectiveTimeToBlock = (poolStats.NetworkHashrate / effectivePoolHashrate) * 150.0
-	}
-
-	poolFeePct := config.Active.Fee / 100.0
-	netBlockReward := blockReward * (1.0 - poolFeePct)
-	expectedBlocks24h := 0.0
-	if effectiveTimeToBlock > 0 {
-		expectedBlocks24h = (24.0 * 3600.0) / effectiveTimeToBlock
-	}
-
-	// Aggregate client connections by wallet address (workerName)
+	// Aggregate local Stratum client connections by wallet address
 	minerMap := make(map[string]*aggregatedMiner)
 	var defaultMinerAddr string
 	for _, m := range activeMiners {
@@ -191,6 +168,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			minerMap[workerName] = &aggregatedMiner{
 				address:     workerName,
 				currentDiff: curDiff,
+				isLocal:     true,
 			}
 		}
 		minerMap[workerName].totalHashrate += hr
@@ -201,7 +179,52 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Compute real PPLNS payouts from the ShareChain (matching actual coinbase generation)
+	// Merge remote P2P network miners discovered via the ShareChain in the last 10 minutes
+	netMiners := sc.GetNetworkMiners(10 * time.Minute)
+	for addr, nm := range netMiners {
+		if defaultMinerAddr == "" {
+			defaultMinerAddr = addr
+		}
+		if existing, exists := minerMap[addr]; !exists {
+			minerMap[addr] = &aggregatedMiner{
+				address:       addr,
+				totalHashrate: nm.Hashrate,
+				totalAccepted: uint64(nm.ShareCount),
+				totalRejected: 0,
+				currentDiff:   nm.ShareDiff,
+				isLocal:       false,
+			}
+		} else if !existing.isLocal || nm.Hashrate > existing.totalHashrate {
+			existing.totalHashrate = nm.Hashrate
+		}
+	}
+
+	// Calculate total P2Pool Network Hashrate across all active network miners
+	var sumMinerHashrate float64
+	for _, am := range minerMap {
+		sumMinerHashrate += am.totalHashrate
+	}
+	effectivePoolHashrate := poolStats.PoolHashrate
+	if sumMinerHashrate > effectivePoolHashrate {
+		effectivePoolHashrate = sumMinerHashrate
+	}
+	if localHashrate > effectivePoolHashrate {
+		effectivePoolHashrate = localHashrate
+	}
+
+	effectiveTimeToBlock := poolStats.TimeToBlock
+	if effectivePoolHashrate > 0 && poolStats.NetworkHashrate > 0 {
+		effectiveTimeToBlock = (poolStats.NetworkHashrate / effectivePoolHashrate) * 150.0
+	}
+
+	poolFeePct := config.Active.Fee / 100.0
+	netBlockReward := blockReward * (1.0 - poolFeePct)
+	expectedBlocks24h := 0.0
+	if effectiveTimeToBlock > 0 {
+		expectedBlocks24h = (24.0 * 3600.0) / effectiveTimeToBlock
+	}
+
+	// Compute real PPLNS payouts from the ShareChain
 	totalRewardSats := int64(math.Round(blockReward * 1e8))
 	if defaultMinerAddr == "" {
 		defaultMinerAddr = config.Active.PoolAddress
@@ -215,7 +238,6 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var dashboardMiners []map[string]interface{}
 	var dashboardPayouts []map[string]interface{}
 
-	// Sort active miners by address for consistent UI ordering
 	sortedMinerAddrs := make([]string, 0, len(minerMap))
 	for addr := range minerMap {
 		sortedMinerAddrs = append(sortedMinerAddrs, addr)
@@ -230,8 +252,6 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rejPct = (float64(am.totalRejected) / float64(totalShares)) * 100.0
 		}
 
-		// Use the miner's actual PPLNS coinbase payout if present in the sharechain;
-		// otherwise fall back to proportional live hashrate for brand-new miners.
 		payoutPerBlock, hasPPLNS := pplnsPayoutMap[am.address]
 		if !hasPPLNS {
 			minerProportion := 0.0
@@ -260,11 +280,11 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"rejected_percentage":    rejPct,
 			"share_difficulty":       am.currentDiff,
 			"avg_time_to_share":      formatAvgTime(timeToShareSec),
+			"payout_per_block_vtc":   payoutPerBlock,
 			"est_24_hour_payout_vtc": est24HourPayout,
 		})
 	}
 
-	// Populate Top 50 Payouts table from all PPLNS recipients (sorted highest payout first)
 	type payoutItem struct {
 		addr   string
 		amount float64

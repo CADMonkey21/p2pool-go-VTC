@@ -8,8 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
+	"github.com/btcsuite/btcd/btcutil/base58"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
@@ -24,6 +27,14 @@ type PoolStats struct {
 	SharesDead        int     `json:"shares_dead"`
 	Efficiency        float64 `json:"efficiency"`
 	TimeToBlock       float64 `json:"time_to_block_seconds"`
+}
+
+type NetworkMinerStats struct {
+	Address     string
+	Hashrate    float64
+	ShareDiff   float64
+	ShareCount  int
+	LastSeen    int64
 }
 
 type ShareChain struct {
@@ -53,7 +64,7 @@ func NewShareChain(rpcClient *rpc.Client) *ShareChain {
 }
 
 func (sc *ShareChain) maintenanceLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		sc.PruneOldShares()
@@ -76,10 +87,12 @@ func (sc *ShareChain) HasShare(hashStr string) bool {
 
 func (sc *ShareChain) AddShares(newShares []Share) int {
 	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
 	added := 0
 	for i := range newShares {
 		s := newShares[i]
+		if s.Hash == nil {
+			_ = s.CalculateHashes()
+		}
 		if s.Hash == nil {
 			continue
 		}
@@ -91,17 +104,40 @@ func (sc *ShareChain) AddShares(newShares []Share) int {
 			sc.updateTip(&shareCopy)
 		}
 	}
+	sc.mutex.Unlock()
+
+	if added > 0 {
+		sc.updateStats()
+	}
 	return added
 }
 
 func (sc *ShareChain) updateTip(s *Share) {
+	if s.ShareInfo.ShareData.StaleInfo != StaleInfoNone {
+		return
+	}
 	if sc.TipHash == nil || sc.TipHash.IsEqual(sc.genesisHash) {
 		sc.TipHash = s.Hash
 		return
 	}
 
 	currentTip := sc.shares[sc.TipHash.String()]
-	if currentTip != nil && s.ShareInfo.AbsHeight > currentTip.ShareInfo.AbsHeight {
+	if currentTip == nil {
+		sc.TipHash = s.Hash
+		return
+	}
+
+	// Advance TipHash if the new share builds directly on currentTip, has a higher VTC block height,
+	// or is newer at the same VTC block height.
+	if s.ShareInfo.ShareData.PreviousShareHash != nil && s.ShareInfo.ShareData.PreviousShareHash.IsEqual(sc.TipHash) {
+		sc.TipHash = s.Hash
+		return
+	}
+	if s.ShareInfo.AbsHeight > currentTip.ShareInfo.AbsHeight {
+		sc.TipHash = s.Hash
+		return
+	}
+	if s.ShareInfo.AbsHeight == currentTip.ShareInfo.AbsHeight && s.ShareInfo.Timestamp >= currentTip.ShareInfo.Timestamp {
 		sc.TipHash = s.Hash
 	}
 }
@@ -135,6 +171,10 @@ func (sc *ShareChain) Load() error {
 	if err := json.Unmarshal(b, &fileShares); err != nil {
 		return err
 	}
+	// Sort ascending by timestamp before adding so TipHash lands on the true latest share
+	sort.Slice(fileShares, func(i, j int) bool {
+		return fileShares[i].ShareInfo.Timestamp < fileShares[j].ShareInfo.Timestamp
+	})
 	sc.AddShares(fileShares)
 	logging.Infof("Loaded %d shares from disk", len(fileShares))
 	return nil
@@ -156,29 +196,175 @@ func (sc *ShareChain) Commit() error {
 	return os.WriteFile(path, b, 0644)
 }
 
+func (sc *ShareChain) GetAllShares() []Share {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	list := make([]Share, 0, len(sc.shares))
+	for _, s := range sc.shares {
+		list = append(list, *s)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].ShareInfo.Timestamp < list[j].ShareInfo.Timestamp
+	})
+	return list
+}
+
 func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*Share, error) {
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
 
 	var payoutShares []*Share
-	currentHash := blockFindShareHash.String()
-	sharesGathered := 0
+	visited := make(map[string]bool)
 
-	for sharesGathered < windowSize {
-		share, exists := sc.shares[currentHash]
-		if !exists {
-			break
+	if blockFindShareHash != nil {
+		currentHash := blockFindShareHash.String()
+		for len(payoutShares) < windowSize {
+			if visited[currentHash] {
+				break
+			}
+			visited[currentHash] = true
+
+			share, exists := sc.shares[currentHash]
+			if !exists {
+				break
+			}
+			if share.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+				payoutShares = append(payoutShares, share)
+			}
+			if share.ShareInfo.ShareData.PreviousShareHash == nil || share.ShareInfo.ShareData.PreviousShareHash.IsEqual(sc.genesisHash) {
+				break
+			}
+			currentHash = share.ShareInfo.ShareData.PreviousShareHash.String()
 		}
-		if share.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
-			payoutShares = append(payoutShares, share)
-			sharesGathered++
-		}
-		if share.ShareInfo.ShareData.PreviousShareHash == nil || share.ShareInfo.ShareData.PreviousShareHash.IsEqual(sc.genesisHash) {
-			break
-		}
-		currentHash = share.ShareInfo.ShareData.PreviousShareHash.String()
 	}
+
+	// If parent links had a gap (e.g. concurrent shares at same block height), fill remaining window
+	// deterministically from the most recent valid shares in the ShareChain so payouts never break.
+	if len(payoutShares) < windowSize && len(sc.shares) > len(payoutShares) {
+		allValid := make([]*Share, 0, len(sc.shares))
+		for hStr, s := range sc.shares {
+			if !visited[hStr] && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+				allValid = append(allValid, s)
+			}
+		}
+		sort.Slice(allValid, func(i, j int) bool {
+			if allValid[i].ShareInfo.Timestamp == allValid[j].ShareInfo.Timestamp {
+				return allValid[i].Hash.String() > allValid[j].Hash.String()
+			}
+			return allValid[i].ShareInfo.Timestamp > allValid[j].ShareInfo.Timestamp
+		})
+		for _, s := range allValid {
+			if len(payoutShares) >= windowSize {
+				break
+			}
+			payoutShares = append(payoutShares, s)
+		}
+	}
+
 	return payoutShares, nil
+}
+
+func DecodeShareAddress(s *Share) string {
+	if s == nil || len(s.ShareInfo.ShareData.PubKeyHash) == 0 {
+		return ""
+	}
+	if s.ShareInfo.ShareData.PubKeyHashVersion == 0x00 {
+		converted, err := bech32.ConvertBits(s.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
+		if err != nil {
+			return ""
+		}
+		hrp := "vtc"
+		if config.Active.Testnet {
+			hrp = "tvtc"
+		}
+		addr, _ := bech32.Encode(hrp, append([]byte{s.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
+		return addr
+	}
+	return base58.CheckEncode(s.ShareInfo.ShareData.PubKeyHash, s.ShareInfo.ShareData.PubKeyHashVersion)
+}
+
+// GetNetworkMiners computes active miner statistics across the entire P2P ShareChain over the last 10 minutes.
+func (sc *ShareChain) GetNetworkMiners(window time.Duration) map[string]*NetworkMinerStats {
+	sc.mutex.RLock()
+	shares := make([]*Share, 0, len(sc.shares))
+	for _, s := range sc.shares {
+		shares = append(shares, s)
+	}
+	sc.mutex.RUnlock()
+
+	now := time.Now().Unix()
+	windowSec := window.Seconds()
+	if windowSec <= 0 {
+		windowSec = 600
+	}
+	cutoff := now - int64(windowSec)
+
+	maxTarget, _ := new(big.Int).SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
+	maxTargetFloat := new(big.Float).SetPrec(256).SetInt(maxTarget)
+
+	type minerWork struct {
+		workSum   float64
+		lastDiff  float64
+		lastSeen  int64
+		firstSeen int64
+		count     int
+	}
+	workByAddr := make(map[string]*minerWork)
+
+	for _, s := range shares {
+		ts := int64(s.ShareInfo.Timestamp)
+		if ts < cutoff || s.ShareInfo.ShareData.StaleInfo != StaleInfoNone {
+			continue
+		}
+		addr := DecodeShareAddress(s)
+		if addr == "" {
+			continue
+		}
+		if s.Target == nil || s.Target.Sign() <= 0 {
+			continue
+		}
+		targetFloat := new(big.Float).SetPrec(256).SetInt(s.Target)
+		diffFloatBig := new(big.Float).SetPrec(256).Quo(maxTargetFloat, targetFloat)
+		diffFloat, _ := diffFloatBig.Float64()
+
+		mw, exists := workByAddr[addr]
+		if !exists {
+			mw = &minerWork{
+				lastDiff:  diffFloat,
+				lastSeen:  ts,
+				firstSeen: ts,
+			}
+			workByAddr[addr] = mw
+		}
+		mw.workSum += diffFloat
+		mw.count++
+		if ts >= mw.lastSeen {
+			mw.lastSeen = ts
+			mw.lastDiff = diffFloat
+		}
+		if ts < mw.firstSeen {
+			mw.firstSeen = ts
+		}
+	}
+
+	result := make(map[string]*NetworkMinerStats)
+	for addr, mw := range workByAddr {
+		span := float64(now - mw.firstSeen)
+		if span < 30.0 {
+			span = 30.0
+		}
+		if span > windowSec {
+			span = windowSec
+		}
+		result[addr] = &NetworkMinerStats{
+			Address:    addr,
+			Hashrate:   (mw.workSum * 16777216.0) / span,
+			ShareDiff:  mw.lastDiff,
+			ShareCount: mw.count,
+			LastSeen:   mw.lastSeen,
+		}
+	}
+	return result
 }
 
 func (sc *ShareChain) updateStats() {
@@ -189,11 +375,8 @@ func (sc *ShareChain) updateStats() {
 	}
 	sc.mutex.RUnlock()
 
-	orphanCount := 0
-	doaCount := 0
-
 	now := time.Now().Unix()
-	windowSeconds := float64(3600) // 1-hour responsive window
+	windowSeconds := float64(600) // 10-minute responsive window matching Stratum local rate monitor
 	cutoffWindow := now - int64(windowSeconds)
 	var workWindow float64
 	var earliestShareTime int64 = now
@@ -202,13 +385,6 @@ func (sc *ShareChain) updateStats() {
 	maxTargetFloat := new(big.Float).SetPrec(256).SetInt(maxTarget)
 
 	for _, s := range shares {
-		switch s.ShareInfo.ShareData.StaleInfo {
-		case StaleInfoOrphan:
-			orphanCount++
-		case StaleInfoDOA:
-			doaCount++
-		}
-
 		ts := int64(s.ShareInfo.Timestamp)
 		if ts > cutoffWindow && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
 			if s.Target != nil && s.Target.Sign() > 0 {
@@ -253,11 +429,8 @@ func (sc *ShareChain) updateStats() {
 func (sc *ShareChain) GetStats() PoolStats {
 	sc.mutex.RLock()
 	total := len(sc.shares)
-	sc.mutex.RUnlock()
-
 	orphan := 0
 	doa := 0
-	sc.mutex.RLock()
 	for _, s := range sc.shares {
 		switch s.ShareInfo.ShareData.StaleInfo {
 		case StaleInfoOrphan:
