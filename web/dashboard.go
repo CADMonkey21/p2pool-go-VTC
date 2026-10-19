@@ -300,13 +300,15 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	recentBlocks, _ := d.workManager.GetRecentBlocks(10)
+	recentBlocks, _ := d.workManager.GetRecentBlocks(50)
 	var dashboardBlocks []map[string]interface{}
 	for _, b := range recentBlocks {
-		dashboardBlocks = append(dashboardBlocks, map[string]interface{}{
-			"block_number": b.BlockHeight,
-			"found_ago":    formatDurationAgo(b.FoundTime),
-		})
+		if time.Since(b.FoundTime) <= 24*time.Hour {
+			dashboardBlocks = append(dashboardBlocks, map[string]interface{}{
+				"block_number": b.BlockHeight,
+				"found_ago":    formatDurationAgo(b.FoundTime),
+			})
+		}
 	}
 
 	data := map[string]interface{}{
