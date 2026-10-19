@@ -500,9 +500,6 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	}
 	c.Mutex.Lock()
 	c.CurrentDifficulty = diff
-	for _, j := range c.ActiveJobs {
-		j.Difficulty = diff
-	}
 	c.Mutex.Unlock()
 	_ = c.send(JSONRPCResponse{Method: "mining.set_difficulty", Params: []interface{}{diff}})
 }

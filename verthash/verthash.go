@@ -6,8 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"syscall"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -65,7 +65,7 @@ func MakeVerthashDatafileWithProgress(file string, progress chan float64) error 
 }
 
 func VerifyVerthashDatafile(file string) (bool, error) {
-	b, err := ioutil.ReadFile(file)
+	b, err := os.ReadFile(file)
 	if err != nil {
 		return false, err
 	}
@@ -81,6 +81,7 @@ type Verthash struct {
 	datFileContent []byte
 	datFile        *os.File
 	datFileSize    int64
+	isMmap         bool
 }
 
 // Official Verthash 32-bit FNV-1a function
@@ -90,33 +91,48 @@ func fnv1a(a, b uint32) uint32 {
 
 func NewVerthash(datFileLocation string, keepInRam bool) (*Verthash, error) {
 	v := Verthash{}
-	var err error
-	if keepInRam {
-		v.datFileContent, err = ioutil.ReadFile(datFileLocation)
+	f, err := os.Open(datFileLocation)
+	if err != nil {
+		return nil, err
+	}
+	s, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	v.datFile = f
+	v.datFileSize = s.Size()
+
+	if keepInRam && v.datFileSize > 0 {
+		// Use read-only shared memory mapping (MAP_SHARED) so the 1.2GB verthash.dat stays
+		// in the OS page cache, shares physical RAM pages across processes, and never uses swap!
+		mapped, mmapErr := syscall.Mmap(int(f.Fd()), 0, int(v.datFileSize), syscall.PROT_READ, syscall.MAP_SHARED)
+		if mmapErr == nil {
+			v.datFileContent = mapped
+			v.isMmap = true
+			return &v, nil
+		}
+		// Fallback to ReadFile if Mmap is unsupported
+		v.datFileContent, err = os.ReadFile(datFileLocation)
 		if err != nil {
+			f.Close()
 			return nil, err
 		}
-		v.datFileSize = int64(len(v.datFileContent))
-	} else {
-		v.datFile, err = os.Open(datFileLocation)
-		if err != nil {
-			return nil, err
-		}
-		s, err := v.datFile.Stat()
-		if err != nil {
-			return nil, err
-		}
-		v.datFileSize = s.Size()
 	}
 
 	return &v, nil
 }
 
 func (v *Verthash) Close() {
-	if v.datFileContent != nil {
-		v.datFileContent = []byte{}
-	} else if v.datFile != nil {
+	if v.isMmap && v.datFileContent != nil {
+		_ = syscall.Munmap(v.datFileContent)
+		v.datFileContent = nil
+	} else if v.datFileContent != nil {
+		v.datFileContent = nil
+	}
+	if v.datFile != nil {
 		v.datFile.Close()
+		v.datFile = nil
 	}
 }
 
