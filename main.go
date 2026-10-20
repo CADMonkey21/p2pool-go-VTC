@@ -185,105 +185,46 @@ func main() {
 		return sBytes, bBytes
 	}
 
+	p2pNode.GetSharesByHashFunc = func(hashes []string, parents int) []byte {
+		b, _ := json.Marshal(sc.GetSharesByHashWithParents(hashes, parents))
+		return b
+	}
 	p2pNode.OnSyncDataFunc = func(sharesJSON []byte, blocksJSON []byte) {
 		if len(sharesJSON) > 0 {
-			var peerShares []work.Share
-			if err := json.Unmarshal(sharesJSON, &peerShares); err == nil && len(peerShares) > 0 {
-				var validShares []work.Share
-				for i := range peerShares {
-					s := peerShares[i]
-					if s.Hash == nil {
-						_ = s.CalculateHash()
-					}
-					if s.Hash != nil && !sc.HasShare(s.Hash.String()) {
-						if s.POWHash == nil {
-							_ = s.CalculatePOWHash()
-						}
-						if ok, _ := s.IsValid(); ok {
-							if int64(s.ShareInfo.Timestamp) > time.Now().Unix()-600 {
-								expD := sc.GetExpectedShareDifficulty(s.ShareInfo.ShareData.PreviousShareHash)
-								clmD := work.TargetToDiff(s.Target)
-								if clmD < expD*0.999 || clmD > expD*1.001 {
-									continue
-								}
-								if okCb, _ := work.VerifyShareCoinbase(&s, sc); !okCb {
-									continue
-								}
-							}
-							if int64(s.ShareInfo.Timestamp) > time.Now().Unix()-600 {
-								expD := sc.GetExpectedShareDifficulty(s.ShareInfo.ShareData.PreviousShareHash)
-								clmD := work.TargetToDiff(s.Target)
-								if clmD < expD*0.999 || clmD > expD*1.001 {
-									continue
-								}
-								if okCb, _ := work.VerifyShareCoinbase(&s, sc); !okCb {
-									continue
-								}
-							}
-							if int64(s.ShareInfo.Timestamp) > time.Now().Unix()-600 {
-								expD := sc.GetExpectedShareDifficulty(s.ShareInfo.ShareData.PreviousShareHash)
-								clmD := work.TargetToDiff(s.Target)
-								if clmD < expD*0.999 || clmD > expD*1.001 {
-									continue
-								}
-								if okCb, _ := work.VerifyShareCoinbase(&s, sc); !okCb {
-									continue
-								}
-							}
-							validShares = append(validShares, s)
-						}
-					}
+			var ps []work.Share
+			if json.Unmarshal(sharesJSON, &ps) == nil && len(ps) > 0 {
+				if added := sc.AddShares(ps); added > 0 {
+					logging.Successf("P2P Sync: Hydrated %d verified shares from peer!", added)
+					_ = sc.Commit()
 				}
-				if len(validShares) > 0 {
-					added := sc.AddShares(validShares)
-					if added > 0 {
-						logging.Successf("P2P Sync: Hydrated %d missing shares from peer!", added)
-						_ = sc.Commit()
-					}
+				if miss := sc.GetMissingParentHashes(16); len(miss) > 0 {
+					go p2pNode.RequestShares(miss, 250)
 				}
 			}
 		}
 		if len(blocksJSON) > 0 {
-			addedBlocks := workManager.MergeRemoteBlocksJSON(blocksJSON)
-			if addedBlocks > 0 {
-				logging.Successf("P2P Sync: Hydrated %d missing found block(s) from peer!", addedBlocks)
+			if ab := workManager.MergeRemoteBlocksJSON(blocksJSON); ab > 0 {
+				logging.Successf("P2P Sync: Hydrated %d missing found block(s) from peer!", ab)
 			}
 		}
 	}
-
 	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 	go p2pNode.Bootstrap(config.Active.Peers)
-
 	go func() {
 		for shareBytes := range p2pNode.IncomingShares {
 			var remoteShare work.Share
-			if err := json.Unmarshal(shareBytes, &remoteShare); err != nil {
-				logging.Warnf("P2P: Failed to unmarshal incoming peer share: %v", err)
+			if json.Unmarshal(shareBytes, &remoteShare) != nil {
 				continue
 			}
-			if err := remoteShare.CalculateHashes(); err != nil {
-				logging.Warnf("P2P: Failed to calculate hashes for incoming peer share: %v", err)
-				continue
-			}
-			if valid, reason := remoteShare.IsValid(); !valid {
-				logging.Warnf("P2P: Rejected invalid peer share (%s)", reason)
-				continue
-			}
-
-			powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
-			actualPeerDiff := work.TargetToDiff(powInt)
-			netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
-			expDiff := sc.GetExpectedShareDifficulty(remoteShare.ShareInfo.ShareData.PreviousShareHash)
-			clmDiff := work.TargetToDiff(remoteShare.Target)
-			if (actualPeerDiff < expDiff*0.999 || clmDiff < expDiff*0.999 || clmDiff > expDiff*1.001) && powInt.Cmp(netTarget) > 0 {
-				logging.Warnf("P2P: Rejected peer share %s: diff %.4f != consensus %.4f", remoteShare.Hash.String()[:12], clmDiff, expDiff)
-				continue
-			}
-			if ok, reason := work.VerifyShareCoinbase(&remoteShare, sc); !ok {
-				logging.Warnf("P2P: Rejected peer share %s: %s", remoteShare.Hash.String()[:12], reason)
+			if remoteShare.CalculateHashes() != nil {
 				continue
 			}
 			added := sc.AddShares([]work.Share{remoteShare})
+			if miss := sc.GetMissingParentHashes(16); len(miss) > 0 {
+				go p2pNode.RequestShares(miss, 250)
+			}
+			powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
+			netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
 			if added > 0 {
 				stratumSrv.NotifyNewShare()
 				logging.Infof("P2P: Validated and added remote peer share %s to ShareChain", remoteShare.Hash.String()[:12])

@@ -40,6 +40,9 @@ type NetworkMinerStats struct {
 
 type ShareChain struct {
 	shares            map[string]*Share
+	verified          map[string]bool
+	cumWork           map[string]float64
+	chainLen          map[string]int
 	mutex             sync.RWMutex
 	rpcClient         *rpc.Client
 	genesisHash       *chainhash.Hash
@@ -53,7 +56,7 @@ type ShareChain struct {
 
 func NewShareChain(rpcClient *rpc.Client) *ShareChain {
 	sc := &ShareChain{
-		shares:         make(map[string]*Share),
+		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int),
 		rpcClient:      rpcClient,
 		FoundBlockChan: make(chan *Share, 100),
 	}
@@ -88,59 +91,34 @@ func (sc *ShareChain) HasShare(hashStr string) bool {
 
 func (sc *ShareChain) AddShares(newShares []Share) int {
 	sc.mutex.Lock()
-	added := 0
 	for i := range newShares {
-		s := newShares[i]
-		if s.Hash == nil {
-			_ = s.CalculateHash()
+		sh := newShares[i]
+		if sh.Hash == nil {
+			_ = sh.CalculateHash()
 		}
-		if s.Hash == nil {
+		if sh.Hash == nil {
 			continue
 		}
-		hStr := s.Hash.String()
-		if _, exists := sc.shares[hStr]; !exists {
-			shareCopy := s
-			sc.shares[hStr] = &shareCopy
-			added++
-			sc.updateTip(&shareCopy)
+		h := sh.Hash.String()
+		if _, ok := sc.shares[h]; ok {
+			continue
 		}
+		if sh.POWHash == nil {
+			_ = sh.CalculatePOWHash()
+		}
+		if ok, _ := sh.IsValid(); !ok {
+			continue
+		}
+		cp := sh
+		sc.shares[h] = &cp
 	}
 	sc.mutex.Unlock()
-
-	if added > 0 {
+	v := sc.verifyPending()
+	if v > 0 {
 		sc.updateStats()
 	}
-	return added
+	return v
 }
-
-func (sc *ShareChain) updateTip(s *Share) {
-	if s.ShareInfo.ShareData.StaleInfo != StaleInfoNone {
-		return
-	}
-	if sc.TipHash == nil || sc.TipHash.IsEqual(sc.genesisHash) {
-		sc.TipHash = s.Hash
-		return
-	}
-
-	currentTip := sc.shares[sc.TipHash.String()]
-	if currentTip == nil {
-		sc.TipHash = s.Hash
-		return
-	}
-
-	if s.ShareInfo.AbsHeight > currentTip.ShareInfo.AbsHeight {
-		sc.TipHash = s.Hash
-		return
-	}
-	if s.ShareInfo.AbsHeight == currentTip.ShareInfo.AbsHeight {
-		if s.ShareInfo.Timestamp > currentTip.ShareInfo.Timestamp {
-			sc.TipHash = s.Hash
-		} else if s.ShareInfo.Timestamp == currentTip.ShareInfo.Timestamp && s.Hash.String() > currentTip.Hash.String() {
-			sc.TipHash = s.Hash
-		}
-	}
-}
-
 func (sc *ShareChain) PruneOldShares() {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
@@ -149,6 +127,9 @@ func (sc *ShareChain) PruneOldShares() {
 	for hStr, s := range sc.shares {
 		if int64(s.ShareInfo.Timestamp) < cutoff {
 			delete(sc.shares, hStr)
+			delete(sc.verified, hStr)
+			delete(sc.cumWork, hStr)
+			delete(sc.chainLen, hStr)
 			pruned++
 		}
 	}
@@ -173,7 +154,7 @@ func (sc *ShareChain) Load() error {
 	sort.Slice(fileShares, func(i, j int) bool {
 		return fileShares[i].ShareInfo.Timestamp < fileShares[j].ShareInfo.Timestamp
 	})
-	sc.AddShares(fileShares)
+	sc.loadTrusted(fileShares)
 	logging.Infof("Loaded %d shares from disk", len(fileShares))
 	return nil
 }
@@ -201,23 +182,13 @@ func (sc *ShareChain) Commit() error {
 // GetSharesForSync returns up to maxCount most recent shares for fast P2P stream synchronization.
 func (sc *ShareChain) GetSharesForSync(maxCount int) []Share {
 	sc.mutex.RLock()
-	list := make([]Share, 0, len(sc.shares))
-	for _, s := range sc.shares {
-		list = append(list, *s)
+	w := sc.getOrderedChainWalkLocked(sc.TipHash, maxCount)
+	res := make([]Share, 0, len(w))
+	for _, x := range w {
+		res = append(res, *x)
 	}
 	sc.mutex.RUnlock()
-
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].ShareInfo.Timestamp == list[j].ShareInfo.Timestamp {
-			return list[i].Hash.String() > list[j].Hash.String()
-		}
-		return list[i].ShareInfo.Timestamp > list[j].ShareInfo.Timestamp
-	})
-
-	if maxCount > 0 && len(list) > maxCount {
-		list = list[:maxCount]
-	}
-	return list
+	return res
 }
 
 const (
@@ -237,7 +208,7 @@ func (sc *ShareChain) getOrderedChainWalkLocked(start *chainhash.Hash, max int) 
 	}
 	for cur != nil && !cur.IsEqual(sc.genesisHash) {
 		h := cur.String()
-		if vis[h] {
+		if vis[h] || !sc.verified[h] {
 			break
 		}
 		s := sc.shares[h]
@@ -252,28 +223,6 @@ func (sc *ShareChain) getOrderedChainWalkLocked(start *chainhash.Hash, max int) 
 			}
 		}
 		cur = s.ShareInfo.ShareData.PreviousShareHash
-	}
-	var maxTs int32 = 0x7fffffff
-	if len(res) > 0 {
-		maxTs = res[len(res)-1].ShareInfo.Timestamp
-	}
-	rem := make([]*Share, 0, len(sc.shares))
-	for h, s := range sc.shares {
-		if !vis[h] && s != nil && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone && s.Hash != nil && s.ShareInfo.Timestamp <= maxTs {
-			rem = append(rem, s)
-		}
-	}
-	sort.Slice(rem, func(i, j int) bool {
-		if rem[i].ShareInfo.Timestamp == rem[j].ShareInfo.Timestamp {
-			return rem[i].Hash.String() > rem[j].Hash.String()
-		}
-		return rem[i].ShareInfo.Timestamp > rem[j].ShareInfo.Timestamp
-	})
-	for _, s := range rem {
-		res = append(res, s)
-		if max > 0 && len(res) >= max {
-			break
-		}
 	}
 	return res
 }
@@ -588,4 +537,181 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
 	return sc.TipHash
+}
+
+func (sc *ShareChain) loadTrusted(fs []Share) {
+	sc.mutex.Lock()
+	for i := range fs {
+		s := fs[i]
+		if s.Hash == nil {
+			_ = s.CalculateHash()
+		}
+		if s.Hash != nil {
+			cp := s
+			sc.shares[s.Hash.String()] = &cp
+			sc.markVerifiedLocked(&cp)
+		}
+	}
+	sc.mutex.Unlock()
+	sc.updateStats()
+}
+
+func (sc *ShareChain) updateTipLocked(s *Share) {
+	if s == nil || s.Hash == nil || s.ShareInfo.ShareData.StaleInfo != StaleInfoNone {
+		return
+	}
+	h := s.Hash.String()
+	if !sc.verified[h] {
+		return
+	}
+	if sc.TipHash == nil || sc.TipHash.IsEqual(sc.genesisHash) || !sc.verified[sc.TipHash.String()] {
+		sc.TipHash = s.Hash
+		return
+	}
+	ch := sc.TipHash.String()
+	wn, wc := sc.cumWork[h], sc.cumWork[ch]
+	if wn > wc+1e-9 || (wn >= wc-1e-9 && h > ch) {
+		sc.TipHash = s.Hash
+	}
+}
+
+func (sc *ShareChain) markVerifiedLocked(s *Share) {
+	h := s.Hash.String()
+	sc.verified[h] = true
+	var pw float64
+	var pl int
+	if p := s.ShareInfo.ShareData.PreviousShareHash; p != nil && !p.IsEqual(sc.genesisHash) {
+		ps := p.String()
+		pw, pl = sc.cumWork[ps], sc.chainLen[ps]
+	}
+	d := TargetToDiff(s.Target)
+	if s.ShareInfo.ShareData.StaleInfo != StaleInfoNone {
+		d = 0
+	} else if d < MinPoolShareDiff {
+		d = MinPoolShareDiff
+	}
+	sc.cumWork[h], sc.chainLen[h] = pw+d, pl+1
+	sc.updateTipLocked(s)
+}
+
+func (sc *ShareChain) verifyPending() int {
+	vn := 0
+	for {
+		sc.mutex.RLock()
+		var pend []*Share
+		for h, s := range sc.shares {
+			if !sc.verified[h] && s != nil && s.Hash != nil {
+				pend = append(pend, s)
+			}
+		}
+		sc.mutex.RUnlock()
+		if len(pend) == 0 {
+			break
+		}
+		sort.Slice(pend, func(i, j int) bool { return pend[i].ShareInfo.Timestamp < pend[j].ShareInfo.Timestamp })
+		prog := false
+		for _, s := range pend {
+			h, p := s.Hash.String(), s.ShareInfo.ShareData.PreviousShareHash
+			sc.mutex.RLock()
+			hasP := p != nil && !p.IsEqual(sc.genesisHash) && sc.shares[p.String()] != nil
+			pVer := p != nil && sc.verified[p.String()]
+			pLen := 0
+			if pVer {
+				pLen = sc.chainLen[p.String()]
+			}
+			sc.mutex.RUnlock()
+			if hasP && !pVer {
+				continue
+			}
+			post := int64(s.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || s.Type >= ShareVersionV2
+			if post && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+				if !pVer || pLen < TargetLookbehind {
+					if int64(s.ShareInfo.Timestamp) > time.Now().Unix()-1800 {
+						continue
+					}
+				} else if !sc.checkConsensus(s, p, pLen) {
+					sc.mutex.Lock()
+					delete(sc.shares, h)
+					sc.mutex.Unlock()
+					continue
+				}
+			}
+			sc.mutex.Lock()
+			sc.markVerifiedLocked(s)
+			sc.mutex.Unlock()
+			vn++
+			prog = true
+		}
+		if !prog {
+			break
+		}
+	}
+	return vn
+}
+
+func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool {
+	h := s.Hash.String()
+	expD, clmD := sc.GetExpectedShareDifficulty(p), TargetToDiff(s.Target)
+	pi := new(big.Int).SetBytes(s.POWHash.CloneBytes())
+	actD, netT := TargetToDiff(pi), blockchain.CompactToBig(s.MinHeader.Bits)
+	if (actD < expD*0.999 || clmD < expD*0.999 || clmD > expD*1.001) && pi.Cmp(netT) > 0 {
+		logging.Warnf("ShareChain: Rejected share %s: diff %.4f != consensus %.4f", h[:12], clmD, expD)
+		return false
+	}
+	if pLen >= DefaultPPLNSWindow {
+		if ok, r := VerifyShareCoinbase(s, sc); !ok {
+			logging.Warnf("ShareChain: Rejected share %s: %s", h[:12], r)
+			return false
+		}
+	}
+	return true
+}
+
+func (sc *ShareChain) GetMissingParentHashes(max int) []string {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	seen := make(map[string]bool)
+	var out []string
+	for h, s := range sc.shares {
+		if !sc.verified[h] && s != nil {
+			p := s.ShareInfo.ShareData.PreviousShareHash
+			if p != nil && !p.IsEqual(sc.genesisHash) {
+				ps := p.String()
+				if sc.shares[ps] == nil && !seen[ps] {
+					seen[ps] = true
+					out = append(out, ps)
+					if max > 0 && len(out) >= max {
+						break
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func (sc *ShareChain) GetSharesByHashWithParents(hashes []string, parents int) []Share {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	if parents <= 0 {
+		parents = 250
+	}
+	seen := make(map[string]bool)
+	var out []Share
+	for _, cur := range hashes {
+		for i := 0; i < parents && cur != ""; i++ {
+			if seen[cur] || !sc.verified[cur] || sc.shares[cur] == nil {
+				break
+			}
+			s := sc.shares[cur]
+			seen[cur] = true
+			out = append(out, *s)
+			p := s.ShareInfo.ShareData.PreviousShareHash
+			if p == nil || p.IsEqual(sc.genesisHash) {
+				break
+			}
+			cur = p.String()
+		}
+	}
+	return out
 }

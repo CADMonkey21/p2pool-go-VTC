@@ -2,6 +2,7 @@ package work
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -218,6 +219,14 @@ func buildCoinbaseMsgTxAtTip(tmpl *BlockTemplate, payoutAddress string, extraNon
 		txOutCommitment := wire.NewTxOut(0, commitmentScriptPubKey)
 		tx.AddTxOut(txOutCommitment)
 	}
+	expD := MinPoolShareDiff
+	if sc != nil {
+		expD = sc.GetExpectedShareDifficulty(tipHash)
+	}
+	pv, pk := DecodeAddressToPKH(payoutAddress)
+	mc := ComputeShareMetadataCommitment(ShareVersionV2, tipHash, DiffToTarget(expD), pv, pk, uint64(tmpl.CoinbaseValue), uint16(config.Active.Fee*100), StaleInfoNone, int32(tmpl.Height))
+	ms := NewScriptBuilder().AddOp(txscript.OP_RETURN).AddData(mc).Script()
+	tx.AddTxOut(wire.NewTxOut(0, ms))
 
 	witnessNonce := make([]byte, 32)
 	tx.TxIn[0].Witness = wire.TxWitness{witnessNonce}
@@ -361,6 +370,24 @@ func VerifyShareCoinbase(s *Share, sc *ShareChain) (bool, string) {
 	if s.ShareInfo.ShareData.Subsidy > 0 && uint64(tot) != s.ShareInfo.ShareData.Subsidy {
 		return false, "subsidy mismatch"
 	}
+	if int64(s.MinHeader.Timestamp) >= V2MandatoryActivationTime && s.Type < ShareVersionV2 {
+		return false, "outdated share version"
+	}
+	if s.Type >= ShareVersionV2 {
+		if s.ShareInfo.Timestamp != int32(s.MinHeader.Timestamp) {
+			return false, "share timestamp mismatch"
+		}
+		em := ComputeShareMetadataCommitment(s.Type, s.ShareInfo.ShareData.PreviousShareHash, s.Target, s.ShareInfo.ShareData.PubKeyHashVersion, s.ShareInfo.ShareData.PubKeyHash, s.ShareInfo.ShareData.Subsidy, s.ShareInfo.ShareData.Donation, s.ShareInfo.ShareData.StaleInfo, s.ShareInfo.AbsHeight)
+		okM := false
+		for _, o := range tx.TxOut {
+			if o.Value == 0 && bytes.Contains(o.PkScript, em) {
+				okM = true
+			}
+		}
+		if !okM {
+			return false, "metadata commitment mismatch"
+		}
+	}
 	exp := CalculatePPLNSOutputsAtTip(tot, DecodeShareAddress(s), sc, s.ShareInfo.ShareData.PreviousShareHash)
 	if len(exp) == 0 {
 		return true, ""
@@ -395,4 +422,46 @@ func SplitCoinbaseForStratumAtTip(tmpl *BlockTemplate, addr string, wc []byte, s
 		return "", "", fmt.Errorf("marker missing")
 	}
 	return hex.EncodeToString(raw[:i]), hex.EncodeToString(raw[i+len(m):]), nil
+}
+
+func DecodeAddressToPKH(addr string) (uint8, []byte) {
+	l := strings.ToLower(addr)
+	if strings.HasPrefix(l, "vtc1") || strings.HasPrefix(l, "tvtc1") {
+		_, d, err := bech32.Decode(l)
+		if err == nil && len(d) > 1 {
+			p, err := bech32.ConvertBits(d[1:], 5, 8, false)
+			if err == nil {
+				return d[0], p
+			}
+		}
+	} else if d := base58.Decode(addr); len(d) >= 5 {
+		return d[0], d[1 : len(d)-4]
+	}
+	return 0, nil
+}
+
+func ComputeShareMetadataCommitment(ver uint64, prev *chainhash.Hash, target *big.Int, pkhVer uint8, pkh []byte, sub uint64, don uint16, stale StaleInfo, absH int32) []byte {
+	h := sha256.New()
+	var b8 [8]byte
+	binary.BigEndian.PutUint64(b8[:], ver)
+	h.Write(b8[:])
+	if prev != nil {
+		h.Write(prev.CloneBytes())
+	} else {
+		h.Write(make([]byte, 32))
+	}
+	var tb [32]byte
+	if target != nil && target.Sign() > 0 {
+		target.FillBytes(tb[:])
+	}
+	h.Write(tb[:])
+	h.Write([]byte{pkhVer})
+	h.Write(pkh)
+	binary.BigEndian.PutUint64(b8[:], sub)
+	h.Write(b8[:])
+	var b2 [2]byte
+	binary.BigEndian.PutUint16(b2[:], don)
+	h.Write(b2[:])
+	h.Write([]byte{uint8(stale), byte(absH >> 24), byte(absH >> 16), byte(absH >> 8), byte(absH)})
+	return append([]byte("P2PV"), h.Sum(nil)...)
 }

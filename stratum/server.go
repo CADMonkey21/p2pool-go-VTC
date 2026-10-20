@@ -260,6 +260,7 @@ func (s *StratumServer) jobBroadcaster() {
 			WTXIDMerkleRoot:    wtxidMerkleRoot,
 			TXIDMerkleLink:     merkleLinkBranches,
 			CoinbaseMerkleLink: merkleLinkBranches,
+			TipHash:            s.workManager.ShareChain.GetTipHash(),
 		}
 		s.lastJobMutex.Lock()
 		s.lastJob = newJob
@@ -386,6 +387,33 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
+	if jobTip != nil {
+		newShare.ShareInfo.ShareData.PreviousShareHash = jobTip
+	}
+	if newShare.Hash != nil {
+		shKey := newShare.Hash.String()
+		c.Mutex.Lock()
+		dupH := false
+		for _, aj := range c.ActiveJobs {
+			if aj.Submitted != nil {
+				if _, ok := aj.Submitted[shKey]; ok {
+					dupH = true
+					break
+				}
+			}
+		}
+		if !dupH && job.Submitted != nil {
+			job.Submitted[shKey] = struct{}{}
+		}
+		c.Mutex.Unlock()
+		if dupH {
+			_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{22, "Duplicate share", nil}})
+			c.Mutex.Lock()
+			c.RejectedShares++
+			c.Mutex.Unlock()
+			return
+		}
+	}
 	shareTarget := work.DiffToTarget(jobDifficulty)
 	newShare.Target = shareTarget
 
@@ -699,6 +727,14 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 			delete(c.ActiveJobs, keys[i])
 		}
 	}
+	if !clean && tipHash != nil {
+		for _, aj := range c.ActiveJobs {
+			if aj.TipHash != nil && aj.TipHash.IsEqual(tipHash) && aj.Difficulty == diff {
+				c.Mutex.Unlock()
+				return
+			}
+		}
+	}
 	c.ActiveJobs[jobID] = job
 	c.Mutex.Unlock()
 
@@ -727,7 +763,7 @@ func (s *StratumServer) NotifyNewShare() {
 		return
 	}
 	tmpl := *job.BlockTemplate
-	newTip := job.TipHash
+	newTip := s.workManager.ShareChain.GetTipHash()
 	for _, c := range s.GetClients() {
 		if c.Authorized && !c.closed.Load() {
 			c.Mutex.Lock()

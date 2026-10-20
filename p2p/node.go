@@ -24,6 +24,13 @@ import (
 
 const P2PNetworkTopic = "vtc-p2pool-shares-v1"
 const SyncProtocolID = protocol.ID("/p2pool/sync/1.0.0")
+const ShareReqProtocolID = protocol.ID("/p2pool/sharereq/1.0.0")
+
+type ShareReq struct {
+	Hashes  []string `json:"hashes"`
+	Parents int      `json:"parents"`
+}
+
 const peerKeyFile = "peer.key"
 
 type SyncPayload struct {
@@ -32,18 +39,19 @@ type SyncPayload struct {
 }
 
 type Node struct {
-	Host            host.Host
-	DHT             *dht.IpfsDHT
-	PubSub          *pubsub.PubSub
-	Topic           *pubsub.Topic
-	Sub             *pubsub.Subscription
-	ctx             context.Context
-	cancel          context.CancelFunc
-	IncomingShares  chan []byte
-	bootstrapPeers  []string
-	syncMutex       sync.Mutex
-	GetSyncDataFunc func() ([]byte, []byte)
-	OnSyncDataFunc  func(sharesJSON []byte, blocksJSON []byte)
+	Host                host.Host
+	DHT                 *dht.IpfsDHT
+	PubSub              *pubsub.PubSub
+	Topic               *pubsub.Topic
+	Sub                 *pubsub.Subscription
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	IncomingShares      chan []byte
+	bootstrapPeers      []string
+	syncMutex           sync.Mutex
+	GetSyncDataFunc     func() ([]byte, []byte)
+	OnSyncDataFunc      func(sharesJSON []byte, blocksJSON []byte)
+	GetSharesByHashFunc func(hashes []string, parents int) []byte
 }
 
 type mdnsNotifee struct {
@@ -142,6 +150,7 @@ func NewNode(listenPort int) (*Node, error) {
 	}
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
+	h.SetStreamHandler(ShareReqProtocolID, node.handleShareReqStream)
 
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
@@ -318,5 +327,42 @@ func (n *Node) Close() {
 	n.cancel()
 	if err := n.Host.Close(); err != nil {
 		logging.Warnf("P2P: Error closing host: %v", err)
+	}
+}
+
+func (n *Node) handleShareReqStream(s network.Stream) {
+	defer s.Close()
+	if n.GetSharesByHashFunc == nil {
+		return
+	}
+	_ = s.SetDeadline(time.Now().Add(30 * time.Second))
+	var req ShareReq
+	if err := json.NewDecoder(s).Decode(&req); err != nil || len(req.Hashes) == 0 {
+		return
+	}
+	resp := n.GetSharesByHashFunc(req.Hashes, req.Parents)
+	_, _ = s.Write(resp)
+	_ = s.CloseWrite()
+}
+
+func (n *Node) RequestShares(hashes []string, parents int) {
+	if len(hashes) == 0 || n.OnSyncDataFunc == nil {
+		return
+	}
+	for _, pid := range n.Host.Network().Peers() {
+		ctx, cancel := context.WithTimeout(n.ctx, 20*time.Second)
+		s, err := n.Host.NewStream(ctx, pid, ShareReqProtocolID)
+		if err != nil {
+			cancel()
+			continue
+		}
+		_ = json.NewEncoder(s).Encode(ShareReq{Hashes: hashes, Parents: parents})
+		_ = s.CloseWrite()
+		var raw json.RawMessage
+		if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 0 {
+			n.OnSyncDataFunc(raw, nil)
+		}
+		s.Close()
+		cancel()
 	}
 }

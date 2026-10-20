@@ -89,9 +89,13 @@ type ShareData struct {
 type StaleInfo uint8
 
 const (
-	StaleInfoNone   = StaleInfo(0)
-	StaleInfoOrphan = StaleInfo(253)
-	StaleInfoDOA    = StaleInfo(254)
+	StaleInfoNone             = StaleInfo(0)
+	StaleInfoOrphan           = StaleInfo(253)
+	StaleInfoDOA              = StaleInfo(254)
+	ShareVersionV1            = uint64(23)
+	ShareVersionV2            = uint64(24)
+	ConsensusV2ActivationTime = int64(1792470600)
+	V2MandatoryActivationTime = int64(1792519200)
 )
 
 func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
@@ -258,7 +262,7 @@ func CreateShare(
 	}
 
 	share := &Share{
-		Type: 23,
+		Type: ShareVersionV2,
 		MinHeader: SmallBlockHeader{
 			Version:       int32(job.Version),
 			PreviousBlock: prevBlockHash,
@@ -288,7 +292,7 @@ func CreateShare(
 			FarShareHash:         nil,
 			MaxBits:              shareBits,
 			Bits:                 shareBits,
-			Timestamp:            int32(time.Now().Unix()),
+			Timestamp:            int32(nTimeUint32),
 			AbsHeight:            int32(job.Height),
 			AbsWork:              new(big.Int),
 		},
