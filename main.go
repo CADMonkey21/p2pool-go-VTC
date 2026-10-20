@@ -200,6 +200,16 @@ func main() {
 							_ = s.CalculatePOWHash()
 						}
 						if ok, _ := s.IsValid(); ok {
+							if int64(s.ShareInfo.Timestamp) > time.Now().Unix()-600 {
+								expD := sc.GetExpectedShareDifficulty(s.ShareInfo.ShareData.PreviousShareHash)
+								clmD := work.TargetToDiff(s.Target)
+								if clmD < expD*0.999 || clmD > expD*1.001 {
+									continue
+								}
+								if okCb, _ := work.VerifyShareCoinbase(&s, sc); !okCb {
+									continue
+								}
+							}
 							validShares = append(validShares, s)
 						}
 					}
