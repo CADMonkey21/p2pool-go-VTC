@@ -1,1 +1,4 @@
-web/static/* linguist-vendored
+*.css linguist-vendored=true
+*.min.js linguist-vendored=true
+web/static/* linguist-vendored=true
+web/static/*/* linguist-vendored=true
