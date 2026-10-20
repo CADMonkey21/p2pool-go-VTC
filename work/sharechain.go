@@ -551,21 +551,28 @@ func (sc *ShareChain) loadTrusted(fs []Share) {
 			sc.shares[sh.Hash.String()] = &cp
 		}
 	}
-	for {
-		prog := false
-		for h, sh := range sc.shares {
-			if sc.verified[h] {
-				continue
-			}
-			p := sh.ShareInfo.ShareData.PreviousShareHash
-			if p != nil && !p.IsEqual(sc.genesisHash) && sc.shares[p.String()] != nil && !sc.verified[p.String()] {
-				continue
-			}
-			sc.markVerifiedLocked(sh)
-			prog = true
+	vis := make(map[string]bool, len(sc.shares))
+	var path []*Share
+	for h, sh := range sc.shares {
+		if sc.verified[h] {
+			continue
 		}
-		if !prog {
-			break
+		path = path[:0]
+		for cur := sh; cur != nil && cur.Hash != nil; {
+			ch := cur.Hash.String()
+			if sc.verified[ch] || vis[ch] {
+				break
+			}
+			vis[ch] = true
+			path = append(path, cur)
+			p := cur.ShareInfo.ShareData.PreviousShareHash
+			if p == nil || p.IsEqual(sc.genesisHash) {
+				break
+			}
+			cur = sc.shares[p.String()]
+		}
+		for k := len(path) - 1; k >= 0; k-- {
+			sc.markVerifiedLocked(path[k])
 		}
 	}
 	sc.mutex.Unlock()
