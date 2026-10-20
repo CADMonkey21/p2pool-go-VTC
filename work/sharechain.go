@@ -142,13 +142,16 @@ func (sc *ShareChain) PruneOldShares() {
 func (sc *ShareChain) Load() error {
 	path := "sharechain.json"
 	b, err := os.ReadFile(path)
-	if !config.Active.LightMode && err != nil {
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
 	var fileShares []Share
+	if len(b) == 0 {
+		return nil
+	}
 	if err := json.Unmarshal(b, &fileShares); err != nil {
 		return err
 	}
