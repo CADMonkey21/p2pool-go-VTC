@@ -145,7 +145,7 @@ func LoadConfig() {
 	if *logLevel != "" {
 		Active.LogLevel = *logLevel
 	}
-	if *lightMode || (Active.RPCUser == "" && Active.RPCPass == "") {
+	if *lightMode {
 		Active.LightMode = true
 	}
 	if *soloMode {
