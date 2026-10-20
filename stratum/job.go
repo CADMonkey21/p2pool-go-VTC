@@ -18,4 +18,5 @@ type Job struct {
 	TXIDMerkleLink     []*chainhash.Hash
 	CoinbaseMerkleLink []*chainhash.Hash
 	TipHash            *chainhash.Hash
+	Submitted          map[string]struct{}
 }

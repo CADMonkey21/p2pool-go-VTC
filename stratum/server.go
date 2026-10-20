@@ -328,10 +328,28 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	job, jobExists := c.ActiveJobs[jobID]
 	payoutAddr := c.WorkerName
 	jobDifficulty := 0.0
+	isDup := false
 	if jobExists {
 		jobDifficulty = job.Difficulty
+		if job.Submitted == nil {
+			job.Submitted = make(map[string]struct{})
+		}
+		subKey := extraNonce2 + ":" + nTime + ":" + nonceHex
+		if _, seen := job.Submitted[subKey]; seen {
+			isDup = true
+		} else {
+			job.Submitted[subKey] = struct{}{}
+		}
 	}
 	c.Mutex.Unlock()
+
+	if isDup {
+		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{22, "Duplicate share", nil}})
+		c.Mutex.Lock()
+		c.RejectedShares++
+		c.Mutex.Unlock()
+		return
+	}
 
 	if !jobExists {
 		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{21, "Stale share", nil}})
@@ -709,8 +727,21 @@ func (s *StratumServer) NotifyNewShare() {
 		return
 	}
 	tmpl := *job.BlockTemplate
+	newTip := job.TipHash
 	for _, c := range s.GetClients() {
 		if c.Authorized && !c.closed.Load() {
+			c.Mutex.Lock()
+			sameTip := false
+			for _, aj := range c.ActiveJobs {
+				if aj.TipHash != nil && newTip != nil && aj.TipHash.IsEqual(newTip) {
+					sameTip = true
+					break
+				}
+			}
+			c.Mutex.Unlock()
+			if sameTip {
+				continue
+			}
 			go s.sendMiningJob(c, &tmpl, false)
 		}
 	}
