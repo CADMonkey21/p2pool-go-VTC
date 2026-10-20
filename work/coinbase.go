@@ -57,50 +57,30 @@ func AddressToScriptPubKey(payoutAddress string) ([]byte, error) {
 
 // CalculatePPLNSOutputs computes the deterministic coinbase outputs for the current PPLNS sharechain tip.
 func CalculatePPLNSOutputs(totalReward int64, defaultMinerAddr string, sc *ShareChain) []PayoutOutput {
-	var tipHash *chainhash.Hash
+	var tip *chainhash.Hash
 	if sc != nil {
-		tipHash = sc.GetTipHash()
+		tip = sc.GetTipHash()
 	}
-	return CalculatePPLNSOutputsAtTip(totalReward, defaultMinerAddr, sc, tipHash, true)
+	return CalculatePPLNSOutputsAtTip(totalReward, defaultMinerAddr, sc, tip)
 }
-
-// CalculatePPLNSOutputsAtTip computes the deterministic coinbase outputs anchored at a specific ShareChain parent hash.
-func CalculatePPLNSOutputsAtTip(totalReward int64, defaultMinerAddr string, sc *ShareChain, anchorHash *chainhash.Hash, includeLocalFee bool) []PayoutOutput {
+func CalculatePPLNSOutputsAtTip(totalReward int64, defaultMinerAddr string, sc *ShareChain, anchor *chainhash.Hash) []PayoutOutput {
 	if totalReward <= 0 {
 		return nil
 	}
-
-	feePct := 0.0
-	poolAddr := ""
-	if includeLocalFee {
-		feePct = config.Active.Fee / 100.0
-		if feePct < 0 {
-			feePct = 0
-		} else if feePct > 0.05 {
-			feePct = 0.05 // Cap node operator fee at 5% max
-		}
-		poolAddr = strings.TrimSpace(config.Active.PoolAddress)
-		if _, err := AddressToScriptPubKey(poolAddr); err != nil {
-			poolAddr = ""
-		}
-	}
-
 	var poolFee int64
-	if poolAddr != "" && feePct > 0 {
-		poolFee = int64(float64(totalReward) * feePct)
-	}
-	distributable := totalReward - poolFee
-
+	poolAddr := ""
+	distributable := totalReward
+	_ = config.Active.Fee
 	weights := make(map[string]*big.Int)
 	totalWeight := new(big.Int)
-
 	if sc != nil {
-		tipHash := anchorHash
+		tipHash := anchor
 		if tipHash == nil {
 			tipHash = sc.GetTipHash()
 		}
 		windowSize := DefaultPPLNSWindow
 		if tipHash != nil {
+
 			shares, err := sc.GetSharesForPayout(tipHash, windowSize)
 			if err == nil && len(shares) > 0 {
 				baseDiff1, _ := new(big.Int).SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
@@ -200,6 +180,13 @@ func CalculatePPLNSOutputsAtTip(totalReward int64, defaultMinerAddr string, sc *
 
 // buildCoinbaseMsgTx constructs the wire.MsgTx for the coinbase transaction.
 func buildCoinbaseMsgTx(tmpl *BlockTemplate, payoutAddress string, extraNonce []byte, witnessCommitment []byte, sc *ShareChain) (*wire.MsgTx, error) {
+	var t *chainhash.Hash
+	if sc != nil {
+		t = sc.GetTipHash()
+	}
+	return buildCoinbaseMsgTxAtTip(tmpl, payoutAddress, extraNonce, witnessCommitment, sc, t)
+}
+func buildCoinbaseMsgTxAtTip(tmpl *BlockTemplate, payoutAddress string, extraNonce []byte, witnessCommitment []byte, sc *ShareChain, tipHash *chainhash.Hash) (*wire.MsgTx, error) {
 	cbBuilder := txscript.NewScriptBuilder().AddInt64(tmpl.Height).AddData(extraNonce)
 	if tmpl.CoinbaseAux.Flags != "" {
 		if auxBytes, err := hex.DecodeString(tmpl.CoinbaseAux.Flags); err == nil && len(auxBytes) > 0 {
@@ -216,7 +203,7 @@ func buildCoinbaseMsgTx(tmpl *BlockTemplate, payoutAddress string, extraNonce []
 	txIn := wire.NewTxIn(&wire.OutPoint{Hash: chainhash.Hash{}, Index: 0xffffffff}, coinbaseScript, nil)
 	tx.AddTxIn(txIn)
 
-	payoutOutputs := CalculatePPLNSOutputs(tmpl.CoinbaseValue, payoutAddress, sc)
+	payoutOutputs := CalculatePPLNSOutputsAtTip(tmpl.CoinbaseValue, payoutAddress, sc, tipHash)
 	for _, out := range payoutOutputs {
 		scriptPubKey, err := AddressToScriptPubKey(out.Address)
 		if err != nil {
@@ -347,63 +334,65 @@ func (b *ScriptBuilder) Script() []byte {
 	return b.script
 }
 
-
-// VerifyShareCoinbase rebuilds the expected PPLNS payout distribution anchored at the share's PreviousShareHash
-// and rejects any peer share that attempts to spoof payouts or steal the block reward (data.py#L351-L379).
 func VerifyShareCoinbase(s *Share, sc *ShareChain) (bool, string) {
 	if s == nil || len(s.ShareInfo.ShareData.CoinBase) == 0 {
-		return false, "share has empty coinbase"
+		return false, "empty coinbase"
 	}
 	var tx wire.MsgTx
 	if err := tx.Deserialize(bytes.NewReader(s.ShareInfo.ShareData.CoinBase)); err != nil {
-		if errNoWit := tx.DeserializeNoWitness(bytes.NewReader(s.ShareInfo.ShareData.CoinBase)); errNoWit != nil {
-			return false, fmt.Sprintf("invalid coinbase tx serialization: %v", err)
+		if err2 := tx.DeserializeNoWitness(bytes.NewReader(s.ShareInfo.ShareData.CoinBase)); err2 != nil {
+			return false, "invalid coinbase tx"
 		}
 	}
-
-	actualByScript := make(map[string]int64)
-	var totalActualReward int64
+	actual := make(map[string]int64)
+	var tot int64
+	var nz int
 	for _, out := range tx.TxOut {
 		if out.Value <= 0 {
-			continue // Skip 0-value SegWit commitment OP_RETURN output
-		}
-		scriptHex := hex.EncodeToString(out.PkScript)
-		actualByScript[scriptHex] += out.Value
-		totalActualReward += out.Value
-	}
-	if totalActualReward <= 0 {
-		return false, "coinbase has zero total reward"
-	}
-	if s.ShareInfo.ShareData.Subsidy > 0 && uint64(totalActualReward) > s.ShareInfo.ShareData.Subsidy {
-		return false, fmt.Sprintf("coinbase reward (%d) exceeds claimed subsidy (%d)", totalActualReward, s.ShareInfo.ShareData.Subsidy)
-	}
-
-	defaultMiner := DecodeShareAddress(s)
-	expectedOutputs := CalculatePPLNSOutputsAtTip(totalActualReward, defaultMiner, sc, s.ShareInfo.ShareData.PreviousShareHash, false)
-	if len(expectedOutputs) == 0 {
-		return true, ""
-	}
-
-	// Verify that at least 94% of the block reward is paid to the exact consensus PPLNS miners
-	// (allowing up to 5% node fee/donation variation + rounding across peers).
-	var matchedMinerValue int64
-	for _, exp := range expectedOutputs {
-		scriptBytes, err := AddressToScriptPubKey(exp.Address)
-		if err != nil {
 			continue
 		}
-		scriptHex := hex.EncodeToString(scriptBytes)
-		actualAmt := actualByScript[scriptHex]
-		if actualAmt > exp.Amount {
-			matchedMinerValue += exp.Amount
-		} else {
-			matchedMinerValue += actualAmt
+		actual[hex.EncodeToString(out.PkScript)] += out.Value
+		tot += out.Value
+		nz++
+	}
+	if tot <= 0 {
+		return false, "zero reward"
+	}
+	if s.ShareInfo.ShareData.Subsidy > 0 && uint64(tot) != s.ShareInfo.ShareData.Subsidy {
+		return false, "subsidy mismatch"
+	}
+	exp := CalculatePPLNSOutputsAtTip(tot, DecodeShareAddress(s), sc, s.ShareInfo.ShareData.PreviousShareHash)
+	if len(exp) == 0 {
+		return true, ""
+	}
+	if nz != len(exp) {
+		return false, "coinbase output count mismatch"
+	}
+	for _, e := range exp {
+		sb, err := AddressToScriptPubKey(e.Address)
+		if err != nil {
+			return false, "invalid payout addr"
+		}
+		if actual[hex.EncodeToString(sb)] != e.Amount {
+			return false, "coinbase PPLNS payout amount mismatch"
 		}
 	}
-
-	minRequiredMatch := int64(float64(totalActualReward) * 0.94)
-	if matchedMinerValue < minRequiredMatch {
-		return false, fmt.Sprintf("coinbase PPLNS payout mismatch: only %d / %d satoshis match consensus PPLNS outputs", matchedMinerValue, totalActualReward)
-	}
 	return true, ""
+}
+func SplitCoinbaseForStratumAtTip(tmpl *BlockTemplate, addr string, wc []byte, sc *ShareChain, tip *chainhash.Hash) (string, string, error) {
+	m := []byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe}
+	tx, err := buildCoinbaseMsgTxAtTip(tmpl, addr, m, wc, sc, tip)
+	if err != nil {
+		return "", "", err
+	}
+	var b bytes.Buffer
+	if err := tx.SerializeNoWitness(&b); err != nil {
+		return "", "", err
+	}
+	raw := b.Bytes()
+	i := bytes.Index(raw, m)
+	if i == -1 {
+		return "", "", fmt.Errorf("marker missing")
+	}
+	return hex.EncodeToString(raw[:i]), hex.EncodeToString(raw[i+len(m):]), nil
 }

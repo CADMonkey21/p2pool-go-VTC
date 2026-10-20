@@ -277,15 +277,14 @@ func (s *StratumServer) jobBroadcaster() {
 
 func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 	client := NewClient(conn)
-	registered := false
+	reg := false
 	defer func() {
-		if registered {
+		if reg {
 			s.dropClient(client)
 		} else {
 			_ = conn.Close()
 		}
 	}()
-
 	decoder := json.NewDecoder(client.Reader)
 	for {
 		client.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
@@ -293,9 +292,8 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 		if err := decoder.Decode(&req); err != nil {
 			return
 		}
-
-		if !registered {
-			registered = true
+		if !reg {
+			reg = true
 			logging.Infof("Stratum: New miner connection from %s", client.Conn.RemoteAddr())
 			s.clientsMutex.Lock()
 			s.clients[client.ID] = client
@@ -357,6 +355,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		prebuiltCoinbase, _ = work.RebuildCoinbaseFromStratumParts(job.Coinb1, job.ExtraNonce1, extraNonce2, job.Coinb2)
 	}
 
+	jobTip := job.TipHash
 	newShare, err := work.CreateShare(
 		job.BlockTemplate, job.ExtraNonce1, extraNonce2, nTime, nonceHex, payoutAddr,
 		s.workManager.ShareChain, jobDifficulty, job.WitnessCommitment,
@@ -406,13 +405,12 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		nBits64, _ := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		netTarget := blockchain.CompactToBig(uint32(nBits64))
 
-		poolShareDiff := s.workManager.ShareChain.GetPoolShareDifficulty()
+		if jobTip != nil {
+			newShare.ShareInfo.ShareData.PreviousShareHash = jobTip
+		}
+		poolShareDiff := s.workManager.ShareChain.GetExpectedShareDifficulty(newShare.ShareInfo.ShareData.PreviousShareHash)
 		if shareDiff >= poolShareDiff || powInt.Cmp(netTarget) <= 0 {
-			creditedDiff := poolShareDiff
-			if shareDiff < creditedDiff {
-				creditedDiff = shareDiff
-			}
-			newShare.Target = work.DiffToTarget(creditedDiff)
+			newShare.Target = work.DiffToTarget(poolShareDiff)
 			logging.Infof("P2Pool Share qualified for network ShareChain! (Share Diff: %.4f >= Pool Share Diff: %.4f)", shareDiff, poolShareDiff)
 			go func(share work.Share) {
 				s.workManager.ShareChain.AddShares([]work.Share{share})
@@ -505,6 +503,9 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	}
 
 	_ = c.send(JSONRPCResponse{ID: id, Result: true, Error: nil})
+	if p := s.workManager.ShareChain.GetPoolShareDifficulty(); minDiff > p {
+		minDiff = p
+	}
 	s.sendDifficulty(c, minDiff)
 
 	s.lastJobMutex.RLock()
@@ -583,6 +584,9 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 		if newDiff < minDiff {
 			newDiff = minDiff
 		}
+		if p := s.workManager.ShareChain.GetPoolShareDifficulty(); p > 0 && p < maxDiff {
+			maxDiff = p
+		}
 		if newDiff > maxDiff {
 			newDiff = maxDiff
 		}
@@ -629,24 +633,27 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		return
 	}
 
-	coinb1, coinb2, err := work.SplitCoinbaseForStratum(&jobTemplate, payoutAddr, masterJob.WitnessCommitment, s.workManager.ShareChain)
+	tipHash := s.workManager.ShareChain.GetTipHash()
+	coinb1, coinb2, err := work.SplitCoinbaseForStratumAtTip(&jobTemplate, payoutAddr, masterJob.WitnessCommitment, s.workManager.ShareChain, tipHash)
 	if err != nil {
 		logging.Errorf("Stratum: Failed to build coinbase for miner %s: %v", payoutAddr, err)
 		c.Mutex.Unlock()
 		return
 	}
-
 	merkleBranchHex := make([]string, len(masterJob.CoinbaseMerkleLink))
 	for i, branchHash := range masterJob.CoinbaseMerkleLink {
 		merkleBranchHex[i] = hex.EncodeToString(branchHash.CloneBytes())
 	}
-
 	diff := c.CurrentDifficulty
 	if diff <= 0 {
 		diff = config.Active.Vardiff.MinDiff
 		if diff <= 0 {
 			diff = 0.01
 		}
+	}
+	pDiff := s.workManager.ShareChain.GetPoolShareDifficulty()
+	if diff > pDiff {
+		diff = pDiff
 	}
 
 	job := &Job{
@@ -660,6 +667,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		WTXIDMerkleRoot:    masterJob.WTXIDMerkleRoot,
 		TXIDMerkleLink:     masterJob.TXIDMerkleLink,
 		CoinbaseMerkleLink: masterJob.CoinbaseMerkleLink,
+		TipHash:            tipHash,
 	}
 
 	if clean && len(c.ActiveJobs) > 20 {

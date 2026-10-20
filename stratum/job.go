@@ -17,4 +17,5 @@ type Job struct {
 	WTXIDMerkleRoot    *chainhash.Hash
 	TXIDMerkleLink     []*chainhash.Hash
 	CoinbaseMerkleLink []*chainhash.Hash
+	TipHash            *chainhash.Hash
 }

@@ -11,9 +11,9 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
@@ -228,198 +228,159 @@ const (
 	MaxPPLNSWindowAgeSecs = 36 * 3600
 )
 
-// getOrderedChainWalk walks the ShareChain starting from startHash via PreviousShareHash links,
-// falling back to deterministic timestamp+hash order if a historical link is missing.
-// Must be called with sc.mutex held.
-func (sc *ShareChain) getOrderedChainWalkLocked(startHash *chainhash.Hash, maxCount int) []*Share {
-	visited := make(map[string]bool)
-	result := make([]*Share, 0, 256)
-
-	currHash := startHash
-	if currHash == nil || currHash.IsEqual(sc.genesisHash) {
-		currHash = sc.TipHash
+func (sc *ShareChain) getOrderedChainWalkLocked(start *chainhash.Hash, max int) []*Share {
+	vis := make(map[string]bool)
+	res := make([]*Share, 0, 256)
+	cur := start
+	if cur == nil || cur.IsEqual(sc.genesisHash) {
+		cur = sc.TipHash
 	}
-	for currHash != nil && !currHash.IsEqual(sc.genesisHash) {
-		hStr := currHash.String()
-		if visited[hStr] {
+	for cur != nil && !cur.IsEqual(sc.genesisHash) {
+		h := cur.String()
+		if vis[h] {
 			break
 		}
-		s, exists := sc.shares[hStr]
-		if !exists || s == nil {
+		s := sc.shares[h]
+		if s == nil {
 			break
 		}
-		visited[hStr] = true
+		vis[h] = true
 		if s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
-			result = append(result, s)
-			if maxCount > 0 && len(result) >= maxCount {
-				return result
+			res = append(res, s)
+			if max > 0 && len(res) >= max {
+				return res
 			}
 		}
-		currHash = s.ShareInfo.ShareData.PreviousShareHash
+		cur = s.ShareInfo.ShareData.PreviousShareHash
 	}
-
-	// If parent links ended early (e.g. across older historical shares), append remaining valid shares older than the last walked share
 	var maxTs int32 = 0x7fffffff
-	if len(result) > 0 {
-		maxTs = result[len(result)-1].ShareInfo.Timestamp
+	if len(res) > 0 {
+		maxTs = res[len(res)-1].ShareInfo.Timestamp
 	}
-	remaining := make([]*Share, 0, len(sc.shares))
-	for hStr, s := range sc.shares {
-		if !visited[hStr] && s != nil && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone && s.Hash != nil && s.ShareInfo.Timestamp <= maxTs {
-			remaining = append(remaining, s)
+	rem := make([]*Share, 0, len(sc.shares))
+	for h, s := range sc.shares {
+		if !vis[h] && s != nil && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone && s.Hash != nil && s.ShareInfo.Timestamp <= maxTs {
+			rem = append(rem, s)
 		}
 	}
-	sort.Slice(remaining, func(i, j int) bool {
-		if remaining[i].ShareInfo.Timestamp == remaining[j].ShareInfo.Timestamp {
-			return remaining[i].Hash.String() > remaining[j].Hash.String()
+	sort.Slice(rem, func(i, j int) bool {
+		if rem[i].ShareInfo.Timestamp == rem[j].ShareInfo.Timestamp {
+			return rem[i].Hash.String() > rem[j].Hash.String()
 		}
-		return remaining[i].ShareInfo.Timestamp > remaining[j].ShareInfo.Timestamp
+		return rem[i].ShareInfo.Timestamp > rem[j].ShareInfo.Timestamp
 	})
-	for _, s := range remaining {
-		result = append(result, s)
-		if maxCount > 0 && len(result) >= maxCount {
+	for _, s := range rem {
+		res = append(res, s)
+		if max > 0 && len(res) >= max {
 			break
 		}
 	}
-	return result
+	return res
 }
-
-// GetExpectedShareDifficulty deterministically derives the consensus share difficulty from the ShareChain
-// using a 200-share lookbehind and a +/-10% step limit, matching original p2pool-vtc (data.py#L149-L154).
-func (sc *ShareChain) GetExpectedShareDifficulty(prevShareHash *chainhash.Hash) float64 {
+func (sc *ShareChain) GetExpectedShareDifficulty(prev *chainhash.Hash) float64 {
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
-	return sc.getExpectedShareDifficultyLocked(prevShareHash)
+	return sc.getExpectedShareDifficultyLocked(prev)
 }
-
-func (sc *ShareChain) getExpectedShareDifficultyLocked(prevShareHash *chainhash.Hash) float64 {
-	walk := sc.getOrderedChainWalkLocked(prevShareHash, TargetLookbehind)
-	if len(walk) < TargetLookbehind {
+func (sc *ShareChain) getExpectedShareDifficultyLocked(prev *chainhash.Hash) float64 {
+	w := sc.getOrderedChainWalkLocked(prev, TargetLookbehind)
+	if len(w) < TargetLookbehind {
 		return MinPoolShareDiff
 	}
-
-	var totalWork float64
+	var tw float64
 	for i := 0; i < TargetLookbehind-1; i++ {
-		d := TargetToDiff(walk[i].Target)
+		d := TargetToDiff(w[i].Target)
 		if d < MinPoolShareDiff {
 			d = MinPoolShareDiff
 		}
-		totalWork += d
+		tw += d
 	}
-
-	actualTime := float64(walk[0].ShareInfo.Timestamp - walk[TargetLookbehind-1].ShareInfo.Timestamp)
-	desiredTime := float64(TargetLookbehind-1) * TargetPoolShareTime
-	if actualTime <= 1.0 {
-		actualTime = 1.0
+	dt := float64(w[0].ShareInfo.Timestamp - w[TargetLookbehind-1].ShareInfo.Timestamp)
+	if dt <= 1.0 {
+		dt = 1.0
 	}
-
-	// Clamp adjustment to +/-10% of the parent share difficulty (matching original p2pool +/-10% bound)
-	parentDiff := TargetToDiff(walk[0].Target)
-	if parentDiff < MinPoolShareDiff {
-		parentDiff = MinPoolShareDiff
+	pDiff := TargetToDiff(w[0].Target)
+	if pDiff < MinPoolShareDiff {
+		pDiff = MinPoolShareDiff
 	}
-	rawDiff := (totalWork * TargetPoolShareTime) / actualTime
-	_ = desiredTime
-
-	minAllowed := parentDiff * 0.90
-	maxAllowed := parentDiff * 1.10
-	if rawDiff < minAllowed {
-		rawDiff = minAllowed
-	} else if rawDiff > maxAllowed {
-		rawDiff = maxAllowed
+	raw := (tw * TargetPoolShareTime) / dt
+	if raw < pDiff*0.90 {
+		raw = pDiff * 0.90
+	} else if raw > pDiff*1.10 {
+		raw = pDiff * 1.10
 	}
-	if rawDiff < MinPoolShareDiff {
-		rawDiff = MinPoolShareDiff
+	if raw < MinPoolShareDiff {
+		raw = MinPoolShareDiff
 	}
-	return rawDiff
+	return raw
 }
-
-// GetPoolShareDifficulty returns the deterministic pool share difficulty at the current ShareChain tip.
 func (sc *ShareChain) GetPoolShareDifficulty() float64 {
 	sc.mutex.RLock()
-	tip := sc.TipHash
-	diff := sc.getExpectedShareDifficultyLocked(tip)
-	sc.mutex.RUnlock()
-	return diff
+	defer sc.mutex.RUnlock()
+	return sc.getExpectedShareDifficultyLocked(sc.TipHash)
 }
-
-// GetEffectiveShareDiff returns the verified difficulty work of a share, checking cryptographic POWHash
-// against s.Target and clamping against 4x the deterministic sharechain difficulty to prevent spoofing.
 func (sc *ShareChain) GetEffectiveShareDiff(s *Share) float64 {
 	if s == nil || s.Target == nil || s.Target.Sign() <= 0 {
 		return 0
 	}
-	targetDiff := TargetToDiff(s.Target)
-	if targetDiff <= 0 {
+	td := TargetToDiff(s.Target)
+	if td <= 0 {
 		return 0
 	}
 	if s.POWHash != nil {
-		powInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
-		powDiff := TargetToDiff(powInt)
-		if powDiff < targetDiff*0.999 {
-			return 0 // Invalid PoW for claimed target
+		p := new(big.Int).SetBytes(s.POWHash.CloneBytes())
+		if TargetToDiff(p) < td*0.999 {
+			return 0
 		}
 	}
-	if targetDiff > 16.0 {
-		targetDiff = 16.0
+	if td > 16.0 {
+		td = 16.0
 	}
-	return targetDiff
+	return td
 }
-
-// GetSharesForPayout deterministically selects valid shares walking backward from blockFindShareHash,
-// capped by cumulative work (up to 8640 shares / ~36 hours or 12 blocks of network work), so every
-// P2Pool node computes the exact same PPLNS split solely from the ShareChain.
-func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*Share, error) {
+func (sc *ShareChain) GetSharesForPayout(tip *chainhash.Hash, win int) ([]*Share, error) {
 	sc.mutex.RLock()
-	if windowSize <= 0 {
-		windowSize = DefaultPPLNSWindow
+	if win <= 0 {
+		win = DefaultPPLNSWindow
 	}
-	allValid := sc.getOrderedChainWalkLocked(blockFindShareHash, windowSize)
-	poolShareDiff := sc.getExpectedShareDifficultyLocked(blockFindShareHash)
+	all := sc.getOrderedChainWalkLocked(tip, win)
+	pDiff := sc.getExpectedShareDifficultyLocked(tip)
 	sc.mutex.RUnlock()
-
-	if len(allValid) == 0 {
-		return allValid, nil
+	if len(all) == 0 {
+		return all, nil
 	}
-
-	targetCumulativeWork := float64(windowSize) * poolShareDiff
-
-	// Derive network block difficulty deterministically from the tip share header bits (12 blocks of work cap)
-	if allValid[0].MinHeader.Bits != 0 {
-		blockTarget := blockchain.CompactToBig(allValid[0].MinHeader.Bits)
-		blockDiffInShareUnits := TargetToDiff(blockTarget)
-		if blockDiffInShareUnits > 0 && targetCumulativeWork > blockDiffInShareUnits*12.0 {
-			targetCumulativeWork = blockDiffInShareUnits * 12.0
+	capW := float64(win) * pDiff
+	if all[0].MinHeader.Bits != 0 {
+		bd := TargetToDiff(blockchain.CompactToBig(all[0].MinHeader.Bits))
+		if bd > 0 && capW > bd*12.0 {
+			capW = bd * 12.0
 		}
 	}
-
-	newestTs := int64(allValid[0].ShareInfo.Timestamp)
-	cutoffTs := newestTs - MaxPPLNSWindowAgeSecs
-	maxSingleShareDiff := poolShareDiff * 4.0
-	if maxSingleShareDiff < 16.0 {
-		maxSingleShareDiff = 16.0
+	cut := int64(all[0].ShareInfo.Timestamp) - MaxPPLNSWindowAgeSecs
+	maxD := pDiff * 4.0
+	if maxD < 16.0 {
+		maxD = 16.0
 	}
-
-	selected := make([]*Share, 0, len(allValid))
-	var accumulatedWork float64
-	for _, s := range allValid {
-		if int64(s.ShareInfo.Timestamp) < cutoffTs {
+	sel := make([]*Share, 0, len(all))
+	var acc float64
+	for _, s := range all {
+		if int64(s.ShareInfo.Timestamp) < cut {
 			break
 		}
-		diff := sc.GetEffectiveShareDiff(s)
-		if diff <= 0 {
+		d := sc.GetEffectiveShareDiff(s)
+		if d <= 0 {
 			continue
 		}
-		if diff > maxSingleShareDiff {
-			diff = maxSingleShareDiff
+		if d > maxD {
+			d = maxD
 		}
-		selected = append(selected, s)
-		accumulatedWork += diff
-		if accumulatedWork >= targetCumulativeWork {
+		sel = append(sel, s)
+		acc += d
+		if acc >= capW {
 			break
 		}
 	}
-	return selected, nil
+	return sel, nil
 }
 
 func DecodeShareAddress(s *Share) string {
