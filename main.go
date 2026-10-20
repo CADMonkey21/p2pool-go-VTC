@@ -179,7 +179,7 @@ func main() {
 
 	// Wire bidirectional P2P ShareChain and Blocks synchronization
 	p2pNode.GetSyncDataFunc = func() ([]byte, []byte) {
-		shares := sc.GetSharesForSync(3000)
+		shares := sc.GetSharesForSync(10000)
 		sBytes, _ := json.Marshal(shares)
 		bBytes := workManager.GetPersistedBlocksJSON()
 		return sBytes, bBytes
@@ -221,6 +221,7 @@ func main() {
 		}
 	}
 
+	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 	go p2pNode.Bootstrap(config.Active.Peers)
 
 	go func() {
@@ -254,6 +255,7 @@ func main() {
 			}
 			added := sc.AddShares([]work.Share{remoteShare})
 			if added > 0 {
+				stratumSrv.NotifyNewShare()
 				logging.Infof("P2P: Validated and added remote peer share %s to ShareChain", remoteShare.Hash.String()[:12])
 
 				if powInt.Cmp(netTarget) <= 0 {
@@ -265,8 +267,6 @@ func main() {
 			}
 		}
 	}()
-
-	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 
 	addr := fmt.Sprintf(":%d", config.Active.StratumPort)
 	baseListener, err := net.Listen("tcp", addr)

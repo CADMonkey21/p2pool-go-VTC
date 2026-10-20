@@ -413,7 +413,9 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			newShare.Target = work.DiffToTarget(poolShareDiff)
 			logging.Infof("P2Pool Share qualified for network ShareChain! (Share Diff: %.4f >= Pool Share Diff: %.4f)", shareDiff, poolShareDiff)
 			go func(share work.Share) {
-				s.workManager.ShareChain.AddShares([]work.Share{share})
+				if s.workManager.ShareChain.AddShares([]work.Share{share}) > 0 {
+					s.NotifyNewShare()
+				}
 				shareBytes, err := json.Marshal(share)
 				if err == nil && s.p2pNode != nil {
 					s.p2pNode.BroadcastShare(shareBytes)
@@ -696,5 +698,20 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 
 	if err := c.send(JSONRPCResponse{Method: "mining.notify", Params: params}); err != nil {
 		go s.dropClient(c)
+	}
+}
+
+func (s *StratumServer) NotifyNewShare() {
+	s.lastJobMutex.RLock()
+	job := s.lastJob
+	s.lastJobMutex.RUnlock()
+	if job == nil {
+		return
+	}
+	tmpl := *job.BlockTemplate
+	for _, c := range s.GetClients() {
+		if c.Authorized && !c.closed.Load() {
+			go s.sendMiningJob(c, &tmpl, false)
+		}
 	}
 }
