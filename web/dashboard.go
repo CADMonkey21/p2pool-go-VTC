@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
@@ -311,7 +312,35 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	peersIn, peersOut := 0, 0
+	var peerList []string
+	seenPeer := make(map[string]bool)
+	if d.p2pNode != nil && d.p2pNode.Host != nil {
+		for _, c := range d.p2pNode.Host.Network().Conns() {
+			pid := c.RemotePeer().String()
+			if seenPeer[pid] {
+				continue
+			}
+			seenPeer[pid] = true
+			if c.Stat().Direction == 1 {
+				peersIn++
+			} else {
+				peersOut++
+			}
+			parts := strings.Split(c.RemoteMultiaddr().String(), "/")
+			if len(parts) >= 5 {
+				peerList = append(peerList, parts[2]+":"+parts[4])
+			} else {
+				peerList = append(peerList, pid[:12])
+			}
+		}
+	}
+	sort.Strings(peerList)
 	data := map[string]interface{}{
+		"connected_peers":         len(peerList),
+		"peers_inbound":           peersIn,
+		"peers_outbound":          peersOut,
+		"peer_list":               peerList,
 		"node_uptime":             formatUptime(uptimeSec),
 		"network_difficulty":      poolStats.NetworkDifficulty,
 		"connected_miners":        len(minerMap),
@@ -335,7 +364,6 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(data)
 }
-
 
 // ServeStatus provides a lightweight readiness and sync check endpoint for OCM integration.
 func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {

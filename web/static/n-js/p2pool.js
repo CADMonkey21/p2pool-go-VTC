@@ -38,6 +38,12 @@ function refreshStats() {
         $('#share_difficulty').text(data.min_share_difficulty);
         $('#expected_time_to_block').text(data.pool_time_to_block);
         $('#p2pool_version').text('p2pool-go-VTC');
+        var pCount = (data.connected_peers !== undefined) ? data.connected_peers : 0;
+        var pIn = (data.peers_inbound !== undefined) ? data.peers_inbound : 0;
+        var pOut = (data.peers_outbound !== undefined) ? data.peers_outbound : 0;
+        $('#peers_count').text(pCount + ' (' + pIn + ' in / ' + pOut + ' out)');
+        var pList = (data.peer_list && data.peer_list.length > 0) ? data.peer_list.join(', ') : 'None';
+        $('#connected_peers_list').text(pList);
 
         // --- Update Modal Popups & Header Info ---
         $('#modal_share_difficulty').text(data.min_share_difficulty);
