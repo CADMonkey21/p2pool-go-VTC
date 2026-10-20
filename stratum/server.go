@@ -394,16 +394,25 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 		c.LocalRateMonitor.AddDatum(ShareDatum{Work: jobDifficulty, WorkerName: c.WorkerName})
 
-		go func(share work.Share) {
-			s.workManager.ShareChain.AddShares([]work.Share{share})
-			shareBytes, err := json.Marshal(share)
-			if err == nil && s.p2pNode != nil {
-				s.p2pNode.BroadcastShare(shareBytes)
-			}
-		}(*newShare)
-
 		nBits64, _ := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		netTarget := blockchain.CompactToBig(uint32(nBits64))
+
+		poolShareDiff := s.workManager.ShareChain.GetPoolShareDifficulty()
+		if shareDiff >= poolShareDiff || powInt.Cmp(netTarget) <= 0 {
+			creditedDiff := poolShareDiff
+			if shareDiff < creditedDiff {
+				creditedDiff = shareDiff
+			}
+			newShare.Target = work.DiffToTarget(creditedDiff)
+			logging.Infof("P2Pool Share qualified for network ShareChain! (Share Diff: %.4f >= Pool Share Diff: %.4f)", shareDiff, poolShareDiff)
+			go func(share work.Share) {
+				s.workManager.ShareChain.AddShares([]work.Share{share})
+				shareBytes, err := json.Marshal(share)
+				if err == nil && s.p2pNode != nil {
+					s.p2pNode.BroadcastShare(shareBytes)
+				}
+			}(*newShare)
+		}
 
 		if config.Active.ForceBlockFind {
 			netTarget, _ = new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)

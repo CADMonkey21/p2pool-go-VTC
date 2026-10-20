@@ -239,12 +239,23 @@ func main() {
 				continue
 			}
 
+			powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
+			actualPeerDiff := work.TargetToDiff(powInt)
+			netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
+			if actualPeerDiff < work.MinPoolShareDiff && powInt.Cmp(netTarget) > 0 {
+				logging.Debugf("P2P: Ignored low-diff peer pseudo-share (Diff: %.4f < MinPoolShareDiff: %.2f)", actualPeerDiff, work.MinPoolShareDiff)
+				continue
+			}
+			poolShareDiff := sc.GetPoolShareDifficulty()
+			claimedDiff := work.TargetToDiff(remoteShare.Target)
+			if claimedDiff > poolShareDiff {
+				remoteShare.Target = work.DiffToTarget(poolShareDiff)
+			}
+
 			added := sc.AddShares([]work.Share{remoteShare})
 			if added > 0 {
 				logging.Infof("P2P: Validated and added remote peer share %s to ShareChain", remoteShare.Hash.String()[:12])
 
-				netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
-				powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
 				if powInt.Cmp(netTarget) <= 0 {
 					select {
 					case sc.FoundBlockChan <- &remoteShare:

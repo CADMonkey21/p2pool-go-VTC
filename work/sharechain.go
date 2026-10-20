@@ -219,17 +219,68 @@ func (sc *ShareChain) GetSharesForSync(maxCount int) []Share {
 	return list
 }
 
-// GetSharesForPayout deterministically selects the most recent windowSize valid shares across the entire
-// synchronized ShareChain so all P2Pool nodes compute 100% identical PPLNS payouts even under high share rates.
+const (
+	MinPoolShareDiff      = 0.50
+	TargetPoolShareTime   = 5.0
+	MaxPPLNSWindowAgeSecs = 24 * 3600
+)
+
+// GetPoolShareDifficulty computes the pool-wide P2Pool share difficulty targeting 1 share every 15s across the pool.
+func (sc *ShareChain) GetPoolShareDifficulty() float64 {
+	sc.poolStatsMutex.RLock()
+	pH := sc.poolHashrate
+	sc.poolStatsMutex.RUnlock()
+
+	diff := (pH * TargetPoolShareTime) / 16777216.0
+	if diff < MinPoolShareDiff {
+		diff = MinPoolShareDiff
+	}
+	return diff
+}
+
+// GetEffectiveShareDiff returns the verified difficulty work of a share, clamping self-reported Target
+// against actual cryptographic POWHash and the maximum reasonable pool difficulty to prevent spoofing.
+func (sc *ShareChain) GetEffectiveShareDiff(s *Share) float64 {
+	if s == nil || s.Target == nil || s.Target.Sign() <= 0 {
+		return 0
+	}
+	targetDiff := TargetToDiff(s.Target)
+	if targetDiff <= 0 {
+		return 0
+	}
+	if s.POWHash != nil {
+		powInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
+		powDiff := TargetToDiff(powInt)
+		if powDiff < targetDiff {
+			return 0 // Invalid PoW for claimed target
+		}
+	}
+	// Cap maximum single-share credited difficulty to prevent self-asserted target spoofing
+	maxReasonableDiff := sc.GetPoolShareDifficulty() * 4.0
+	if maxReasonableDiff < 16.0 {
+		maxReasonableDiff = 16.0
+	}
+	if targetDiff > maxReasonableDiff {
+		targetDiff = maxReasonableDiff
+	}
+	return targetDiff
+}
+
+// GetSharesForPayout deterministically selects valid shares from the synchronized ShareChain
+// capped by cumulative work (and a 24-hour max lookback) rather than raw share count, preventing
+// low-diff share flooding from shrinking the PPLNS payout window.
 func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, windowSize int) ([]*Share, error) {
 	sc.mutex.RLock()
-	defer sc.mutex.RUnlock()
-
 	allValid := make([]*Share, 0, len(sc.shares))
 	for _, s := range sc.shares {
 		if s != nil && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone && s.Hash != nil {
 			allValid = append(allValid, s)
 		}
+	}
+	sc.mutex.RUnlock()
+
+	if len(allValid) == 0 {
+		return allValid, nil
 	}
 
 	// Sort deterministically: newest Timestamp first (tie-broken by Hash)
@@ -240,10 +291,39 @@ func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, win
 		return allValid[i].ShareInfo.Timestamp > allValid[j].ShareInfo.Timestamp
 	})
 
-	if len(allValid) > windowSize {
-		allValid = allValid[:windowSize]
+	if windowSize <= 0 {
+		windowSize = 2160
 	}
-	return allValid, nil
+	poolShareDiff := sc.GetPoolShareDifficulty()
+	targetCumulativeWork := float64(windowSize) * poolShareDiff
+
+	sc.poolStatsMutex.RLock()
+	netDiff := sc.networkDifficulty
+	sc.poolStatsMutex.RUnlock()
+	if netDiff > 0 && targetCumulativeWork > netDiff*3.0 {
+		targetCumulativeWork = netDiff * 3.0
+	}
+
+	newestTs := int64(allValid[0].ShareInfo.Timestamp)
+	cutoffTs := newestTs - MaxPPLNSWindowAgeSecs
+
+	selected := make([]*Share, 0, windowSize)
+	var accumulatedWork float64
+	for _, s := range allValid {
+		if int64(s.ShareInfo.Timestamp) < cutoffTs {
+			break
+		}
+		diff := sc.GetEffectiveShareDiff(s)
+		if diff <= 0 {
+			continue
+		}
+		selected = append(selected, s)
+		accumulatedWork += diff
+		if accumulatedWork >= targetCumulativeWork {
+			break
+		}
+	}
+	return selected, nil
 }
 
 func DecodeShareAddress(s *Share) string {
@@ -310,9 +390,11 @@ func (sc *ShareChain) GetNetworkMiners(window time.Duration) map[string]*Network
 		if addr == "" || s.Target == nil || s.Target.Sign() <= 0 {
 			continue
 		}
-		targetFloat := new(big.Float).SetPrec(256).SetInt(s.Target)
-		diffFloatBig := new(big.Float).SetPrec(256).Quo(maxTargetFloat, targetFloat)
-		diffFloat, _ := diffFloatBig.Float64()
+		diffFloat := sc.GetEffectiveShareDiff(s)
+		if diffFloat <= 0 {
+			continue
+		}
+		_ = maxTargetFloat
 
 		mw, exists := workByAddr[addr]
 		if !exists {

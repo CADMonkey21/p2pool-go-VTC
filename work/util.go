@@ -41,6 +41,20 @@ func DiffToTarget(diff float64) *big.Int {
 	return targetInt
 }
 
+// TargetToDiff converts a 256-bit target or POWHash int into a Verthash difficulty float.
+func TargetToDiff(target *big.Int) float64 {
+	if target == nil || target.Sign() <= 0 {
+		return 0
+	}
+	maxTarget, _ := new(big.Int).SetString("000000FFFF000000000000000000000000000000000000000000000000000000", 16)
+	maxTargetFloat := new(big.Float).SetPrec(256).SetInt(maxTarget)
+	targetFloat := new(big.Float).SetPrec(256).SetInt(target)
+	diffFloatBig := new(big.Float).SetPrec(256).Quo(maxTargetFloat, targetFloat)
+	diffFloat, _ := diffFloatBig.Float64()
+	return diffFloat
+}
+
+
 // CalculateMerkleLink computes the merkle branches for a transaction at a given index.
 func CalculateMerkleLink(hashes [][]byte, index int) []*chainhash.Hash {
 	branches := []*chainhash.Hash{}

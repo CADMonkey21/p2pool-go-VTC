@@ -117,7 +117,12 @@ func CalculatePPLNSOutputs(totalReward int64, defaultMinerAddr string, sc *Share
 						continue
 					}
 
-					w := new(big.Int).Div(new(big.Int).Set(scaledMaxTarget), s.Target)
+					_ = scaledMaxTarget
+					creditedDiff := sc.GetEffectiveShareDiff(s)
+					if creditedDiff <= 0 {
+						continue
+					}
+					w := big.NewInt(int64(creditedDiff * 1000000.0))
 					if w.Sign() <= 0 {
 						w = big.NewInt(1)
 					}
