@@ -242,14 +242,20 @@ func main() {
 			powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
 			actualPeerDiff := work.TargetToDiff(powInt)
 			netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
-			if actualPeerDiff < work.MinPoolShareDiff && powInt.Cmp(netTarget) > 0 {
-				logging.Debugf("P2P: Ignored low-diff peer pseudo-share (Diff: %.4f < MinPoolShareDiff: %.2f)", actualPeerDiff, work.MinPoolShareDiff)
+			expectedDiff := sc.GetExpectedShareDifficulty(remoteShare.ShareInfo.ShareData.PreviousShareHash)
+			claimedDiff := work.TargetToDiff(remoteShare.Target)
+
+			if actualPeerDiff < expectedDiff*0.99 && powInt.Cmp(netTarget) > 0 {
+				logging.Warnf("P2P: Rejected peer share %s: PoW diff %.4f below consensus share diff %.4f", remoteShare.Hash.String()[:12], actualPeerDiff, expectedDiff)
 				continue
 			}
-			poolShareDiff := sc.GetPoolShareDifficulty()
-			claimedDiff := work.TargetToDiff(remoteShare.Target)
-			if claimedDiff > poolShareDiff {
-				remoteShare.Target = work.DiffToTarget(poolShareDiff)
+			if (claimedDiff < expectedDiff*0.99 || claimedDiff > expectedDiff*1.01) && powInt.Cmp(netTarget) > 0 {
+				logging.Warnf("P2P: Rejected peer share %s: claimed target diff %.4f does not match consensus diff %.4f", remoteShare.Hash.String()[:12], claimedDiff, expectedDiff)
+				continue
+			}
+			if ok, reason := work.VerifyShareCoinbase(&remoteShare, sc); !ok {
+				logging.Warnf("P2P: Rejected peer share %s: %s", remoteShare.Hash.String()[:12], reason)
+				continue
 			}
 
 			added := sc.AddShares([]work.Share{remoteShare})

@@ -70,7 +70,7 @@ func LoadConfig() {
 		StratumPort: 9172,
 		P2PPort:     9348,
 		Fee:         1.0,
-		PPLNSWindow: 2160,
+		PPLNSWindow: 8640,
 		LogLevel:    "info",
 		Vardiff: VardiffConfig{
 			TargetTime:   5.0,

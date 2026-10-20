@@ -142,6 +142,8 @@ type Client struct {
 	RejectedShares       uint64
 }
 
+var clientIDCounter uint64
+
 func NewClient(conn net.Conn) *Client {
 	extraNonce1Bytes := make([]byte, 4)
 	_, err := rand.Read(extraNonce1Bytes)
@@ -155,7 +157,7 @@ func NewClient(conn net.Conn) *Client {
 		Writer:               writer,
 		Encoder:              json.NewEncoder(writer),
 		Reader:               bufio.NewReader(conn),
-		ID:                   uint64(time.Now().UnixNano()),
+		ID:                   atomic.AddUint64(&clientIDCounter, 1),
 		ExtraNonce1:          hex.EncodeToString(extraNonce1Bytes),
 		Nonce2Size:           4,
 		Authorized:           false,

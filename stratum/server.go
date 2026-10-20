@@ -277,14 +277,14 @@ func (s *StratumServer) jobBroadcaster() {
 
 func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 	client := NewClient(conn)
-	logging.Infof("Stratum: New miner connection from %s", client.Conn.RemoteAddr())
-
-	s.clientsMutex.Lock()
-	s.clients[client.ID] = client
-	s.clientsMutex.Unlock()
-	defer s.dropClient(client)
-
-	go s.vardiffLoop(client)
+	registered := false
+	defer func() {
+		if registered {
+			s.dropClient(client)
+		} else {
+			_ = conn.Close()
+		}
+	}()
 
 	decoder := json.NewDecoder(client.Reader)
 	for {
@@ -292,6 +292,15 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 		var req JSONRPCRequest
 		if err := decoder.Decode(&req); err != nil {
 			return
+		}
+
+		if !registered {
+			registered = true
+			logging.Infof("Stratum: New miner connection from %s", client.Conn.RemoteAddr())
+			s.clientsMutex.Lock()
+			s.clients[client.ID] = client
+			s.clientsMutex.Unlock()
+			go s.vardiffLoop(client)
 		}
 
 		client.LastActivity = time.Now()
@@ -490,6 +499,10 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	if minDiff <= 0 {
 		minDiff = 0.01
 	}
+	poolShareDiff := s.workManager.ShareChain.GetPoolShareDifficulty()
+	if minDiff > poolShareDiff {
+		minDiff = poolShareDiff
+	}
 
 	_ = c.send(JSONRPCResponse{ID: id, Result: true, Error: nil})
 	s.sendDifficulty(c, minDiff)
@@ -563,6 +576,10 @@ func (s *StratumServer) vardiffLoop(c *Client) {
 			newDiff = curDiff * ratio
 		}
 
+		poolMaxDiff := s.workManager.ShareChain.GetPoolShareDifficulty()
+		if poolMaxDiff > 0 && poolMaxDiff < maxDiff {
+			maxDiff = poolMaxDiff
+		}
 		if newDiff < minDiff {
 			newDiff = minDiff
 		}

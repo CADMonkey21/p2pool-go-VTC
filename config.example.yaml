@@ -38,7 +38,7 @@ fee: 1.0
 
 # Target number of pool-difficulty share equivalents in the rolling PPLNS window (work-capped, max 24h lookback)
 # when calculating direct coinbase payouts.
-pplns_window: 2160
+pplns_window: 8640
 
 
 # --- Port Settings ---
