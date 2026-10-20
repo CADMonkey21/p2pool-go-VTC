@@ -185,6 +185,22 @@ func main() {
 		return sBytes, bBytes
 	}
 
+	workManager.OnTemplateBroadcast = p2pNode.BroadcastTemplate
+	workManager.RelayBlockHexFunc = p2pNode.RelaySolvedBlockHex
+	p2pNode.GetTemplateFunc = workManager.GetLatestTemplateJSON
+	p2pNode.OnTemplateFunc = func(b []byte) { workManager.ApplyRemoteTemplateJSON(b) }
+	p2pNode.OnRawBlockFunc = workManager.SubmitRawBlockHex
+	if config.Active.LightMode {
+		logging.Infof("Running in daemon-less LIGHT MODE (receiving block templates via P2P)")
+		go func() {
+			for {
+				time.Sleep(3 * time.Second)
+				if workManager.GetLatestTemplate() == nil {
+					p2pNode.PullTemplateFromPeers()
+				}
+			}
+		}()
+	}
 	p2pNode.GetSharesByHashFunc = func(hashes []string, parents int) []byte {
 		b, _ := json.Marshal(sc.GetSharesByHashWithParents(hashes, parents))
 		return b
@@ -201,6 +217,9 @@ func main() {
 					go p2pNode.RequestShares(miss, 250)
 				}
 			}
+		}
+		if config.Active.LightMode {
+			go p2pNode.PullTemplateFromPeers()
 		}
 		if len(blocksJSON) > 0 {
 			if ab := workManager.MergeRemoteBlocksJSON(blocksJSON); ab > 0 {

@@ -2,6 +2,7 @@ package work
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"os"
 	"sort"
@@ -141,7 +142,7 @@ func (sc *ShareChain) PruneOldShares() {
 func (sc *ShareChain) Load() error {
 	path := "sharechain.json"
 	b, err := os.ReadFile(path)
-	if err != nil {
+	if !config.Active.LightMode && err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -737,4 +738,17 @@ func (sc *ShareChain) GetSharesByHashWithParents(hashes []string, parents int) [
 		}
 	}
 	return out
+}
+
+func (sc *ShareChain) SetNetworkBitsFromTemplate(bitsHex string) {
+	var b uint32
+	if _, err := fmt.Sscanf(bitsHex, "%x", &b); err == nil && b != 0 {
+		nd := TargetToDiff(blockchain.CompactToBig(b))
+		if nd > 0 {
+			sc.poolStatsMutex.Lock()
+			sc.networkDifficulty = nd
+			sc.networkHashrate = (nd * 4294967296.0) / 150.0
+			sc.poolStatsMutex.Unlock()
+		}
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
@@ -46,16 +47,18 @@ type persistedBlock struct {
 }
 
 type WorkManager struct {
-	rpcClient          *rpc.Client
-	ShareChain         *ShareChain
-	Templates          map[string]*BlockTemplate
-	PendingBlocks      []*PayoutBlock
-	TemplateMutex      sync.RWMutex
-	PendingMutex       sync.Mutex
-	NewBlockChan       chan *BlockTemplate
-	ForceNewTemplate   chan bool
-	lastBlockUpdate    time.Time
-	lastBlockUpdateMux sync.RWMutex
+	rpcClient           *rpc.Client
+	ShareChain          *ShareChain
+	Templates           map[string]*BlockTemplate
+	PendingBlocks       []*PayoutBlock
+	TemplateMutex       sync.RWMutex
+	PendingMutex        sync.Mutex
+	NewBlockChan        chan *BlockTemplate
+	ForceNewTemplate    chan bool
+	OnTemplateBroadcast func([]byte)
+	RelayBlockHexFunc   func(string)
+	lastBlockUpdate     time.Time
+	lastBlockUpdateMux  sync.RWMutex
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
@@ -207,6 +210,9 @@ func (wm *WorkManager) GetLatestTemplate() *BlockTemplate {
 }
 
 func (wm *WorkManager) fetchBlockTemplate() {
+	if config.Active.LightMode {
+		return
+	}
 	rawTemplate, err := wm.rpcClient.GetBlockTemplate()
 	if err != nil {
 		logging.Errorf("Error getting block template: %v", err)
@@ -232,6 +238,11 @@ func (wm *WorkManager) fetchBlockTemplate() {
 
 		select {
 		case wm.NewBlockChan <- &tmpl:
+			if wm.OnTemplateBroadcast != nil {
+				if b, err := json.Marshal(&tmpl); err == nil {
+					go wm.OnTemplateBroadcast(b)
+				}
+			}
 		default:
 			logging.Warnf("NewBlockChan is full, dropping new template notification.")
 		}
@@ -258,6 +269,9 @@ func (wm *WorkManager) WatchBlockTemplate() {
 }
 
 func (wm *WorkManager) WatchMaturedBlocks() {
+	if config.Active.LightMode {
+		return
+	}
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -359,6 +373,9 @@ func (wm *WorkManager) buildMsgBlockFromShare(share *Share, template *BlockTempl
 // VerifyCandidateBlock asks vertcoind (via getblocktemplate mode="proposal") to verify that the
 // assembled block structure, coinbase PPLNS outputs, SegWit commitment, and Merkle root pass 100% of consensus rules.
 func (wm *WorkManager) VerifyCandidateBlock(share *Share, template *BlockTemplate) {
+	if config.Active.LightMode {
+		return
+	}
 	block, err := wm.buildMsgBlockFromShare(share, template)
 	if err != nil {
 		logging.Errorf("Consensus Check: Failed to build candidate block: %v", err)
@@ -384,9 +401,17 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 	blockHash := block.BlockHash()
 	logging.Infof("Submitting solved block %s (Height %d) directly to vertcoind...", blockHash.String(), template.Height)
 
-	if err := wm.rpcClient.SubmitBlock(block); err != nil {
-		logging.Errorf("SubmitBlock RPC rejected or failed: %v", err)
-		return err
+	if wm.RelayBlockHexFunc != nil {
+		var buf bytes.Buffer
+		if block.Serialize(&buf) == nil {
+			wm.RelayBlockHexFunc(hex.EncodeToString(buf.Bytes()))
+		}
+	}
+	if !config.Active.LightMode {
+		if err := wm.rpcClient.SubmitBlock(block); err != nil {
+			logging.Errorf("SubmitBlock RPC rejected or failed: %v", err)
+			return err
+		}
 	}
 
 	logging.Successf("SUCCESS! Block %s (Height %d) ACCEPTED by the Vertcoin network!", blockHash.String(), template.Height)
@@ -534,4 +559,53 @@ func (wm *WorkManager) MergeRemoteBlocksJSON(data []byte) int {
 		wm.saveBlocksLocked()
 	}
 	return added
+}
+
+func (wm *WorkManager) GetLatestTemplateJSON() []byte {
+	t := wm.GetLatestTemplate()
+	if t == nil {
+		return nil
+	}
+	b, _ := json.Marshal(t)
+	return b
+}
+
+func (wm *WorkManager) ApplyRemoteTemplateJSON(raw []byte) bool {
+	var t BlockTemplate
+	if json.Unmarshal(raw, &t) != nil || t.Height <= 0 || t.PreviousBlockHash == "" || t.Bits == "" {
+		return false
+	}
+	wm.ShareChain.SetNetworkBitsFromTemplate(t.Bits)
+	wm.TemplateMutex.Lock()
+	defer wm.TemplateMutex.Unlock()
+	if _, ok := wm.Templates[t.PreviousBlockHash]; ok {
+		return false
+	}
+	logging.Infof("Light Mode: Received P2P block template for height %d", t.Height)
+	wm.Templates = map[string]*BlockTemplate{t.PreviousBlockHash: &t}
+	wm.lastBlockUpdateMux.Lock()
+	wm.lastBlockUpdate = time.Now()
+	wm.lastBlockUpdateMux.Unlock()
+	select {
+	case wm.NewBlockChan <- &t:
+	default:
+	}
+	return true
+}
+
+func (wm *WorkManager) SubmitRawBlockHex(hexStr string) {
+	if config.Active.LightMode {
+		return
+	}
+	raw, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return
+	}
+	var blk wire.MsgBlock
+	if blk.Deserialize(bytes.NewReader(raw)) != nil {
+		return
+	}
+	if err := wm.rpcClient.SubmitBlock(&blk); err == nil {
+		logging.Successf("P2P Block Relay: Submitted peer-solved block %s to vertcoind!", blk.BlockHash().String())
+	}
 }

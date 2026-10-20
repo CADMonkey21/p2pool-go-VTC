@@ -25,6 +25,8 @@ import (
 const P2PNetworkTopic = "vtc-p2pool-shares-v1"
 const SyncProtocolID = protocol.ID("/p2pool/sync/1.0.0")
 const ShareReqProtocolID = protocol.ID("/p2pool/sharereq/1.0.0")
+const TemplateProtocolID = protocol.ID("/p2pool/template/1.0.0")
+const BlockRelayProtocolID = protocol.ID("/p2pool/blockrelay/1.0.0")
 
 type ShareReq struct {
 	Hashes  []string `json:"hashes"`
@@ -52,6 +54,9 @@ type Node struct {
 	GetSyncDataFunc     func() ([]byte, []byte)
 	OnSyncDataFunc      func(sharesJSON []byte, blocksJSON []byte)
 	GetSharesByHashFunc func(hashes []string, parents int) []byte
+	GetTemplateFunc     func() []byte
+	OnTemplateFunc      func(tmplJSON []byte)
+	OnRawBlockFunc      func(rawHex string)
 }
 
 type mdnsNotifee struct {
@@ -151,6 +156,8 @@ func NewNode(listenPort int) (*Node, error) {
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
 	h.SetStreamHandler(ShareReqProtocolID, node.handleShareReqStream)
+	h.SetStreamHandler(TemplateProtocolID, node.handleTemplateStream)
+	h.SetStreamHandler(BlockRelayProtocolID, node.handleBlockRelayStream)
 
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
@@ -364,5 +371,80 @@ func (n *Node) RequestShares(hashes []string, parents int) {
 		}
 		s.Close()
 		cancel()
+	}
+}
+
+func (n *Node) handleTemplateStream(s network.Stream) {
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(15 * time.Second))
+	var raw json.RawMessage
+	if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 && n.OnTemplateFunc != nil {
+		n.OnTemplateFunc(raw)
+	} else if n.GetTemplateFunc != nil {
+		if b := n.GetTemplateFunc(); len(b) > 0 {
+			_, _ = s.Write(b)
+		}
+	}
+}
+
+func (n *Node) BroadcastTemplate(b []byte) {
+	for _, pid := range n.Host.Network().Peers() {
+		go func(p peer.ID) {
+			ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+			defer cancel()
+			if s, err := n.Host.NewStream(ctx, p, TemplateProtocolID); err == nil {
+				_, _ = s.Write(b)
+				_ = s.CloseWrite()
+				s.Close()
+			}
+		}(pid)
+	}
+}
+
+func (n *Node) PullTemplateFromPeers() {
+	if n.OnTemplateFunc == nil {
+		return
+	}
+	for _, pid := range n.Host.Network().Peers() {
+		ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+		s, err := n.Host.NewStream(ctx, pid, TemplateProtocolID)
+		if err != nil {
+			cancel()
+			continue
+		}
+		_, _ = s.Write([]byte("null\n"))
+		_ = s.CloseWrite()
+		var raw json.RawMessage
+		if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 {
+			n.OnTemplateFunc(raw)
+			s.Close()
+			cancel()
+			return
+		}
+		s.Close()
+		cancel()
+	}
+}
+
+func (n *Node) handleBlockRelayStream(s network.Stream) {
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(30 * time.Second))
+	var hexStr string
+	if json.NewDecoder(s).Decode(&hexStr) == nil && len(hexStr) > 0 && n.OnRawBlockFunc != nil {
+		n.OnRawBlockFunc(hexStr)
+	}
+}
+
+func (n *Node) RelaySolvedBlockHex(hexStr string) {
+	for _, pid := range n.Host.Network().Peers() {
+		go func(p peer.ID) {
+			ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
+			defer cancel()
+			if s, err := n.Host.NewStream(ctx, p, BlockRelayProtocolID); err == nil {
+				_ = json.NewEncoder(s).Encode(hexStr)
+				_ = s.CloseWrite()
+				s.Close()
+			}
+		}(pid)
 	}
 }

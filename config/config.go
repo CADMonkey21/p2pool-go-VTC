@@ -35,6 +35,7 @@ type Config struct {
 	P2PSyncTimeout  int           `yaml:"p2pSyncTimeout"`
 	ForceBlockFind  bool          `yaml:"forceBlockFind"`
 	DataDir         string        `yaml:"datadir"`
+	LightMode       bool          `yaml:"light"`
 }
 
 var Active Config
@@ -53,6 +54,7 @@ func LoadConfig() {
 	poolAddr := flag.String("pooladdr", "", "Pool operator VTC payout address")
 	fee := flag.Float64("fee", -1, "Pool operator fee percentage")
 	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, warn, error)")
+	lightMode := flag.Bool("light", false, "Run in daemon-less light mode without local vertcoind")
 	soloMode := flag.Bool("solo", false, "Enable solo mode to bypass P2P sync for the first node")
 	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
 
@@ -142,6 +144,9 @@ func LoadConfig() {
 	}
 	if *logLevel != "" {
 		Active.LogLevel = *logLevel
+	}
+	if *lightMode || (Active.RPCUser == "" && Active.RPCPass == "") {
+		Active.LightMode = true
 	}
 	if *soloMode {
 		Active.SoloMode = true
