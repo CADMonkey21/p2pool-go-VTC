@@ -186,11 +186,15 @@ func (sc *ShareChain) Commit() error {
 	sc.mutex.RUnlock()
 
 	path := "sharechain.json"
+	tmpPath := "sharechain.json.tmp"
 	b, err := json.MarshalIndent(sharesToSave, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0644)
+	if err := os.WriteFile(tmpPath, b, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // GetSharesForSync returns up to maxCount most recent shares for fast P2P stream synchronization.

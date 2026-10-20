@@ -335,3 +335,45 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(data)
 }
+
+
+// ServeStatus provides a lightweight readiness and sync check endpoint for OCM integration.
+func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	peerCount := 0
+	if d.p2pNode != nil && d.p2pNode.Host != nil {
+		peerCount = len(d.p2pNode.Host.Network().Peers())
+	}
+
+	sc := d.workManager.ShareChain
+	stats := sc.GetStats()
+
+	d.workManager.TemplateMutex.Lock()
+	var currentHeight int64
+	hasTemplate := len(d.workManager.Templates) > 0
+	for _, tpl := range d.workManager.Templates {
+		if tpl != nil && tpl.Height > currentHeight {
+			currentHeight = tpl.Height
+		}
+	}
+	d.workManager.TemplateMutex.Unlock()
+
+	ready := hasTemplate && (config.Active.SoloMode || peerCount > 0 || stats.SharesTotal > 0)
+
+	resp := map[string]interface{}{
+		"ready":          ready,
+		"has_template":   hasTemplate,
+		"synced":         ready,
+		"peers":          peerCount,
+		"shares_total":   stats.SharesTotal,
+		"height":         currentHeight,
+		"stratum_port":   config.Active.StratumPort,
+		"p2p_port":       config.Active.P2PPort,
+		"network":        config.Active.Network,
+		"testnet":        config.Active.Testnet,
+		"uptime_seconds": int64(time.Since(d.startTime).Seconds()),
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}

@@ -34,11 +34,33 @@ type Config struct {
 	SoloMode        bool          `yaml:"solomode"`
 	P2PSyncTimeout  int           `yaml:"p2pSyncTimeout"`
 	ForceBlockFind  bool          `yaml:"forceBlockFind"` // [NEW] Add this field
+	DataDir         string        `yaml:"datadir"`
 }
 
 var Active Config
 
 func LoadConfig() {
+	dataDir := flag.String("datadir", "", "Data directory for config.yaml, sharechain.json, blocks.json, peer.key, and p2pool.log")
+	net := flag.String("n", "", "Network")
+	testnet := flag.Bool("testnet", false, "Testnet")
+	user := flag.String("u", "", "RPC Username")
+	pass := flag.String("p", "", "RPC Password")
+	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, error)")
+	soloMode := flag.Bool("solo", false, "Enable solo mode to bypass P2P sync for the first node")
+	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
+
+	flag.Parse()
+
+	if *dataDir != "" {
+		if err := os.MkdirAll(*dataDir, 0755); err != nil {
+			logging.Errorf("Failed to create datadir %s: %v", *dataDir, err)
+		} else if err := os.Chdir(*dataDir); err != nil {
+			logging.Errorf("Failed to change working directory to datadir %s: %v", *dataDir, err)
+		} else {
+			Active.DataDir = *dataDir
+		}
+	}
+
 	file, err := os.Open("config.yaml")
 	if err != nil {
 		logging.Warnf("No config.yaml file found.")
@@ -50,19 +72,9 @@ func LoadConfig() {
 			logging.Errorf("Failed to decode config.yaml: %v", err)
 		}
 	}
-
-	net := flag.String("n", "", "Network")
-	testnet := flag.Bool("testnet", false, "Testnet")
-	user := flag.String("u", "", "RPC Username")
-	pass := flag.String("p", "", "RPC Password")
-	// FIX: Add the loglevel flag
-	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, error)")
-	// [NEW] Add the solomode flag
-	soloMode := flag.Bool("solo", false, "Enable solo mode to bypass P2P sync for the first node")
-	// [NEW] Add the forceBlockFind flag
-	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
-
-	flag.Parse()
+	if *dataDir != "" {
+		Active.DataDir = *dataDir
+	}
 
 	if *net != "" {
 		Active.Network = *net

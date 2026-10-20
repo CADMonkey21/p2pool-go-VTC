@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -118,13 +119,21 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 func main() {
 	startTime := time.Now()
 
-	logging.Infof("🚀  p2pool-go (GossipSub mesh) starting up")
+	origDir, _ := os.Getwd()
+	staticDir := filepath.Join(origDir, "web", "static")
+	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
+		if exePath, err := os.Executable(); err == nil {
+			staticDir = filepath.Join(filepath.Dir(exePath), "web", "static")
+		}
+	}
+
+	config.LoadConfig()
 
 	logFile, _ := os.OpenFile("p2pool.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
 	defer logFile.Close()
 	logging.SetLogFile(logFile)
 
-	config.LoadConfig()
+	logging.Infof("🚀  p2pool-go (GossipSub mesh) starting up")
 
 	switch config.Active.LogLevel {
 	case "debug":
@@ -262,7 +271,8 @@ func main() {
 	apiHandler := web.NewDashboard(workManager, p2pNode, stratumSrv, startTime)
 
 	mux.Handle("/api/stats", apiHandler)
-	mux.Handle("/", http.FileServer(http.Dir("./web/static")))
+	mux.HandleFunc("/api/status", apiHandler.ServeStatus)
+	mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 
 	httpSrv := &http.Server{
 		Handler: mux,
@@ -277,6 +287,18 @@ func main() {
 	}()
 
 	go logStats(p2pNode, sc, stratumSrv)
+
+	// Periodic background autosave every 2 minutes so shares are never lost on unexpected exit
+	go func() {
+		saveTicker := time.NewTicker(2 * time.Minute)
+		for range saveTicker.C {
+			if err := sc.Commit(); err != nil {
+				logging.Warnf("Autosave: Failed to commit sharechain: %v", err)
+			} else {
+				logging.Debugf("Autosave: Sharechain committed to disk.")
+			}
+		}
+	}()
 
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
