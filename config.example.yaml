@@ -6,6 +6,10 @@ network: "vertcoin"
 # Set to true if running on a testnet (requires a testnet vertcoind daemon).
 testnet: false
 
+# Optional working directory for state files (sharechain.json, blocks.json, peer.key, p2pool.log).
+# Can also be passed via CLI using: ./p2pool-go-vtc -datadir /path/to/data
+datadir: ""
+
 # --- P2P Network Peers (go-libp2p) ---
 # Local LAN nodes on the same network are discovered automatically via mDNS.
 # To connect to remote internet p2pool-go-VTC nodes, list their full libp2p
@@ -18,6 +22,7 @@ peers:
 
 # --- RPC Connection Settings ---
 # These must match the RPC settings in your vertcoin.conf file.
+# Can also be passed via CLI: -rpchost 127.0.0.1 -rpcport 5888 -u user -p pass
 rpcHost: "127.0.0.1"
 rpcPort: 5888
 rpcUser: "your_rpc_user"
@@ -31,16 +36,19 @@ poolAddress: "vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l"
 # The fee (in percent) that the node embeds for the pool operator in solved blocks (e.g., 1.0 = 1%).
 fee: 1.0
 
-# How many shares are considered in the rolling PPLNS window when calculating direct coinbase payouts.
+# Target number of pool-difficulty share equivalents in the rolling PPLNS window (work-capped, max 24h lookback)
+# when calculating direct coinbase payouts.
 pplns_window: 2160
 
 
 # --- Port Settings ---
-# Multiplexed port (cmux) for both Stratum miner connections and the HTTP Web Dashboard.
+# Multiplexed port (cmux) for Stratum miner connections, Web UI Dashboard, and GET /api/status.
+# Can also be passed via CLI: -stratum 9172
 stratumPort: 9172
 
 # The TCP port for go-libp2p GossipSub and Kademlia DHT node-to-node communication.
 # Port-forward this port (9348/tcp) on your router if connecting with external internet peers.
+# Can also be passed via CLI: -p2p 9348
 p2pPort: 9348
 
 
@@ -53,23 +61,25 @@ loglevel: "info"
 
 # --- Verthash Settings ---
 # Full path to your verthash.dat file (approx. 1.2 GB).
+# Can also be passed via CLI: -verthash /path/to/verthash.dat
 # Standard install example: "/home/user/.vertcoin/verthash.dat"
 # Snap install example:     "/home/user/snap/vertcoin-core/common/.vertcoin/verthash.dat"
 verthash_dat_file: "/home/user/.vertcoin/verthash.dat"
 
 
-# --- Variable Difficulty (Vardiff) Settings ---
-# Automatically adjusts individual miner share difficulty to maintain steady submissions.
+# --- Local Stratum Variable Difficulty (Vardiff) Settings ---
+# Adjusts local miner Stratum pseudo-share difficulty for smooth dashboard hashrate tracking.
+# Note: The global P2Pool ShareChain is gated separately by PoolShareDifficulty (min 0.50 diff).
 vardiff:
-  # Target time (in seconds) between shares submitted by a miner.
+  # Target time (in seconds) between Stratum pseudo-shares submitted by a local miner.
   targetTime: 5.0
 
-  # How often (in seconds) the pool evaluates a miner's submission rate to adjust difficulty.
+  # How often (in seconds) the node evaluates a local miner submission rate to adjust Stratum difficulty.
   # Should be 2x to 6x longer than targetTime.
   retargetTime: 30.0
 
-  # Allowed fractional variance from targetTime before triggering a difficulty change (0.30 = ±30%).
+  # Allowed fractional variance from targetTime before triggering a difficulty change (0.30 = +-30%).
   variance: 0.30
 
-  # Minimum share difficulty floor assigned to miners on connect.
+  # Minimum Stratum pseudo-share difficulty floor assigned to local miners on connect.
   minDiff: 0.01
