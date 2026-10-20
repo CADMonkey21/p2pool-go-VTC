@@ -21,7 +21,9 @@ go version
 
 ---
 
-## Step 2: Set Up `vertcoind`
+## Step 2: Set Up `vertcoind` (Optional if using `-light` Mode)
+
+> **Light Mode Tip:** If you run `./p2pool-go-vtc -light`, you can skip Step 2 completely! Light nodes receive block templates and relay solved blocks over P2P via full-node peers.
 
 `p2pool-go-VTC` communicates with a local, fully synced Vertcoin Core daemon (`vertcoind`) over JSON-RPC.
 

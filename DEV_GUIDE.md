@@ -45,6 +45,10 @@ main.go             # Entry point, cmux TCP multiplexer, P2P share listener, and
 Instead of legacy Python P2Pool's custom 2011 TCP wire protocol, `p2pool-go-VTC` uses **`go-libp2p`**:
 - **Persistent Identity:** `loadOrCreateIdentity()` generates an Ed25519 private key on first run and saves it to `peer.key` so the node's multiaddr (`/ip4/<IP>/tcp/9348/p2p/<PeerID>`) remains permanent across restarts.
 - **Discovery:** Combines Kademlia DHT (`go-libp2p-kad-dht`) for WAN bootstrap peers configured in `config.yaml` with zero-config `mDNS` (`p2p/discovery/mdns`) for automatic local LAN peer discovery.
+- **P2P Stream Protocols (`libp2p`):**
+  - `/p2pool/sync/1.0.0`: Hydrates the contiguous verified ShareChain on startup.
+  - `/p2pool/sharereq/1.0.0`: Requests missing parent ancestor shares by hash for topological verification.
+  - `/p2pool/template/1.0.0` & `/p2pool/blockrelay/1.0.0`: Pushes/serves `BlockTemplate` JSON to `-light` nodes and relays solved `wire.MsgBlock` hex back to full-node peers.
 - **GossipSub Mesh:** Nodes subscribe to the `vtc-p2pool-shares-v1` topic. When a local miner submits a valid share, `StratumServer` broadcasts the serialized `work.Share` over GossipSub. Incoming peer shares are read from `p2pNode.IncomingShares`, cryptographically re-verified via `CalculateHashes()` and `IsValid()`, and added to `ShareChain`.
 
 ### 2. Daemon RPC & Consensus Verification (`rpc/` & `work/manager.go`)
@@ -57,8 +61,8 @@ Instead of legacy Python P2Pool's custom 2011 TCP wire protocol, `p2pool-go-VTC`
 
 ### 3. Direct Non-Custodial PPLNS Coinbase (`work/coinbase.go`)
 
-- **`CalculatePPLNSOutputs()`**: Walks the current `ShareChain` tip back up to `PPLNSWindow` (`2160` shares), weights each share by its target difficulty, deducts the configured pool fee (`config.Active.Fee` payable to `config.Active.PoolAddress`), and deterministically sorts and allocates satoshis across all contributing miner addresses.
-- **`buildCoinbaseMsgTx()`**: Builds a version-2 SegWit coinbase transaction containing the BIP34 block height, extranonce, all PPLNS + pool fee `TxOut` outputs, the `0xaa21a9ed` SegWit witness commitment `OP_RETURN` output, and the 32-byte zero witness nonce.
+- **`CalculatePPLNSOutputs()`**: Walks the current `ShareChain` tip back up to `PPLNSWindow` (`8640` shares / `36h` work-capped window), weights each share by its target difficulty, deducts the configured pool fee (`config.Active.Fee` payable to `config.Active.PoolAddress`), and deterministically sorts and allocates satoshis across all contributing miner addresses.
+- **`buildCoinbaseMsgTx()`**: Builds a version-2 SegWit coinbase transaction containing the BIP34 block height, extranonce, all PPLNS + pool fee `TxOut` outputs, the `0xaa21a9ed` SegWit witness commitment `OP_RETURN` output, the `"P2PV"` `OP_RETURN` share metadata commitment (`ShareVersionV2 = 24`), and the 32-byte zero witness nonce.
 - **`SplitCoinbaseForStratum()` & `RebuildCoinbaseFromStratumParts()`**: Splits the non-witness serialized coinbase around an 8-byte extranonce marker into `coinb1` and `coinb2` for `mining.notify`. When a share is submitted, `RebuildCoinbaseFromStratumParts()` reconstructs the exact witness-enabled coinbase from the job's cached `Coinb1` and `Coinb2` so the Merkle root never drifts if new shares arrive while a job is active on the GPU.
 
 ### 4. Stratum Server & Vardiff (`stratum/`)

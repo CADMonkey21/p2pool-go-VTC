@@ -19,6 +19,8 @@ An official cloud-hosted bootstrap seed node and public dashboard is live at:
 
 ## Features
 
+- **Daemon-less `-light` Mode (One-Click Miner Ready):** Run `./p2pool-go-vtc -light` without a local `vertcoind`—receives P2P block templates, builds local PPLNS payouts, and relays solved blocks to full-node peers.
+- **Store-Then-Verify ShareChain V2 (`Type: 24`):** Enforces pool-wide 15s share difficulty (`200`-share lookbehind), cumulative-work tip selection, work-capped PPLNS window (`8640` shares / `36h`), and PoW-committed `"P2PV"` coinbase metadata.
 - **Full Stratum Server:** Compatible with all standard Verthash mining software (e.g., `VerthashMiner`, One-Click Miner).
 - **Decentralized `go-libp2p` Mesh:** Powered by the same networking stack used by Ethereum's consensus layer, featuring Kademlia DHT, automatic UPnP NAT port mapping, persistent cryptographic Peer IDs (`peer.key`), and zero-configuration local LAN `mDNS` peer discovery.
 - **Single-Port Multiplexing (`cmux`):** Automatically serves both TCP Stratum mining traffic and the HTTP Web Dashboard over a single shared port (`9172`).
@@ -79,6 +81,13 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
    ```
    Point your Verthash miner to `stratum+tcp://<your-node-ip>:9172` with your Vertcoin wallet address as the username, and open `http://<your-node-ip>:9172` in your browser to view the live dashboard.
 
+### Command-Line Flags & OCM Readiness API
+```bash
+./p2pool-go-vtc -light -datadir /path/to/data -stratum 9172 -p2p 9348 -verthash /path/to/verthash.dat -loglevel info
+```
+- **Readiness Endpoint (`/api/status`):** Returns JSON (`"ready": true`, `"has_template": true`, `"synced": true`, `"peers"`, `"shares_total"`, `"height"`) for One-Click Miner health checks.
+- **Dashboard Stats Endpoint (`/api/stats`):** Returns live hashrates, active miners, PPLNS payouts, and connected P2P peers.
+
 See [LOG_GUIDE.md](LOG_GUIDE.md) for an overview of console log messages and levels.
 
 ---
@@ -123,4 +132,7 @@ Contributions are welcome! Feel free to open an issue or submit a pull request. 
 
 If you want to support the development of this project, feel free to donate!
 
-**Vertcoin:** `vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l`
+**Vertcoin (VTC):** *(click the copy icon on the right)*
+```text
+vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l
+```

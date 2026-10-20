@@ -64,7 +64,10 @@ less -R p2pool.log
 - `[WARN] Shutdown signal received. Saving share chain and exiting…` / `[INFO] Sharechain committed successfully.`
   * The node caught `Ctrl+C` or `SIGTERM` and safely wrote its current share window to `sharechain.json`.
 
-### P2P Networking (`p2p/`)
+### P2P Networking & Light Mode (`p2p/`)
+
+- `[INFO] Running in daemon-less LIGHT MODE (receiving block templates via P2P)`
+  * Node started with `-light` and is receiving `BlockTemplate` updates from full-node peers.
 
 - `[INFO] P2P Node started! Persistent Peer ID: 12D3KooW...`
   * `go-libp2p` initialized using the persistent key in `peer.key`.
