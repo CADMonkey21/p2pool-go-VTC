@@ -542,14 +542,30 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 func (sc *ShareChain) loadTrusted(fs []Share) {
 	sc.mutex.Lock()
 	for i := range fs {
-		s := fs[i]
-		if s.Hash == nil {
-			_ = s.CalculateHash()
+		sh := fs[i]
+		if sh.Hash == nil {
+			_ = sh.CalculateHash()
 		}
-		if s.Hash != nil {
-			cp := s
-			sc.shares[s.Hash.String()] = &cp
-			sc.markVerifiedLocked(&cp)
+		if sh.Hash != nil {
+			cp := sh
+			sc.shares[sh.Hash.String()] = &cp
+		}
+	}
+	for {
+		prog := false
+		for h, sh := range sc.shares {
+			if sc.verified[h] {
+				continue
+			}
+			p := sh.ShareInfo.ShareData.PreviousShareHash
+			if p != nil && !p.IsEqual(sc.genesisHash) && sc.shares[p.String()] != nil && !sc.verified[p.String()] {
+				continue
+			}
+			sc.markVerifiedLocked(sh)
+			prog = true
+		}
+		if !prog {
+			break
 		}
 	}
 	sc.mutex.Unlock()
