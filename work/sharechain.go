@@ -298,7 +298,8 @@ func (sc *ShareChain) GetSharesForPayout(blockFindShareHash *chainhash.Hash, win
 	targetCumulativeWork := float64(windowSize) * poolShareDiff
 
 	sc.poolStatsMutex.RLock()
-	netDiff := sc.networkDifficulty
+	// vertcoind difficulty is in 2^32-hash units; share difficulty is in 2^24-hash units.
+	netDiff := sc.networkDifficulty * 256.0
 	sc.poolStatsMutex.RUnlock()
 	if netDiff > 0 && targetCumulativeWork > netDiff*3.0 {
 		targetCumulativeWork = netDiff * 3.0
