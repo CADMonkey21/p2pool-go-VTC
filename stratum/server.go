@@ -414,65 +414,59 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			return
 		}
 	}
-	shareTarget := work.DiffToTarget(jobDifficulty)
-	newShare.Target = shareTarget
-
+	committedTarget := job.ShareTarget
+	if committedTarget == nil {
+		committedTarget = work.DiffToTarget(s.workManager.ShareChain.GetExpectedShareDifficulty(jobTip))
+	}
+	newShare.Target = committedTarget
 	s.lastJobMutex.RLock()
 	latestPrevHash := s.latestPrevBlockHash
 	s.lastJobMutex.RUnlock()
-
-	isStale := false
 	jobPrevHash, _ := chainhash.NewHashFromStr(job.BlockTemplate.PreviousBlockHash)
-	if latestPrevHash != nil && !jobPrevHash.IsEqual(latestPrevHash) {
-		isStale = true
-		newShare.ShareInfo.ShareData.StaleInfo = 254 // DOA
+	isStale := latestPrevHash != nil && !jobPrevHash.IsEqual(latestPrevHash)
+	if err := newShare.CalculateHashes(); err != nil || newShare.POWHash == nil {
+		_ = c.send(JSONRPCResponse{ID: id, Result: false})
+		return
 	}
-
-	accepted, reason := newShare.IsValid()
+	powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
+	shareDiff := TargetToDiff(powInt)
+	accepted := powInt.Cmp(work.DiffToTarget(jobDifficulty)) <= 0
+	reason := "Share PoW hash does not meet vardiff target"
 	if accepted && !isStale {
-		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
-		shareDiff := TargetToDiff(powInt)
 		logging.Successf("SHARE ACCEPTED from %s (Share Diff: %.5f / Target Diff: %.5f)", c.WorkerName, shareDiff, jobDifficulty)
-
-		// Run a live BIP22 Consensus Proposal check against vertcoind once per block height
-		// to prove 100% that vertcoind accepts our full block structure & PPLNS coinbase outputs!
 		if atomic.LoadInt64(&lastVerifiedHeight) != job.BlockTemplate.Height {
 			if atomic.CompareAndSwapInt64(&lastVerifiedHeight, atomic.LoadInt64(&lastVerifiedHeight), job.BlockTemplate.Height) {
 				go s.workManager.VerifyCandidateBlock(newShare, job.BlockTemplate)
 			}
 		}
-
 		c.Mutex.Lock()
 		c.AcceptedShares++
 		c.Mutex.Unlock()
-
 		c.LocalRateMonitor.AddDatum(ShareDatum{Work: jobDifficulty, WorkerName: c.WorkerName})
-
 		nBits64, _ := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		netTarget := blockchain.CompactToBig(uint32(nBits64))
-
-		if jobTip != nil {
-			newShare.ShareInfo.ShareData.PreviousShareHash = jobTip
+		poolShareDiff := job.PoolShareDiff
+		if poolShareDiff <= 0 {
+			poolShareDiff = s.workManager.ShareChain.GetExpectedShareDifficulty(jobTip)
 		}
-		poolShareDiff := s.workManager.ShareChain.GetExpectedShareDifficulty(newShare.ShareInfo.ShareData.PreviousShareHash)
-		if shareDiff >= poolShareDiff || powInt.Cmp(netTarget) <= 0 {
-			newShare.Target = work.DiffToTarget(poolShareDiff)
-			logging.Infof("P2Pool Share qualified for network ShareChain! (Share Diff: %.4f >= Pool Share Diff: %.4f)", shareDiff, poolShareDiff)
-			go func(share work.Share) {
-				if s.workManager.ShareChain.AddShares([]work.Share{share}) > 0 {
-					s.NotifyNewShare()
-				}
-				shareBytes, err := json.Marshal(share)
-				if err == nil && s.p2pNode != nil {
-					s.p2pNode.BroadcastShare(shareBytes)
-				}
-			}(*newShare)
+		if powInt.Cmp(committedTarget) <= 0 || powInt.Cmp(netTarget) <= 0 {
+			if ok, r := newShare.IsValid(); ok {
+				logging.Infof("P2Pool Share qualified for network ShareChain! (Share Diff: %.4f >= Pool Share Diff: %.4f)", shareDiff, poolShareDiff)
+				go func(sh work.Share) {
+					if s.workManager.ShareChain.AddShares([]work.Share{sh}) > 0 {
+						s.NotifyNewShare()
+					}
+					if sb, err := json.Marshal(sh); err == nil && s.p2pNode != nil {
+						s.p2pNode.BroadcastShare(sb)
+					}
+				}(*newShare)
+			} else {
+				logging.Warnf("Stratum: Share met pool target but failed IsValid: %s", r)
+			}
 		}
-
 		if config.Active.ForceBlockFind {
 			netTarget, _ = new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16)
 		}
-
 		if powInt.Cmp(netTarget) <= 0 {
 			logging.Successf("!!!! BLOCK FOUND !!!! Share meets network target! Submitting to vertcoind...")
 			go func() {
@@ -485,16 +479,10 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		if isStale {
 			reason = "Stale share (DOA)"
 		}
-		powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
-		actualDiff := TargetToDiff(powInt)
-		logging.Warnf("Stratum: Share rejected – %s (Actual Diff: %.6f vs Needed: %.6f)", reason, actualDiff, jobDifficulty)
+		logging.Warnf("Stratum: Share rejected – %s (Actual Diff: %.6f vs Needed: %.6f)", reason, shareDiff, jobDifficulty)
 		c.Mutex.Lock()
 		c.RejectedShares++
 		c.Mutex.Unlock()
-	}
-
-	if isStale && accepted {
-		go s.workManager.ShareChain.AddShares([]work.Share{*newShare})
 	}
 	_ = c.send(JSONRPCResponse{ID: id, Result: accepted && !isStale, Error: nil})
 }
@@ -682,6 +670,8 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 	}
 
 	tipHash := s.workManager.ShareChain.GetTipHash()
+	pDiffJob := s.workManager.ShareChain.GetExpectedShareDifficulty(tipHash)
+	sTarget := work.DiffToTarget(pDiffJob)
 	coinb1, coinb2, err := work.SplitCoinbaseForStratumAtTip(&jobTemplate, payoutAddr, masterJob.WitnessCommitment, s.workManager.ShareChain, tipHash)
 	if err != nil {
 		logging.Errorf("Stratum: Failed to build coinbase for miner %s: %v", payoutAddr, err)
@@ -715,7 +705,7 @@ func (s *StratumServer) sendMiningJob(c *Client, tmpl *work.BlockTemplate, clean
 		WTXIDMerkleRoot:    masterJob.WTXIDMerkleRoot,
 		TXIDMerkleLink:     masterJob.TXIDMerkleLink,
 		CoinbaseMerkleLink: masterJob.CoinbaseMerkleLink,
-		TipHash:            tipHash,
+		TipHash:            tipHash, ShareTarget: sTarget, PoolShareDiff: pDiffJob,
 	}
 
 	if clean && len(c.ActiveJobs) > 20 {
