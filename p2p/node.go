@@ -268,7 +268,7 @@ func (n *Node) periodicSyncLoop() {
 }
 
 func (n *Node) Bootstrap(bootstrapPeers []string) error {
-	if len(bootstrapPeers) > 0 {
+	if len(bootstrapPeers) > 0 && len(n.bootstrapPeers) == 0 {
 		n.bootstrapPeers = bootstrapPeers
 	}
 	if err := n.DHT.Bootstrap(n.ctx); err != nil {
@@ -291,7 +291,7 @@ func (n *Node) Bootstrap(bootstrapPeers []string) error {
 			logging.Warnf("P2P: Bootstrap address '%s' is missing /p2p/<PeerID>: %v", peerAddr, err)
 			continue
 		}
-		if peerinfo.ID == n.Host.ID() || seenPeers[peerinfo.ID] {
+		if peerinfo.ID == n.Host.ID() || seenPeers[peerinfo.ID] || n.Host.Network().Connectedness(peerinfo.ID) == network.Connected {
 			continue
 		}
 		seenPeers[peerinfo.ID] = true
