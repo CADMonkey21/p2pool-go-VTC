@@ -215,7 +215,7 @@ func (sc *ShareChain) getOrderedChainWalkLocked(start *chainhash.Hash, max int) 
 	}
 	for cur != nil && !cur.IsEqual(sc.genesisHash) {
 		h := cur.String()
-		if vis[h] || !sc.verified[h] {
+		if vis[h] {
 			break
 		}
 		s := sc.shares[h]
@@ -731,7 +731,7 @@ func (sc *ShareChain) GetSharesByHashWithParents(hashes []string, parents int) [
 	var out []Share
 	for _, cur := range hashes {
 		for i := 0; i < parents && cur != ""; i++ {
-			if seen[cur] || !sc.verified[cur] || sc.shares[cur] == nil {
+			if seen[cur] || sc.shares[cur] == nil {
 				break
 			}
 			s := sc.shares[cur]

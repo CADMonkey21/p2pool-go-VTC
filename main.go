@@ -278,7 +278,13 @@ func main() {
 	if ppid := config.Active.ParentPID; ppid > 0 {
 		go func() {
 			if p, err := os.FindProcess(ppid); err == nil {
-				_, _ = p.Wait()
+				if _, err := p.Wait(); err == nil {
+					select {
+					case shutdownChan <- syscall.SIGTERM:
+					default:
+					}
+					return
+				}
 			}
 			for os.Getppid() == ppid {
 				time.Sleep(2 * time.Second)

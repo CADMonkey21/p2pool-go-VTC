@@ -113,6 +113,9 @@ func NewClient(cfg config.Config) *Client {
 
 // Call performs a JSON-RPC call.
 func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error) {
+	return c.callInternal(method, params, false)
+}
+func (c *Client) callInternal(method string, params []interface{}, retry401 bool) (*RPCResponse, error) {
 	request := RPCRequest{
 		Method:  method,
 		Params:  params,
@@ -153,8 +156,8 @@ func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error)
 	}
 
 	// Catch HTTP errors before trying to parse JSON
-	if resp.StatusCode == 401 && c.loadCookie() {
-		return c.Call(method, params)
+	if resp.StatusCode == 401 && !retry401 && c.loadCookie() {
+		return c.callInternal(method, params, true)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP Error %d: %s (Check your rpcuser/rpcpass and rpcallowip)", resp.StatusCode, string(body))
