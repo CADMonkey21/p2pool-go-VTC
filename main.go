@@ -188,16 +188,18 @@ func main() {
 	workManager.OnTemplateBroadcast = p2pNode.BroadcastTemplate
 	workManager.RelayBlockHexFunc = p2pNode.RelaySolvedBlockHex
 	p2pNode.GetTemplateFunc = workManager.GetLatestTemplateJSON
-	p2pNode.OnTemplateFunc = func(b []byte) { workManager.ApplyRemoteTemplateJSON(b) }
 	p2pNode.OnRawBlockFunc = workManager.SubmitRawBlockHex
 	if config.Active.LightMode {
+		p2pNode.OnTemplateFunc = workManager.ApplyRemoteTemplateJSON
 		logging.Infof("Running in daemon-less LIGHT MODE (receiving block templates via P2P)")
 		go func() {
 			for {
-				time.Sleep(3 * time.Second)
 				if workManager.GetLatestTemplate() == nil {
-					p2pNode.PullTemplateFromPeers()
+					time.Sleep(3 * time.Second)
+				} else {
+					time.Sleep(30 * time.Second)
 				}
+				p2pNode.PullTemplateFromPeers()
 			}
 		}()
 	}
@@ -258,7 +260,7 @@ func main() {
 		}
 	}()
 
-	addr := fmt.Sprintf(":%d", config.Active.StratumPort)
+	addr := fmt.Sprintf("%s:%d", config.Active.StratumBind, config.Active.StratumPort)
 	baseListener, err := net.Listen("tcp", addr)
 	if err != nil {
 		logging.Fatalf("MAIN: Unable to listen on %s: %v", addr, err)
@@ -272,7 +274,34 @@ func main() {
 	apiHandler := web.NewDashboard(workManager, p2pNode, stratumSrv, startTime)
 
 	mux.Handle("/api/stats", apiHandler)
+	if ppid := config.Active.ParentPID; ppid > 0 {
+		go func() {
+			for {
+				time.Sleep(2 * time.Second)
+				if os.Getppid() != ppid {
+					select {
+					case shutdownChan <- syscall.SIGTERM:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
 	mux.HandleFunc("/api/status", apiHandler.ServeStatus)
+	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		h, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if r.Method != "POST" || (h != "127.0.0.1" && h != "::1") || (config.Active.ShutdownToken != "" && r.Header.Get("X-Shutdown-Token") != config.Active.ShutdownToken) {
+			http.Error(w, "forbidden", 403)
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+		select {
+		case shutdownChan <- syscall.SIGTERM:
+		default:
+		}
+	})
 	mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 
 	httpSrv := &http.Server{

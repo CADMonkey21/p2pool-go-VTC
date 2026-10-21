@@ -388,12 +388,24 @@ func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	d.workManager.TemplateMutex.Unlock()
 
-	ready := hasTemplate && (config.Active.SoloMode || peerCount > 0 || stats.SharesTotal > 0)
+	synced := d.workManager.IsSynced()
+	chainReady := config.Active.SoloMode || peerCount > 0 || stats.SharesTotal > 0
+	ready := synced && hasTemplate && chainReady
+	state := "ready"
+	if !hasTemplate && !config.Active.LightMode {
+		state = "waiting_rpc"
+	} else if !hasTemplate {
+		state = "waiting_template"
+	} else if !ready {
+		state = "syncing_sharechain"
+	}
 
 	resp := map[string]interface{}{
 		"ready":          ready,
+		"state":          state,
+		"version":        config.Version,
 		"has_template":   hasTemplate,
-		"synced":         ready,
+		"synced":         synced,
 		"peers":          peerCount,
 		"shares_total":   stats.SharesTotal,
 		"height":         currentHeight,

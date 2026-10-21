@@ -343,6 +343,25 @@ func (b *ScriptBuilder) Script() []byte {
 	return b.script
 }
 
+func VerifyShareMetadata(s *Share) (bool, string) {
+	if s == nil || len(s.ShareInfo.ShareData.CoinBase) == 0 {
+		return false, "empty coinbase"
+	}
+	if s.ShareInfo.Timestamp != int32(s.MinHeader.Timestamp) {
+		return false, "share timestamp mismatch"
+	}
+	var tx wire.MsgTx
+	if tx.Deserialize(bytes.NewReader(s.ShareInfo.ShareData.CoinBase)) != nil && tx.DeserializeNoWitness(bytes.NewReader(s.ShareInfo.ShareData.CoinBase)) != nil {
+		return false, "invalid coinbase tx"
+	}
+	em := ComputeShareMetadataCommitment(s.Type, s.ShareInfo.ShareData.PreviousShareHash, s.Target, s.ShareInfo.ShareData.PubKeyHashVersion, s.ShareInfo.ShareData.PubKeyHash, s.ShareInfo.ShareData.Subsidy, s.ShareInfo.ShareData.Donation, s.ShareInfo.ShareData.StaleInfo, s.ShareInfo.AbsHeight)
+	for _, o := range tx.TxOut {
+		if o.Value == 0 && bytes.Contains(o.PkScript, em) {
+			return true, ""
+		}
+	}
+	return false, "metadata commitment mismatch"
+}
 func VerifyShareCoinbase(s *Share, sc *ShareChain) (bool, string) {
 	if s == nil || len(s.ShareInfo.ShareData.CoinBase) == 0 {
 		return false, "empty coinbase"

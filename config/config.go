@@ -2,11 +2,14 @@ package config
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"gopkg.in/yaml.v3"
 )
+
+const Version = "v1.1.0"
 
 type VardiffConfig struct {
 	TargetTime   float64 `yaml:"targetTime"`
@@ -36,6 +39,10 @@ type Config struct {
 	ForceBlockFind  bool          `yaml:"forceBlockFind"`
 	DataDir         string        `yaml:"datadir"`
 	LightMode       bool          `yaml:"light"`
+	StratumBind     string        `yaml:"stratumBind"`
+	RPCCookieFile   string        `yaml:"rpcCookieFile"`
+	ParentPID       int           `yaml:"parentPid"`
+	ShutdownToken   string        `yaml:"shutdownToken"`
 }
 
 var Active Config
@@ -56,9 +63,18 @@ func LoadConfig() {
 	logLevel := flag.String("loglevel", "", "Set logging level (debug, info, warn, error)")
 	lightMode := flag.Bool("light", false, "Run in daemon-less light mode without local vertcoind")
 	soloMode := flag.Bool("solo", false, "Enable solo mode to bypass P2P sync for the first node")
+	showVer := flag.Bool("version", false, "Print version and exit")
+	bindAddr := flag.String("bind", "", "Bind address for Stratum & Web UI (default: 0.0.0.0)")
+	cookieFile := flag.String("cookie", "", "Path to Vertcoin Core .cookie file")
+	parentPID := flag.Int("parentpid", 0, "Exit cleanly when this parent PID terminates")
+	shutdownTok := flag.String("shutdown-token", "", "Token for loopback POST /api/shutdown")
 	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
 
 	flag.Parse()
+	if *showVer {
+		fmt.Println("p2pool-go-vtc " + Version)
+		os.Exit(0)
+	}
 
 	// Set sensible defaults so headless launches (e.g., One-Click Miner) work even without config.yaml
 	Active = Config{
@@ -153,5 +169,17 @@ func LoadConfig() {
 	}
 	if *forceBlockFind {
 		Active.ForceBlockFind = true
+	}
+	if *bindAddr != "" {
+		Active.StratumBind = *bindAddr
+	}
+	if *cookieFile != "" {
+		Active.RPCCookieFile = *cookieFile
+	}
+	if *parentPID > 0 {
+		Active.ParentPID = *parentPID
+	}
+	if *shutdownTok != "" {
+		Active.ShutdownToken = *shutdownTok
 	}
 }

@@ -45,6 +45,7 @@ type ShareChain struct {
 	cumWork           map[string]float64
 	chainLen          map[string]int
 	mutex             sync.RWMutex
+	commitMu          sync.Mutex
 	rpcClient         *rpc.Client
 	genesisHash       *chainhash.Hash
 	TipHash           *chainhash.Hash
@@ -164,6 +165,8 @@ func (sc *ShareChain) Load() error {
 }
 
 func (sc *ShareChain) Commit() error {
+	sc.commitMu.Lock()
+	defer sc.commitMu.Unlock()
 	sc.mutex.RLock()
 	sharesToSave := make([]Share, 0, len(sc.shares))
 	for _, s := range sc.shares {
@@ -453,7 +456,11 @@ func (sc *ShareChain) updateStats() {
 		totalPoolHashrate += nm.Hashrate
 	}
 
-	info, err := sc.rpcClient.GetMiningInfo()
+	var info *rpc.MiningInfo
+	err := fmt.Errorf("light")
+	if !config.Active.LightMode && sc.rpcClient != nil {
+		info, err = sc.rpcClient.GetMiningInfo()
+	}
 	netHash := 0.0
 	netDiff := 0.0
 	if err == nil {
@@ -626,9 +633,9 @@ func (sc *ShareChain) verifyPending() int {
 	for {
 		sc.mutex.RLock()
 		var pend []*Share
-		for h, s := range sc.shares {
-			if !sc.verified[h] && s != nil && s.Hash != nil {
-				pend = append(pend, s)
+		for h, sh := range sc.shares {
+			if !sc.verified[h] && sh != nil && sh.Hash != nil {
+				pend = append(pend, sh)
 			}
 		}
 		sc.mutex.RUnlock()
@@ -637,26 +644,20 @@ func (sc *ShareChain) verifyPending() int {
 		}
 		sort.Slice(pend, func(i, j int) bool { return pend[i].ShareInfo.Timestamp < pend[j].ShareInfo.Timestamp })
 		prog := false
-		for _, s := range pend {
-			h, p := s.Hash.String(), s.ShareInfo.ShareData.PreviousShareHash
+		for _, sh := range pend {
+			h, p := sh.Hash.String(), sh.ShareInfo.ShareData.PreviousShareHash
 			sc.mutex.RLock()
-			hasP := p != nil && !p.IsEqual(sc.genesisHash) && sc.shares[p.String()] != nil
-			pVer := p != nil && sc.verified[p.String()]
-			pLen := 0
-			if pVer {
-				pLen = sc.chainLen[p.String()]
-			}
+			w := sc.getOrderedChainWalkLocked(p, DefaultPPLNSWindow)
+			hLen := len(w)
+			gen := p == nil || p.IsEqual(sc.genesisHash) || (hLen > 0 && (w[hLen-1].ShareInfo.ShareData.PreviousShareHash == nil || w[hLen-1].ShareInfo.ShareData.PreviousShareHash.IsEqual(sc.genesisHash)))
+			pReady := gen || hLen >= TargetLookbehind || (p != nil && sc.verified[p.String()])
 			sc.mutex.RUnlock()
-			if hasP && !pVer {
+			if !pReady {
 				continue
 			}
-			post := int64(s.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || s.Type >= ShareVersionV2
-			if post && s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
-				if !pVer || pLen < TargetLookbehind {
-					if int64(s.ShareInfo.Timestamp) > time.Now().Unix()-1800 {
-						continue
-					}
-				} else if !sc.checkConsensus(s, p, pLen) {
+			post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || sh.Type >= ShareVersionV2
+			if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+				if !sc.checkConsensus(sh, p, hLen) {
 					sc.mutex.Lock()
 					delete(sc.shares, h)
 					sc.mutex.Unlock()
@@ -664,7 +665,7 @@ func (sc *ShareChain) verifyPending() int {
 				}
 			}
 			sc.mutex.Lock()
-			sc.markVerifiedLocked(s)
+			sc.markVerifiedLocked(sh)
 			sc.mutex.Unlock()
 			vn++
 			prog = true

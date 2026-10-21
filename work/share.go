@@ -169,6 +169,14 @@ func (s *Share) IsValid() (bool, string) {
 		return false, "target is zero or negative"
 	}
 
+	if int64(s.MinHeader.Timestamp) >= V2MandatoryActivationTime && s.Type < ShareVersionV2 {
+		return false, "outdated share version"
+	}
+	if s.Type >= ShareVersionV2 {
+		if ok, r := VerifyShareMetadata(s); !ok {
+			return false, r
+		}
+	}
 	hashInt := new(big.Int).SetBytes(s.POWHash.CloneBytes())
 	if hashInt.Cmp(s.Target) <= 0 {
 		return true, ""

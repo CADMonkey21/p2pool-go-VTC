@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ const SyncProtocolID = protocol.ID("/p2pool/sync/1.0.0")
 const ShareReqProtocolID = protocol.ID("/p2pool/sharereq/1.0.0")
 const TemplateProtocolID = protocol.ID("/p2pool/template/1.0.0")
 const BlockRelayProtocolID = protocol.ID("/p2pool/blockrelay/1.0.0")
+const PeerExProtocolID = protocol.ID("/p2pool/peers/1.0.0")
 
 type ShareReq struct {
 	Hashes  []string `json:"hashes"`
@@ -55,8 +57,8 @@ type Node struct {
 	OnSyncDataFunc      func(sharesJSON []byte, blocksJSON []byte)
 	GetSharesByHashFunc func(hashes []string, parents int) []byte
 	GetTemplateFunc     func() []byte
-	OnTemplateFunc      func(tmplJSON []byte)
-	OnRawBlockFunc      func(rawHex string)
+	OnTemplateFunc      func(peerID string, tmplJSON []byte)
+	OnRawBlockFunc      func(peerID string, rawHex string) bool
 }
 
 type mdnsNotifee struct {
@@ -158,6 +160,7 @@ func NewNode(listenPort int) (*Node, error) {
 	h.SetStreamHandler(ShareReqProtocolID, node.handleShareReqStream)
 	h.SetStreamHandler(TemplateProtocolID, node.handleTemplateStream)
 	h.SetStreamHandler(BlockRelayProtocolID, node.handleBlockRelayStream)
+	h.SetStreamHandler(PeerExProtocolID, node.handlePeerExStream)
 
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
@@ -258,6 +261,7 @@ func (n *Node) periodicSyncLoop() {
 			}
 			for _, pid := range peers {
 				go n.SyncWithPeer(pid)
+				go n.ExchangePeers(pid)
 			}
 		}
 	}
@@ -379,14 +383,13 @@ func (n *Node) handleTemplateStream(s network.Stream) {
 	_ = s.SetDeadline(time.Now().Add(15 * time.Second))
 	var raw json.RawMessage
 	if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 && n.OnTemplateFunc != nil {
-		n.OnTemplateFunc(raw)
+		n.OnTemplateFunc(s.Conn().RemotePeer().String(), raw)
 	} else if n.GetTemplateFunc != nil {
 		if b := n.GetTemplateFunc(); len(b) > 0 {
 			_, _ = s.Write(b)
 		}
 	}
 }
-
 func (n *Node) BroadcastTemplate(b []byte) {
 	for _, pid := range n.Host.Network().Peers() {
 		go func(p peer.ID) {
@@ -400,7 +403,6 @@ func (n *Node) BroadcastTemplate(b []byte) {
 		}(pid)
 	}
 }
-
 func (n *Node) PullTemplateFromPeers() {
 	if n.OnTemplateFunc == nil {
 		return
@@ -416,35 +418,76 @@ func (n *Node) PullTemplateFromPeers() {
 		_ = s.CloseWrite()
 		var raw json.RawMessage
 		if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 {
-			n.OnTemplateFunc(raw)
-			s.Close()
-			cancel()
-			return
+			n.OnTemplateFunc(pid.String(), raw)
 		}
 		s.Close()
 		cancel()
 	}
 }
-
 func (n *Node) handleBlockRelayStream(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(30 * time.Second))
 	var hexStr string
 	if json.NewDecoder(s).Decode(&hexStr) == nil && len(hexStr) > 0 && n.OnRawBlockFunc != nil {
-		n.OnRawBlockFunc(hexStr)
+		if n.OnRawBlockFunc(s.Conn().RemotePeer().String(), hexStr) {
+			_, _ = s.Write([]byte("OK"))
+		}
 	}
 }
-
-func (n *Node) RelaySolvedBlockHex(hexStr string) {
-	for _, pid := range n.Host.Network().Peers() {
+func (n *Node) RelaySolvedBlockHex(hexStr string) int {
+	peers := n.Host.Network().Peers()
+	sent := 0
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, pid := range peers {
+		wg.Add(1)
 		go func(p peer.ID) {
+			defer wg.Done()
 			ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
 			defer cancel()
 			if s, err := n.Host.NewStream(ctx, p, BlockRelayProtocolID); err == nil {
-				_ = json.NewEncoder(s).Encode(hexStr)
+				if json.NewEncoder(s).Encode(hexStr) == nil {
+					mu.Lock()
+					sent++
+					mu.Unlock()
+				}
 				_ = s.CloseWrite()
 				s.Close()
 			}
 		}(pid)
+	}
+	wg.Wait()
+	return sent
+}
+func (n *Node) peerAddrs() []string {
+	var out []string
+	for _, c := range n.Host.Network().Conns() {
+		a := c.RemoteMultiaddr().String()
+		if strings.HasPrefix(a, "/ip4/127.") || strings.HasPrefix(a, "/ip4/192.168.") || strings.HasPrefix(a, "/ip4/10.") {
+			continue
+		}
+		if i := strings.Index(a, "/tcp/"); i > 0 {
+			a = a[:i] + "/tcp/9348"
+		}
+		out = append(out, fmt.Sprintf("%s/p2p/%s", a, c.RemotePeer().String()))
+	}
+	return out
+}
+func (n *Node) handlePeerExStream(s network.Stream) {
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = json.NewEncoder(s).Encode(n.peerAddrs())
+}
+func (n *Node) ExchangePeers(pid peer.ID) {
+	ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+	defer cancel()
+	s, err := n.Host.NewStream(ctx, pid, PeerExProtocolID)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+	var addrs []string
+	if json.NewDecoder(s).Decode(&addrs) == nil && len(addrs) > 0 {
+		go n.Bootstrap(addrs)
 	}
 }

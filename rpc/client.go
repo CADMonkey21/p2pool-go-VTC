@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 )
@@ -41,6 +45,33 @@ type Client struct {
 	endpoint   string
 	username   string
 	password   string
+	cookieFile string
+	mu         sync.Mutex
+}
+
+func (c *Client) loadCookie() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p := c.cookieFile
+	if p == "" {
+		h, _ := os.UserHomeDir()
+		for _, d := range []string{filepath.Join(h, ".vertcoin"), filepath.Join(os.Getenv("APPDATA"), "Vertcoin")} {
+			if _, e := os.Stat(filepath.Join(d, ".cookie")); e == nil {
+				p = filepath.Join(d, ".cookie")
+				break
+			}
+		}
+	}
+	b, e := os.ReadFile(p)
+	if e != nil {
+		return false
+	}
+	kv := strings.SplitN(strings.TrimSpace(string(b)), ":", 2)
+	if len(kv) == 2 {
+		c.username, c.password, c.cookieFile = kv[0], kv[1], p
+		return true
+	}
+	return false
 }
 
 // New BlockHeaderInfo struct for the getblockheader RPC response
@@ -76,6 +107,7 @@ func NewClient(cfg config.Config) *Client {
 		endpoint:   endpoint,
 		username:   cfg.RPCUser,
 		password:   cfg.RPCPass,
+		cookieFile: cfg.RPCCookieFile,
 	}
 }
 
@@ -98,11 +130,16 @@ func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error)
 		return nil, err
 	}
 
+	if c.password == "" || c.cookieFile != "" {
+		c.loadCookie()
+	}
+	c.mu.Lock()
 	req.SetBasicAuth(c.username, c.password)
+	c.mu.Unlock()
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	// [NEW] Tells Go to close the connection after the request, preventing Keep-Alive EOF errors
-	req.Close = true 
+	req.Close = true
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -116,6 +153,9 @@ func (c *Client) Call(method string, params []interface{}) (*RPCResponse, error)
 	}
 
 	// Catch HTTP errors before trying to parse JSON
+	if resp.StatusCode == 401 && c.loadCookie() {
+		return c.Call(method, params)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP Error %d: %s (Check your rpcuser/rpcpass and rpcallowip)", resp.StatusCode, string(body))
 	}
