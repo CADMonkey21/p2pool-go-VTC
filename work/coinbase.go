@@ -91,20 +91,7 @@ func CalculatePPLNSOutputsAtTip(totalReward int64, defaultMinerAddr string, sc *
 					if s == nil || len(s.ShareInfo.ShareData.PubKeyHash) == 0 || s.Target == nil || s.Target.Sign() <= 0 {
 						continue
 					}
-					var addr string
-					if s.ShareInfo.ShareData.PubKeyHashVersion == 0x00 {
-						converted, err := bech32.ConvertBits(s.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
-						if err != nil {
-							continue
-						}
-						hrp := "vtc"
-						if config.Active.Testnet {
-							hrp = "tvtc"
-						}
-						addr, _ = bech32.Encode(hrp, append([]byte{s.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
-					} else {
-						addr = base58.CheckEncode(s.ShareInfo.ShareData.PubKeyHash, s.ShareInfo.ShareData.PubKeyHashVersion)
-					}
+					addr := DecodeShareAddress(s)
 					if addr == "" {
 						continue
 					}

@@ -115,6 +115,7 @@ func (sc *ShareChain) AddShares(newShares []Share) int {
 			continue
 		}
 		cp := sh
+		cp.decodedAddr = DecodeShareAddress(&cp)
 		sc.shares[h] = &cp
 	}
 	sc.mutex.Unlock()
@@ -365,6 +366,9 @@ func DecodeShareAddress(s *Share) string {
 	if s == nil || len(s.ShareInfo.ShareData.PubKeyHash) == 0 {
 		return ""
 	}
+	if s.decodedAddr != "" {
+		return s.decodedAddr
+	}
 	if s.ShareInfo.ShareData.PubKeyHashVersion == 0x00 {
 		converted, err := bech32.ConvertBits(s.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
 		if err != nil {
@@ -575,6 +579,7 @@ func (sc *ShareChain) loadTrusted(fs []Share) {
 		}
 		if sh.Hash != nil {
 			cp := sh
+			cp.decodedAddr = DecodeShareAddress(&cp)
 			h := sh.Hash.String()
 			sc.shares[h] = &cp
 			sc.verified[h] = true
@@ -646,19 +651,30 @@ func (sc *ShareChain) verifyPending() int {
 	})
 	sc.mutex.Unlock()
 	vn := 0
-	for _, sh := range pend {
+	for i, sh := range pend {
 		h, p := sh.Hash.String(), sh.ShareInfo.ShareData.PreviousShareHash
 		sc.mutex.RLock()
+		if sc.verified[h] {
+			sc.mutex.RUnlock()
+			continue
+		}
 		gen := p == nil || p.IsEqual(sc.genesisHash)
 		pVer := !gen && sc.verified[p.String()]
-		w := sc.getOrderedChainWalkLocked(p, DefaultPPLNSWindow)
-		hLen := len(w)
+		pIn := !gen && sc.shares[p.String()] != nil
+		hLen := 0
+		if pIn {
+			hLen = sc.chainLen[p.String()]
+		}
 		sc.mutex.RUnlock()
 		if !gen && !pVer && hLen < TargetLookbehind {
 			continue
 		}
 		post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || sh.Type >= ShareVersionV2
-		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, hLen) {
+		checkLen := hLen
+		if i < len(pend)-1 {
+			checkLen = TargetLookbehind
+		}
+		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, checkLen) {
 			sc.mutex.Lock()
 			delete(sc.shares, h)
 			sc.mutex.Unlock()

@@ -30,6 +30,7 @@ type Share struct {
 	Hash           *chainhash.Hash
 	POWHash        *chainhash.Hash
 	Target         *big.Int
+	decodedAddr    string
 }
 
 type MerkleLink struct {
