@@ -653,12 +653,13 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		fees = sub
 	}
 	wm.TemplateMutex.Lock()
-	defer wm.TemplateMutex.Unlock()
 	if wm.peerScores[peerID] < -2 {
+		wm.TemplateMutex.Unlock()
 		return false
 	}
 	if t.CoinbaseValue <= 0 || t.CoinbaseValue > sub+fees {
 		wm.peerScores[peerID]--
+		wm.TemplateMutex.Unlock()
 		return false
 	}
 	th := txSetHash(t.Transactions)
@@ -676,6 +677,7 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		curH, curPrev, curTH = 0, "", ""
 	}
 	if curH > 0 && (t.Height < curH || t.Height > curH+100) {
+		wm.TemplateMutex.Unlock()
 		return false
 	}
 	agr := 0
@@ -694,15 +696,29 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		}
 	}
 	if agr < 2 || weight < 2 {
+		wm.TemplateMutex.Unlock()
 		return false
 	}
 	wm.lastAgreedTime = time.Now()
+	prevChanged := t.PreviousBlockHash != curPrev
+	txChanged := th != curTH
+	if prevChanged || txChanged {
+		if prevChanged {
+			logging.Infof("Light Mode: Accepted P2P template for height %d", t.Height)
+			wm.Templates = make(map[string]*BlockTemplate)
+		}
+		wm.Templates[t.PreviousBlockHash] = &t
+	}
+	wm.TemplateMutex.Unlock()
+
 	wm.ShareChain.SetCurrentBlockTarget(t.PreviousBlockHash, t.Bits)
 	wm.lastBlockUpdateMux.Lock()
 	wm.lastBlockUpdate = time.Now()
 	wm.lastBlockUpdateMux.Unlock()
+
 	wm.PendingMutex.Lock()
 	chg := false
+	var toQuery []string
 	for _, pb := range wm.PendingBlocks {
 		if pb.BlockHash == nil {
 			continue
@@ -714,13 +730,8 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 			logging.Successf("Light Mode: Block %s confirmed on network!", bhStr)
 		}
 		if pb.State == StatePending && !pb.Confirmed && t.Height-int64(pb.BlockHeight) >= 1 && wm.CheckBlockConfirmationsFunc != nil {
-			if confs := wm.CheckBlockConfirmationsFunc(bhStr); confs > 0 {
-				pb.Confirmed = true
-				chg = true
-				logging.Successf("Light Mode: Block %s confirmed via full-node header check (%d confs)!", bhStr, confs)
-			}
-		}
-		if pb.State == StatePending && t.Height-int64(pb.BlockHeight) >= 100 {
+			toQuery = append(toQuery, bhStr)
+		} else if pb.State == StatePending && t.Height-int64(pb.BlockHeight) >= 100 {
 			if pb.Confirmed {
 				pb.State = StatePaid
 			} else {
@@ -736,12 +747,45 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		wm.saveBlocksLocked()
 	}
 	wm.PendingMutex.Unlock()
-	if t.PreviousBlockHash != curPrev || th != curTH {
-		if t.PreviousBlockHash != curPrev {
-			logging.Infof("Light Mode: Accepted P2P template for height %d", t.Height)
-			wm.Templates = make(map[string]*BlockTemplate)
-		}
-		wm.Templates[t.PreviousBlockHash] = &t
+
+	if len(toQuery) > 0 && wm.CheckBlockConfirmationsFunc != nil {
+		go func(height int64, hashes []string) {
+			results := make(map[string]int, len(hashes))
+			for _, h := range hashes {
+				results[h] = wm.CheckBlockConfirmationsFunc(h)
+			}
+			wm.PendingMutex.Lock()
+			defer wm.PendingMutex.Unlock()
+			updated := false
+			for _, pb := range wm.PendingBlocks {
+				if pb.BlockHash == nil || pb.State != StatePending {
+					continue
+				}
+				bhStr := pb.BlockHash.String()
+				if confs, ok := results[bhStr]; ok && confs > 0 && !pb.Confirmed {
+					pb.Confirmed = true
+					updated = true
+					logging.Successf("Light Mode: Block %s confirmed via full-node header check (%d confs)!", bhStr, confs)
+				}
+				if height-int64(pb.BlockHeight) >= 100 {
+					if pb.Confirmed {
+						pb.State = StatePaid
+					} else {
+						pb.State = StateOrphan
+					}
+					updated = true
+				} else if !pb.Confirmed && height-int64(pb.BlockHeight) >= 6 {
+					pb.State = StateOrphan
+					updated = true
+				}
+			}
+			if updated {
+				wm.saveBlocksLocked()
+			}
+		}(t.Height, toQuery)
+	}
+
+	if prevChanged || txChanged {
 		select {
 		case wm.NewBlockChan <- &t:
 		default:

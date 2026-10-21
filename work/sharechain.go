@@ -229,30 +229,59 @@ const (
 	MaxPPLNSWindowAgeSecs = 36 * 3600
 )
 
+func (s *Share) getTargetDiff() float64 {
+	if s == nil || s.Target == nil || s.Target.Sign() <= 0 {
+		return 0
+	}
+	if s.targetDiff > 0 {
+		return s.targetDiff
+	}
+	d := TargetToDiff(s.Target)
+	s.targetDiff = d
+	return d
+}
+
+func (s *Share) getPrevKey() string {
+	if s.prevKey != "" {
+		return s.prevKey
+	}
+	if s.ShareInfo.ShareData.PreviousShareHash != nil {
+		s.prevKey = s.ShareInfo.ShareData.PreviousShareHash.String()
+	}
+	return s.prevKey
+}
+
 func (sc *ShareChain) getOrderedChainWalkLocked(start *chainhash.Hash, max int) []*Share {
-	vis := make(map[string]bool)
-	res := make([]*Share, 0, 256)
+	capHint := max
+	if capHint <= 0 || capHint > 512 {
+		capHint = 512
+	}
+	res := make([]*Share, 0, capHint)
 	cur := start
 	if cur == nil || cur.IsEqual(sc.genesisHash) {
 		cur = sc.TipHash
 	}
-	for cur != nil && !cur.IsEqual(sc.genesisHash) {
-		h := cur.String()
-		if vis[h] {
-			break
-		}
+	if cur == nil || cur.IsEqual(sc.genesisHash) {
+		return res
+	}
+	h := cur.String()
+	maxSteps := len(sc.shares) + 1
+	for steps := 0; steps < maxSteps && h != ""; steps++ {
 		s := sc.shares[h]
 		if s == nil {
 			break
 		}
-		vis[h] = true
 		if s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
 			res = append(res, s)
 			if max > 0 && len(res) >= max {
 				return res
 			}
 		}
-		cur = s.ShareInfo.ShareData.PreviousShareHash
+		p := s.ShareInfo.ShareData.PreviousShareHash
+		if p == nil || p.IsEqual(sc.genesisHash) {
+			break
+		}
+		h = s.getPrevKey()
 	}
 	return res
 }
@@ -268,7 +297,7 @@ func (sc *ShareChain) getExpectedShareDifficultyLocked(prev *chainhash.Hash) flo
 	}
 	var tw float64
 	for i := 0; i < TargetLookbehind-1; i++ {
-		d := TargetToDiff(w[i].Target)
+		d := w[i].getTargetDiff()
 		if d < MinPoolShareDiff {
 			d = MinPoolShareDiff
 		}
@@ -278,7 +307,7 @@ func (sc *ShareChain) getExpectedShareDifficultyLocked(prev *chainhash.Hash) flo
 	if dt <= 1.0 {
 		dt = 1.0
 	}
-	pDiff := TargetToDiff(w[0].Target)
+	pDiff := w[0].getTargetDiff()
 	if pDiff < MinPoolShareDiff {
 		pDiff = MinPoolShareDiff
 	}
@@ -302,62 +331,97 @@ func (sc *ShareChain) GetEffectiveShareDiff(s *Share) float64 {
 	if s == nil || s.Target == nil || s.Target.Sign() <= 0 {
 		return 0
 	}
-	td := TargetToDiff(s.Target)
+	if s.effDiffReady {
+		return s.effDiff
+	}
+	td := s.getTargetDiff()
 	if td <= 0 {
+		s.effDiff = 0
+		s.effDiffReady = true
 		return 0
 	}
 	if s.POWHash != nil {
 		p := new(big.Int).SetBytes(s.POWHash.CloneBytes())
 		if TargetToDiff(p) < td*0.999 {
+			s.effDiff = 0
+			s.effDiffReady = true
 			return 0
 		}
 	}
 	if td > 16.0 {
 		td = 16.0
 	}
+	s.effDiff = td
+	s.effDiffReady = true
 	return td
 }
 func (sc *ShareChain) GetSharesForPayout(tip *chainhash.Hash, win int) ([]*Share, error) {
 	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
 	if win <= 0 {
 		win = DefaultPPLNSWindow
 	}
-	all := sc.getOrderedChainWalkLocked(tip, win)
-	pDiff := sc.getExpectedShareDifficultyLocked(tip)
-	sc.mutex.RUnlock()
-	if len(all) == 0 {
-		return all, nil
+	cur := tip
+	if cur == nil || cur.IsEqual(sc.genesisHash) {
+		cur = sc.TipHash
 	}
-	capW := float64(win) * pDiff
-	if all[0].MinHeader.Bits != 0 {
-		bd := TargetToDiff(blockchain.CompactToBig(all[0].MinHeader.Bits))
-		if bd > 0 && capW > bd*12.0 {
-			capW = bd * 12.0
-		}
+	if cur == nil || cur.IsEqual(sc.genesisHash) {
+		return nil, nil
 	}
-	cut := int64(all[0].ShareInfo.Timestamp) - MaxPPLNSWindowAgeSecs
+	pDiff := sc.getExpectedShareDifficultyLocked(cur)
+	h := cur.String()
+	maxSteps := len(sc.shares) + 1
+	var first *Share
+	var capW float64
+	var cut int64
 	maxD := pDiff * 4.0
 	if maxD < 16.0 {
 		maxD = 16.0
 	}
-	sel := make([]*Share, 0, len(all))
+	sel := make([]*Share, 0, 512)
 	var acc float64
-	for _, s := range all {
-		if int64(s.ShareInfo.Timestamp) < cut {
+	validCount := 0
+	for steps := 0; steps < maxSteps && h != ""; steps++ {
+		s := sc.shares[h]
+		if s == nil {
 			break
 		}
-		d := sc.GetEffectiveShareDiff(s)
-		if d <= 0 {
-			continue
+		if s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+			if first == nil {
+				first = s
+				capW = float64(win) * pDiff
+				if first.MinHeader.Bits != 0 {
+					bd := TargetToDiff(blockchain.CompactToBig(first.MinHeader.Bits))
+					if bd > 0 && capW > bd*12.0 {
+						capW = bd * 12.0
+					}
+				}
+				cut = int64(first.ShareInfo.Timestamp) - MaxPPLNSWindowAgeSecs
+			}
+			validCount++
+			if int64(s.ShareInfo.Timestamp) < cut {
+				break
+			}
+			d := sc.GetEffectiveShareDiff(s)
+			if d > 0 {
+				if d > maxD {
+					d = maxD
+				}
+				sel = append(sel, s)
+				acc += d
+				if acc >= capW {
+					break
+				}
+			}
+			if validCount >= win {
+				break
+			}
 		}
-		if d > maxD {
-			d = maxD
-		}
-		sel = append(sel, s)
-		acc += d
-		if acc >= capW {
+		p := s.ShareInfo.ShareData.PreviousShareHash
+		if p == nil || p.IsEqual(sc.genesisHash) {
 			break
 		}
+		h = s.getPrevKey()
 	}
 	return sel, nil
 }
@@ -379,9 +443,12 @@ func DecodeShareAddress(s *Share) string {
 			hrp = "tvtc"
 		}
 		addr, _ := bech32.Encode(hrp, append([]byte{s.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
+		s.decodedAddr = addr
 		return addr
 	}
-	return base58.CheckEncode(s.ShareInfo.ShareData.PubKeyHash, s.ShareInfo.ShareData.PubKeyHashVersion)
+	addr := base58.CheckEncode(s.ShareInfo.ShareData.PubKeyHash, s.ShareInfo.ShareData.PubKeyHashVersion)
+	s.decodedAddr = addr
+	return addr
 }
 
 func (sc *ShareChain) GetNetworkMiners(window time.Duration) map[string]*NetworkMinerStats {
@@ -683,12 +750,9 @@ func (sc *ShareChain) verifyPending() int {
 		if !gen && !pVer && hLen < TargetLookbehind {
 			continue
 		}
+		_ = i
 		post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || sh.Type >= ShareVersionV2
-		checkLen := hLen
-		if i < len(pend)-1 {
-			checkLen = TargetLookbehind
-		}
-		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, checkLen) {
+		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, hLen) {
 			sc.mutex.Lock()
 			delete(sc.shares, h)
 			sc.mutex.Unlock()

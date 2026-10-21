@@ -31,6 +31,10 @@ type Share struct {
 	POWHash        *chainhash.Hash
 	Target         *big.Int
 	decodedAddr    string
+	targetDiff     float64
+	effDiff        float64
+	effDiffReady   bool
+	prevKey        string
 }
 
 type MerkleLink struct {
