@@ -32,6 +32,19 @@ An official cloud-hosted bootstrap seed node and public dashboard is live at:
 
 ---
 
+## System Requirements
+
+Because `p2pool-go-VTC` compiles to a native binary with zero Python 2.7 dependencies, it runs on any modern **64-bit (`x86_64` / `arm64`)** Linux, Windows, or macOS system—including Raspberry Pi 4 and Pi 5 running current 64-bit Raspberry Pi OS, Debian, or Ubuntu.
+
+| Component | `-light` Mode (No `vertcoind`) | Full Node (`p2pool-go-VTC` + `vertcoind`) |
+| :--- | :--- | :--- |
+| **OS** | 64-bit Linux, Windows, or macOS | 64-bit Linux, Windows, or macOS |
+| **CPU** | 2+ Cores (Raspberry Pi 4/5 or 1+ vCPU VPS) | 2–4 Cores (Raspberry Pi 4/5 or 2+ vCPU VPS) |
+| **RAM** | **2 GB minimum** (~1.5 GB used with `verthash.dat` in RAM) | **4 GB minimum / 8 GB recommended** (`p2pool` + `vertcoind`) |
+| **Disk** | **4 GB+ free** | **32 GB+ minimum / 64 GB+ SSD recommended** |
+
+---
+
 ## Prerequisites
 
 1. A **synced `vertcoind`** instance with RPC enabled in `vertcoin.conf`.
