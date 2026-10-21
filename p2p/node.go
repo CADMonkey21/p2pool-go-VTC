@@ -361,7 +361,7 @@ func (n *Node) RequestShares(hashes []string, parents int) {
 		return
 	}
 	for _, pid := range n.Host.Network().Peers() {
-		ctx, cancel := context.WithTimeout(n.ctx, 20*time.Second)
+		ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
 		s, err := n.Host.NewStream(ctx, pid, ShareReqProtocolID)
 		if err != nil {
 			cancel()
@@ -370,14 +370,15 @@ func (n *Node) RequestShares(hashes []string, parents int) {
 		_ = json.NewEncoder(s).Encode(ShareReq{Hashes: hashes, Parents: parents})
 		_ = s.CloseWrite()
 		var raw json.RawMessage
-		if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 0 {
-			n.OnSyncDataFunc(raw, nil)
-		}
+		ok := json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4
 		s.Close()
 		cancel()
+		if ok {
+			n.OnSyncDataFunc(raw, nil)
+			return
+		}
 	}
 }
-
 func (n *Node) handleTemplateStream(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(15 * time.Second))

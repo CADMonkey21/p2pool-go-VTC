@@ -392,7 +392,7 @@ func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	chainReady := config.Active.SoloMode || peerCount > 0 || stats.SharesTotal > 0
 	ready := synced && hasTemplate && chainReady
 	state := "ready"
-	if !hasTemplate && !config.Active.LightMode {
+	if !config.Active.LightMode && (!hasTemplate || !d.workManager.IsRPCHealthy()) {
 		state = "waiting_rpc"
 	} else if !hasTemplate {
 		state = "waiting_template"

@@ -36,6 +36,7 @@ type PayoutBlock struct {
 	BlockHeight        int32
 	FoundTime          time.Time
 	State              BlockState
+	Confirmed          bool
 }
 
 type persistedBlock struct {
@@ -44,10 +45,12 @@ type persistedBlock struct {
 	BlockHeight int32      `json:"block_height"`
 	FoundTime   time.Time  `json:"found_time"`
 	State       BlockState `json:"state"`
+	Confirmed   bool       `json:"confirmed,omitempty"`
 }
 
 type peerTmplVote struct {
 	prev   string
+	txHash string
 	bits   string
 	height int64
 	ts     time.Time
@@ -66,7 +69,9 @@ type WorkManager struct {
 	lastBroadcast       time.Time
 	peerTmpl            map[string]peerTmplVote
 	peerScores          map[string]int
-	seenBlocks          map[string]bool
+	seenBlocks          map[string]time.Time
+	lastRPCOk           bool
+	lastAgreedTime      time.Time
 	lastBlockUpdate     time.Time
 	lastBlockUpdateMux  sync.RWMutex
 }
@@ -81,7 +86,7 @@ func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 		ForceNewTemplate: make(chan bool, 1),
 		peerTmpl:         make(map[string]peerTmplVote),
 		peerScores:       make(map[string]int),
-		seenBlocks:       make(map[string]bool),
+		seenBlocks:       make(map[string]time.Time),
 	}
 	wm.LoadBlocks()
 	return wm
@@ -122,6 +127,7 @@ func (wm *WorkManager) LoadBlocks() {
 			BlockHeight:        db.BlockHeight,
 			FoundTime:          db.FoundTime,
 			State:              db.State,
+			Confirmed:          db.Confirmed,
 		})
 	}
 	wm.PendingBlocks = loaded
@@ -224,29 +230,45 @@ func (wm *WorkManager) GetLatestTemplate() *BlockTemplate {
 	return latestTemplate
 }
 
+func txSetHash(txs []BlockTemplateTx) string {
+	h := chainhash.DoubleHashH([]byte(fmt.Sprintf("%d", len(txs))))
+	var buf bytes.Buffer
+	for _, tx := range txs {
+		buf.WriteString(tx.TxID)
+		buf.WriteString(tx.Hash)
+	}
+	return chainhash.DoubleHashH(append(h[:], buf.Bytes()...)).String()
+}
+func (wm *WorkManager) IsRPCHealthy() bool {
+	wm.TemplateMutex.RLock()
+	defer wm.TemplateMutex.RUnlock()
+	return wm.lastRPCOk
+}
 func (wm *WorkManager) fetchBlockTemplate() {
 	if config.Active.LightMode {
 		return
 	}
 	rawTemplate, err := wm.rpcClient.GetBlockTemplate()
 	if err != nil {
+		wm.TemplateMutex.Lock()
+		wm.lastRPCOk = false
+		wm.TemplateMutex.Unlock()
 		logging.Errorf("Error getting block template: %v", err)
 		return
 	}
-
 	var tmpl BlockTemplate
-	err = json.Unmarshal(rawTemplate, &tmpl)
-	if err != nil {
+	if err = json.Unmarshal(rawTemplate, &tmpl); err != nil {
 		logging.Errorf("Error decoding block template: %v", err)
 		return
 	}
-
+	wm.ShareChain.SetCurrentBlockTarget(tmpl.PreviousBlockHash, tmpl.Bits)
 	wm.lastBlockUpdateMux.Lock()
 	wm.lastBlockUpdate = time.Now()
 	wm.lastBlockUpdateMux.Unlock()
 	wm.TemplateMutex.Lock()
+	wm.lastRPCOk = true
 	existing, exists := wm.Templates[tmpl.PreviousBlockHash]
-	txChanged := exists && existing != nil && len(tmpl.Transactions) != len(existing.Transactions)
+	txChanged := exists && existing != nil && txSetHash(tmpl.Transactions) != txSetHash(existing.Transactions)
 	if !exists || txChanged {
 		if !exists {
 			logging.Infof("New block template received for height %d", tmpl.Height)
@@ -266,7 +288,6 @@ func (wm *WorkManager) fetchBlockTemplate() {
 	}
 	wm.TemplateMutex.Unlock()
 }
-
 func (wm *WorkManager) WatchBlockTemplate() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -601,7 +622,13 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 	sub := int64(5000000000) >> (uint(t.Height) / 840000)
 	var fees int64
 	for _, tx := range t.Transactions {
+		if tx.Fee < 0 || (tx.Data == "" && tx.TxID == "" && tx.Hash == "") {
+			return false
+		}
 		fees += int64(tx.Fee)
+	}
+	if fees > sub {
+		fees = sub
 	}
 	wm.TemplateMutex.Lock()
 	defer wm.TemplateMutex.Unlock()
@@ -612,46 +639,54 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		wm.peerScores[peerID]--
 		return false
 	}
+	th := txSetHash(t.Transactions)
+	if peerID != "" {
+		wm.peerTmpl[peerID] = peerTmplVote{prev: t.PreviousBlockHash, txHash: th, bits: t.Bits, height: t.Height, ts: time.Now()}
+	}
 	var curH int64
-	var curPrev string
-	var curTx int
+	var curPrev, curTH string
 	for k, v := range wm.Templates {
 		if v != nil && v.Height >= curH {
-			curH, curPrev, curTx = v.Height, k, len(v.Transactions)
+			curH, curPrev, curTH = v.Height, k, txSetHash(v.Transactions)
 		}
 	}
-	if curH > 0 && t.Height < curH {
+	if curH > 0 && time.Since(wm.lastAgreedTime) > 3*time.Minute {
+		curH, curPrev, curTH = 0, "", ""
+	}
+	if curH > 0 && (t.Height < curH || t.Height > curH+100) {
 		return false
 	}
-	if peerID != "" {
-		wm.peerTmpl[peerID] = peerTmplVote{prev: t.PreviousBlockHash, bits: t.Bits, height: t.Height, ts: time.Now()}
-	}
-	act, agr := 0, 0
+	agr := 0
 	for _, v := range wm.peerTmpl {
-		if time.Since(v.ts) < 2*time.Minute {
-			act++
-			if v.prev == t.PreviousBlockHash && v.bits == t.Bits {
-				agr++
-			}
+		if time.Since(v.ts) < 2*time.Minute && v.prev == t.PreviousBlockHash && v.bits == t.Bits && v.txHash == th {
+			agr++
 		}
 	}
-	if curPrev != "" && t.PreviousBlockHash != curPrev {
-		if (t.Height == curH && agr < 2) || (act >= 2 && agr < 2) {
-			return false
-		}
+	if agr < 2 {
+		return false
 	}
-	wm.ShareChain.SetNetworkBitsFromTemplate(t.Bits)
+	wm.lastAgreedTime = time.Now()
+	wm.ShareChain.SetCurrentBlockTarget(t.PreviousBlockHash, t.Bits)
 	wm.lastBlockUpdateMux.Lock()
 	wm.lastBlockUpdate = time.Now()
 	wm.lastBlockUpdateMux.Unlock()
 	wm.PendingMutex.Lock()
 	chg := false
 	for _, pb := range wm.PendingBlocks {
-		if pb.BlockHash != nil && pb.BlockHash.String() == t.PreviousBlockHash {
+		if pb.BlockHash != nil && pb.BlockHash.String() == t.PreviousBlockHash && !pb.Confirmed {
+			pb.Confirmed = true
+			chg = true
 			logging.Successf("Light Mode: Block %s confirmed on network!", pb.BlockHash.String())
 		}
 		if pb.State == StatePending && t.Height-int64(pb.BlockHeight) >= 100 {
-			pb.State = StatePaid
+			if pb.Confirmed {
+				pb.State = StatePaid
+			} else {
+				pb.State = StateOrphan
+			}
+			chg = true
+		} else if pb.State == StatePending && !pb.Confirmed && t.Height-int64(pb.BlockHeight) >= 6 {
+			pb.State = StateOrphan
 			chg = true
 		}
 	}
@@ -659,7 +694,7 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		wm.saveBlocksLocked()
 	}
 	wm.PendingMutex.Unlock()
-	if t.PreviousBlockHash != curPrev || len(t.Transactions) != curTx {
+	if t.PreviousBlockHash != curPrev || th != curTH {
 		if t.PreviousBlockHash != curPrev {
 			logging.Infof("Light Mode: Accepted P2P template for height %d", t.Height)
 			wm.Templates = make(map[string]*BlockTemplate)
@@ -673,7 +708,6 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 	}
 	return false
 }
-
 func (wm *WorkManager) SubmitRawBlockHex(peerID string, hexStr string) bool {
 	raw, err := hex.DecodeString(hexStr)
 	if err != nil {
@@ -685,11 +719,16 @@ func (wm *WorkManager) SubmitRawBlockHex(peerID string, hexStr string) bool {
 	}
 	bh := blk.BlockHash().String()
 	wm.TemplateMutex.Lock()
-	if wm.seenBlocks[bh] {
+	for k, ts := range wm.seenBlocks {
+		if time.Since(ts) > 30*time.Minute {
+			delete(wm.seenBlocks, k)
+		}
+	}
+	if !wm.seenBlocks[bh].IsZero() {
 		wm.TemplateMutex.Unlock()
 		return true
 	}
-	wm.seenBlocks[bh] = true
+	wm.seenBlocks[bh] = time.Now()
 	wm.TemplateMutex.Unlock()
 	if config.Active.LightMode {
 		if wm.RelayBlockHexFunc != nil {

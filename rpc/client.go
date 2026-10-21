@@ -55,9 +55,28 @@ func (c *Client) loadCookie() bool {
 	p := c.cookieFile
 	if p == "" {
 		h, _ := os.UserHomeDir()
-		for _, d := range []string{filepath.Join(h, ".vertcoin"), filepath.Join(os.Getenv("APPDATA"), "Vertcoin")} {
-			if _, e := os.Stat(filepath.Join(d, ".cookie")); e == nil {
-				p = filepath.Join(d, ".cookie")
+		dirs := []string{filepath.Join(h, ".vertcoin"), filepath.Join(os.Getenv("APPDATA"), "Vertcoin")}
+		for _, base := range dirs {
+			if b, err := os.ReadFile(filepath.Join(base, "vertcoin.conf")); err == nil {
+				for _, ln := range strings.Split(string(b), "\n") {
+					if strings.HasPrefix(strings.TrimSpace(ln), "datadir=") {
+						dirs = append([]string{strings.TrimSpace(strings.SplitN(ln, "=", 2)[1])}, dirs...)
+					}
+				}
+			}
+		}
+		for _, d := range dirs {
+			subs := []string{d, filepath.Join(d, "testnet3"), filepath.Join(d, "regtest")}
+			if config.Active.Testnet {
+				subs = []string{filepath.Join(d, "testnet3"), d}
+			}
+			for _, sd := range subs {
+				if _, e := os.Stat(filepath.Join(sd, ".cookie")); e == nil {
+					p = filepath.Join(sd, ".cookie")
+					break
+				}
+			}
+			if p != "" {
 				break
 			}
 		}

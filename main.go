@@ -215,9 +215,7 @@ func main() {
 					logging.Successf("P2P Sync: Hydrated %d verified shares from peer!", added)
 					_ = sc.Commit()
 				}
-				if miss := sc.GetMissingParentHashes(16); len(miss) > 0 {
-					go p2pNode.RequestShares(miss, 250)
-				}
+
 			}
 		}
 		if config.Active.LightMode {
@@ -231,6 +229,14 @@ func main() {
 	}
 	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 	go p2pNode.Bootstrap(config.Active.Peers)
+
+	go func() {
+		for range time.NewTicker(3 * time.Second).C {
+			if miss := sc.GetMissingParentHashes(8); len(miss) > 0 {
+				p2pNode.RequestShares(miss, 250)
+			}
+		}
+	}()
 	go func() {
 		for shareBytes := range p2pNode.IncomingShares {
 			var remoteShare work.Share
@@ -241,9 +247,7 @@ func main() {
 				continue
 			}
 			added := sc.AddShares([]work.Share{remoteShare})
-			if miss := sc.GetMissingParentHashes(16); len(miss) > 0 {
-				go p2pNode.RequestShares(miss, 250)
-			}
+
 			powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
 			netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
 			if added > 0 {
@@ -298,7 +302,7 @@ func main() {
 	mux.HandleFunc("/api/status", apiHandler.ServeStatus)
 	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		h, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if r.Method != "POST" || (h != "127.0.0.1" && h != "::1") || (config.Active.ShutdownToken != "" && r.Header.Get("X-Shutdown-Token") != config.Active.ShutdownToken) {
+		if r.Method != "POST" || (h != "127.0.0.1" && h != "::1") || (config.Active.ShutdownToken == "" || r.Header.Get("X-Shutdown-Token") != config.Active.ShutdownToken) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
