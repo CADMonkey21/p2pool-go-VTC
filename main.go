@@ -190,7 +190,7 @@ func main() {
 	p2pNode.GetTemplateFunc = workManager.GetLatestTemplateJSON
 	p2pNode.OnRawBlockFunc = workManager.SubmitRawBlockHex
 	if config.Active.LightMode {
-		p2pNode.OnTemplateFunc = workManager.ApplyRemoteTemplateJSON
+		p2pNode.OnTemplateFunc = func(p string, b []byte) { workManager.ApplyRemoteTemplateJSON(p, b) }
 		logging.Infof("Running in daemon-less LIGHT MODE (receiving block templates via P2P)")
 		go func() {
 			for {
@@ -274,6 +274,7 @@ func main() {
 	apiHandler := web.NewDashboard(workManager, p2pNode, stratumSrv, startTime)
 
 	mux.Handle("/api/stats", apiHandler)
+	shutdownChan := make(chan os.Signal, 1)
 	if ppid := config.Active.ParentPID; ppid > 0 {
 		go func() {
 			for {
@@ -330,7 +331,6 @@ func main() {
 		}
 	}()
 
-	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
 	logging.Infof("MAIN: Startup complete – Stratum + Web UI on %s. Press Ctrl+C to exit.", addr)
 
