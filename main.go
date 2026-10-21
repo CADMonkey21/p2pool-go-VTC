@@ -277,15 +277,15 @@ func main() {
 	shutdownChan := make(chan os.Signal, 1)
 	if ppid := config.Active.ParentPID; ppid > 0 {
 		go func() {
-			for {
+			if p, err := os.FindProcess(ppid); err == nil {
+				_, _ = p.Wait()
+			}
+			for os.Getppid() == ppid {
 				time.Sleep(2 * time.Second)
-				if os.Getppid() != ppid {
-					select {
-					case shutdownChan <- syscall.SIGTERM:
-					default:
-					}
-					return
-				}
+			}
+			select {
+			case shutdownChan <- syscall.SIGTERM:
+			default:
 			}
 		}()
 	}

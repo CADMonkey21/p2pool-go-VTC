@@ -425,7 +425,7 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 			relayed = wm.RelayBlockHexFunc(hex.EncodeToString(buf.Bytes()))
 		}
 		if config.Active.LightMode {
-			logging.Infof("Light Mode: Solved block %s (Height %d) relayed to %d peer(s), awaiting network confirmation.", blockHash.String(), template.Height, relayed)
+			logging.Infof("Light Mode: Solved block %s (Height %d) relayed to %d full-node peer(s), awaiting network confirmation.", blockHash.String(), template.Height, relayed)
 		}
 	}
 	if !config.Active.LightMode {
@@ -695,7 +695,7 @@ func (wm *WorkManager) SubmitRawBlockHex(peerID string, hexStr string) bool {
 		if wm.RelayBlockHexFunc != nil {
 			go wm.RelayBlockHexFunc(hexStr)
 		}
-		return true
+		return false
 	}
 	if err := wm.rpcClient.SubmitBlock(&blk); err != nil {
 		wm.TemplateMutex.Lock()

@@ -446,13 +446,16 @@ func (n *Node) RelaySolvedBlockHex(hexStr string) int {
 			ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
 			defer cancel()
 			if s, err := n.Host.NewStream(ctx, p, BlockRelayProtocolID); err == nil {
-				if json.NewEncoder(s).Encode(hexStr) == nil {
+				_ = json.NewEncoder(s).Encode(hexStr)
+				_ = s.CloseWrite()
+				buf := make([]byte, 8)
+				nr, _ := s.Read(buf)
+				s.Close()
+				if nr >= 2 && string(buf[:2]) == "OK" {
 					mu.Lock()
 					sent++
 					mu.Unlock()
 				}
-				_ = s.CloseWrite()
-				s.Close()
 			}
 		}(pid)
 	}

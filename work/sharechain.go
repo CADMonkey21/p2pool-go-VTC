@@ -698,6 +698,9 @@ func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool
 func (sc *ShareChain) GetMissingParentHashes(max int) []string {
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
+	if sc.TipHash != nil && sc.chainLen[sc.TipHash.String()] >= DefaultPPLNSWindow {
+		return nil
+	}
 	seen := make(map[string]bool)
 	var out []string
 	for h, s := range sc.shares {
