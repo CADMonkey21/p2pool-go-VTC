@@ -193,12 +193,30 @@ func (sc *ShareChain) Commit() error {
 // GetSharesForSync returns up to maxCount most recent shares for fast P2P stream synchronization.
 func (sc *ShareChain) GetSharesForSync(maxCount int) []Share {
 	sc.mutex.RLock()
-	w := sc.getOrderedChainWalkLocked(sc.TipHash, maxCount)
-	res := make([]Share, 0, len(w))
-	for _, x := range w {
-		res = append(res, *x)
+	defer sc.mutex.RUnlock()
+	vis := make(map[string]bool)
+	res := make([]Share, 0, 256)
+	cur := sc.TipHash
+	nonStale := 0
+	for cur != nil && !cur.IsEqual(sc.genesisHash) {
+		h := cur.String()
+		if vis[h] {
+			break
+		}
+		sh := sc.shares[h]
+		if sh == nil {
+			break
+		}
+		vis[h] = true
+		res = append(res, *sh)
+		if sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+			nonStale++
+			if maxCount > 0 && nonStale >= maxCount {
+				break
+			}
+		}
+		cur = sh.ShareInfo.ShareData.PreviousShareHash
 	}
-	sc.mutex.RUnlock()
 	return res
 }
 
@@ -527,25 +545,10 @@ func (sc *ShareChain) GetStats() PoolStats {
 func (sc *ShareChain) GetRecentShares(count int) ([]*Share, error) {
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
-
-	shareList := make([]*Share, 0, len(sc.shares))
-	for _, s := range sc.shares {
-		shareList = append(shareList, s)
-	}
-
-	sort.Slice(shareList, func(i, j int) bool {
-		strA := shareList[i]
-		strB := shareList[j]
-		if strA == nil || strB == nil {
-			return false
-		}
-		return strA.ShareInfo.Timestamp > strB.ShareInfo.Timestamp
-	})
-
-	if count > len(shareList) {
-		count = len(shareList)
-	}
-	return shareList[:count], nil
+	w := sc.getOrderedChainWalkLocked(sc.TipHash, count)
+	res := make([]*Share, len(w))
+	copy(res, w)
+	return res, nil
 }
 
 func (sc *ShareChain) GetTipHash() *chainhash.Hash {
@@ -626,51 +629,49 @@ func (sc *ShareChain) recomputeWorkAndTipLocked() {
 	}
 }
 func (sc *ShareChain) verifyPending() int {
-	vn := 0
-	for {
-		sc.mutex.RLock()
-		var pend []*Share
-		for h, sh := range sc.shares {
-			if !sc.verified[h] && sh != nil && sh.Hash != nil {
-				pend = append(pend, sh)
-			}
-		}
-		sc.mutex.RUnlock()
-		if len(pend) == 0 {
-			break
-		}
-		prog := false
-		for _, sh := range pend {
-			h, p := sh.Hash.String(), sh.ShareInfo.ShareData.PreviousShareHash
-			sc.mutex.RLock()
-			w := sc.getOrderedChainWalkLocked(p, DefaultPPLNSWindow)
-			hLen := len(w)
-			gen := p == nil || p.IsEqual(sc.genesisHash)
-			pVer := !gen && sc.verified[p.String()]
-			pIn := !gen && sc.shares[p.String()] != nil
-			boot := hLen >= TargetLookbehind && (!pIn || hLen == TargetLookbehind)
-			sc.mutex.RUnlock()
-			if !gen && !pVer && !boot {
-				continue
-			}
-			post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || sh.Type >= ShareVersionV2
-			if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, hLen) {
-				sc.mutex.Lock()
-				delete(sc.shares, h)
-				sc.mutex.Unlock()
-				continue
-			}
-			sc.mutex.Lock()
-			sc.verified[h] = true
-			sc.recomputeWorkAndTipLocked()
-			sc.mutex.Unlock()
-			vn++
-			prog = true
-		}
-		if !prog {
-			break
+	sc.mutex.Lock()
+	sc.recomputeWorkAndTipLocked()
+	var pend []*Share
+	for h, sh := range sc.shares {
+		if !sc.verified[h] && sh != nil && sh.Hash != nil {
+			pend = append(pend, sh)
 		}
 	}
+	if len(pend) == 0 {
+		sc.mutex.Unlock()
+		return 0
+	}
+	sort.Slice(pend, func(i, j int) bool {
+		return sc.chainLen[pend[i].Hash.String()] < sc.chainLen[pend[j].Hash.String()]
+	})
+	sc.mutex.Unlock()
+	vn := 0
+	for _, sh := range pend {
+		h, p := sh.Hash.String(), sh.ShareInfo.ShareData.PreviousShareHash
+		sc.mutex.RLock()
+		gen := p == nil || p.IsEqual(sc.genesisHash)
+		pVer := !gen && sc.verified[p.String()]
+		w := sc.getOrderedChainWalkLocked(p, DefaultPPLNSWindow)
+		hLen := len(w)
+		sc.mutex.RUnlock()
+		if !gen && !pVer && hLen < TargetLookbehind {
+			continue
+		}
+		post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || sh.Type >= ShareVersionV2
+		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, hLen) {
+			sc.mutex.Lock()
+			delete(sc.shares, h)
+			sc.mutex.Unlock()
+			continue
+		}
+		sc.mutex.Lock()
+		sc.verified[h] = true
+		sc.mutex.Unlock()
+		vn++
+	}
+	sc.mutex.Lock()
+	sc.recomputeWorkAndTipLocked()
+	sc.mutex.Unlock()
 	return vn
 }
 func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool {
