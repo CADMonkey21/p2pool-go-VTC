@@ -66,17 +66,12 @@ func (c *Client) loadCookie() bool {
 			}
 		}
 		for _, d := range dirs {
-			subs := []string{d, filepath.Join(d, "testnet3"), filepath.Join(d, "regtest")}
+			sd := d
 			if config.Active.Testnet {
-				subs = []string{filepath.Join(d, "testnet3"), d}
+				sd = filepath.Join(d, "testnet3")
 			}
-			for _, sd := range subs {
-				if _, e := os.Stat(filepath.Join(sd, ".cookie")); e == nil {
-					p = filepath.Join(sd, ".cookie")
-					break
-				}
-			}
-			if p != "" {
+			if _, e := os.Stat(filepath.Join(sd, ".cookie")); e == nil {
+				p = filepath.Join(sd, ".cookie")
 				break
 			}
 		}

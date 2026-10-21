@@ -56,24 +56,25 @@ type peerTmplVote struct {
 	ts     time.Time
 }
 type WorkManager struct {
-	rpcClient           *rpc.Client
-	ShareChain          *ShareChain
-	Templates           map[string]*BlockTemplate
-	PendingBlocks       []*PayoutBlock
-	TemplateMutex       sync.RWMutex
-	PendingMutex        sync.Mutex
-	NewBlockChan        chan *BlockTemplate
-	ForceNewTemplate    chan bool
-	OnTemplateBroadcast func([]byte)
-	RelayBlockHexFunc   func(string) int
-	lastBroadcast       time.Time
-	peerTmpl            map[string]peerTmplVote
-	peerScores          map[string]int
-	seenBlocks          map[string]time.Time
-	lastRPCOk           bool
-	lastAgreedTime      time.Time
-	lastBlockUpdate     time.Time
-	lastBlockUpdateMux  sync.RWMutex
+	rpcClient                   *rpc.Client
+	ShareChain                  *ShareChain
+	Templates                   map[string]*BlockTemplate
+	PendingBlocks               []*PayoutBlock
+	TemplateMutex               sync.RWMutex
+	PendingMutex                sync.Mutex
+	NewBlockChan                chan *BlockTemplate
+	ForceNewTemplate            chan bool
+	OnTemplateBroadcast         func([]byte)
+	RelayBlockHexFunc           func(string) int
+	CheckBlockConfirmationsFunc func(string) int
+	lastBroadcast               time.Time
+	peerTmpl                    map[string]peerTmplVote
+	peerScores                  map[string]int
+	seenBlocks                  map[string]time.Time
+	lastRPCOk                   bool
+	lastAgreedTime              time.Time
+	lastBlockUpdate             time.Time
+	lastBlockUpdateMux          sync.RWMutex
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
@@ -261,6 +262,7 @@ func (wm *WorkManager) fetchBlockTemplate() {
 		logging.Errorf("Error decoding block template: %v", err)
 		return
 	}
+	tmpl.FullNode = true
 	wm.ShareChain.SetCurrentBlockTarget(tmpl.PreviousBlockHash, tmpl.Bits)
 	wm.lastBlockUpdateMux.Lock()
 	wm.lastBlockUpdate = time.Now()
@@ -602,12 +604,32 @@ func (wm *WorkManager) MergeRemoteBlocksJSON(data []byte) int {
 	return added
 }
 
+func (wm *WorkManager) GetBlockConfirmations(blockHash string) int {
+	if config.Active.LightMode || wm.rpcClient == nil || blockHash == "" {
+		return 0
+	}
+	h, err := chainhash.NewHashFromStr(blockHash)
+	if err != nil {
+		return 0
+	}
+	hdr, err := wm.rpcClient.GetBlockHeader(h)
+	if err != nil || hdr == nil {
+		return 0
+	}
+	return hdr.Confirmations
+}
+
 func (wm *WorkManager) GetLatestTemplateJSON() []byte {
+	if config.Active.LightMode {
+		return nil
+	}
 	t := wm.GetLatestTemplate()
 	if t == nil {
 		return nil
 	}
-	b, _ := json.Marshal(t)
+	cp := *t
+	cp.FullNode = true
+	b, _ := json.Marshal(&cp)
 	return b
 }
 
@@ -616,7 +638,7 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		return false
 	}
 	var t BlockTemplate
-	if json.Unmarshal(raw, &t) != nil || t.Height <= 0 || t.PreviousBlockHash == "" || t.Bits == "" {
+	if json.Unmarshal(raw, &t) != nil || !t.FullNode || t.Height <= 0 || t.PreviousBlockHash == "" || t.Bits == "" {
 		return false
 	}
 	sub := int64(5000000000) >> (uint(t.Height) / 840000)
@@ -657,12 +679,21 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		return false
 	}
 	agr := 0
-	for _, v := range wm.peerTmpl {
+	weight := 0
+	for pid, v := range wm.peerTmpl {
 		if time.Since(v.ts) < 2*time.Minute && v.prev == t.PreviousBlockHash && v.bits == t.Bits && v.txHash == th {
 			agr++
+			w := 1
+			if wm.peerScores[pid] > 0 {
+				w += wm.peerScores[pid]
+				if w > 3 {
+					w = 3
+				}
+			}
+			weight += w
 		}
 	}
-	if agr < 2 {
+	if agr < 2 || weight < 2 {
 		return false
 	}
 	wm.lastAgreedTime = time.Now()
@@ -673,10 +704,21 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 	wm.PendingMutex.Lock()
 	chg := false
 	for _, pb := range wm.PendingBlocks {
-		if pb.BlockHash != nil && pb.BlockHash.String() == t.PreviousBlockHash && !pb.Confirmed {
+		if pb.BlockHash == nil {
+			continue
+		}
+		bhStr := pb.BlockHash.String()
+		if !pb.Confirmed && (bhStr == t.PreviousBlockHash || wm.ShareChain.HasShareWithPrevBlock(bhStr)) {
 			pb.Confirmed = true
 			chg = true
-			logging.Successf("Light Mode: Block %s confirmed on network!", pb.BlockHash.String())
+			logging.Successf("Light Mode: Block %s confirmed on network!", bhStr)
+		}
+		if pb.State == StatePending && !pb.Confirmed && t.Height-int64(pb.BlockHeight) >= 1 && wm.CheckBlockConfirmationsFunc != nil {
+			if confs := wm.CheckBlockConfirmationsFunc(bhStr); confs > 0 {
+				pb.Confirmed = true
+				chg = true
+				logging.Successf("Light Mode: Block %s confirmed via full-node header check (%d confs)!", bhStr, confs)
+			}
 		}
 		if pb.State == StatePending && t.Height-int64(pb.BlockHeight) >= 100 {
 			if pb.Confirmed {
@@ -742,6 +784,9 @@ func (wm *WorkManager) SubmitRawBlockHex(peerID string, hexStr string) bool {
 		wm.TemplateMutex.Unlock()
 		return false
 	}
+	wm.TemplateMutex.Lock()
+	wm.peerScores[peerID] += 2
+	wm.TemplateMutex.Unlock()
 	logging.Successf("P2P Block Relay: Submitted peer-solved block %s to vertcoind!", bh)
 	if wm.RelayBlockHexFunc != nil {
 		go wm.RelayBlockHexFunc(hexStr)

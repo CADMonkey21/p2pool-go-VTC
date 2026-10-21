@@ -561,7 +561,7 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 	cur := sc.TipHash
 	if cur != nil && !cur.IsEqual(sc.genesisHash) && sc.curPrevBlock != "" {
 		if tip := sc.shares[cur.String()]; tip != nil && tip.MinHeader.PreviousBlock != nil {
-			if tip.MinHeader.PreviousBlock.String() != sc.curPrevBlock && (sc.curBits != 0 && tip.MinHeader.Bits != sc.curBits) {
+			if (tip.MinHeader.PreviousBlock.String() != sc.curPrevBlock || (sc.curBits != 0 && tip.MinHeader.Bits != sc.curBits)) && (tip.Hash == nil || tip.Hash.String() != sc.curPrevBlock) {
 				if p := tip.ShareInfo.ShareData.PreviousShareHash; p != nil && sc.verified[p.String()] {
 					return p
 				}
@@ -569,6 +569,20 @@ func (sc *ShareChain) GetTipHash() *chainhash.Hash {
 		}
 	}
 	return cur
+}
+
+func (sc *ShareChain) HasShareWithPrevBlock(blockHash string) bool {
+	if blockHash == "" {
+		return false
+	}
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	for h, s := range sc.shares {
+		if sc.verified[h] && s != nil && s.MinHeader.PreviousBlock != nil && s.MinHeader.PreviousBlock.String() == blockHash {
+			return true
+		}
+	}
+	return false
 }
 func (sc *ShareChain) loadTrusted(fs []Share) {
 	sc.mutex.Lock()

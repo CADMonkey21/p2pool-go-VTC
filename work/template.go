@@ -24,6 +24,7 @@ type BlockTemplate struct {
 	CurTime       int64    `json:"curtime"`
 	Bits          string   `json:"bits"`
 	Height        int64    `json:"height"`
+	FullNode      bool     `json:"full_node,omitempty"`
 }
 
 // BlockTemplateTx represents a single transaction in the block template.

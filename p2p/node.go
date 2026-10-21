@@ -29,6 +29,7 @@ const ShareReqProtocolID = protocol.ID("/p2pool/sharereq/1.0.0")
 const TemplateProtocolID = protocol.ID("/p2pool/template/1.0.0")
 const BlockRelayProtocolID = protocol.ID("/p2pool/blockrelay/1.0.0")
 const PeerExProtocolID = protocol.ID("/p2pool/peers/1.0.0")
+const BlockCheckProtocolID = protocol.ID("/p2pool/blockcheck/1.0.0")
 
 type ShareReq struct {
 	Hashes  []string `json:"hashes"`
@@ -38,8 +39,9 @@ type ShareReq struct {
 const peerKeyFile = "peer.key"
 
 type SyncPayload struct {
-	Shares json.RawMessage `json:"shares"`
-	Blocks json.RawMessage `json:"blocks"`
+	Shares   json.RawMessage `json:"shares"`
+	Blocks   json.RawMessage `json:"blocks"`
+	FullNode bool            `json:"full_node,omitempty"`
 }
 
 type Node struct {
@@ -59,6 +61,9 @@ type Node struct {
 	GetTemplateFunc     func() []byte
 	OnTemplateFunc      func(peerID string, tmplJSON []byte)
 	OnRawBlockFunc      func(peerID string, rawHex string) bool
+	CheckBlockFunc      func(blockHash string) int
+	peerMu              sync.RWMutex
+	peerFullMode        map[string]bool
 }
 
 type mdnsNotifee struct {
@@ -154,6 +159,7 @@ func NewNode(listenPort int) (*Node, error) {
 		ctx:            ctx,
 		cancel:         cancel,
 		IncomingShares: make(chan []byte, 1000),
+		peerFullMode:   make(map[string]bool),
 	}
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
@@ -161,6 +167,7 @@ func NewNode(listenPort int) (*Node, error) {
 	h.SetStreamHandler(TemplateProtocolID, node.handleTemplateStream)
 	h.SetStreamHandler(BlockRelayProtocolID, node.handleBlockRelayStream)
 	h.SetStreamHandler(PeerExProtocolID, node.handlePeerExStream)
+	h.SetStreamHandler(BlockCheckProtocolID, node.handleBlockCheckStream)
 
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
@@ -190,12 +197,14 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
 		return
 	}
+	n.setPeerFullMode(s.Conn().RemotePeer().String(), incoming.FullNode)
 	go n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
 
 	sharesJSON, blocksJSON := n.GetSyncDataFunc()
 	outgoing := SyncPayload{
-		Shares: sharesJSON,
-		Blocks: blocksJSON,
+		Shares:   sharesJSON,
+		Blocks:   blocksJSON,
+		FullNode: n.GetTemplateFunc != nil,
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
 		logging.Debugf("P2P Sync: Failed sending sync response to peer %s: %v", s.Conn().RemotePeer(), err)
@@ -228,8 +237,9 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 
 	sharesJSON, blocksJSON := n.GetSyncDataFunc()
 	outgoing := SyncPayload{
-		Shares: sharesJSON,
-		Blocks: blocksJSON,
+		Shares:   sharesJSON,
+		Blocks:   blocksJSON,
+		FullNode: n.GetTemplateFunc != nil,
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
 		logging.Debugf("P2P Sync: Failed sending sync request to %s: %v", pid, err)
@@ -242,6 +252,7 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 		logging.Debugf("P2P Sync: Failed decoding sync response from %s: %v", pid, err)
 		return
 	}
+	n.setPeerFullMode(pid.String(), incoming.FullNode)
 
 	n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
 }
@@ -379,12 +390,29 @@ func (n *Node) RequestShares(hashes []string, parents int) {
 		}
 	}
 }
+func (n *Node) setPeerFullMode(pid string, isFull bool) {
+	n.peerMu.Lock()
+	n.peerFullMode[pid] = isFull
+	n.peerMu.Unlock()
+}
+
+func (n *Node) isPeerAllowedTemplate(pid string) bool {
+	n.peerMu.RLock()
+	isFull, known := n.peerFullMode[pid]
+	n.peerMu.RUnlock()
+	return !known || isFull
+}
+
 func (n *Node) handleTemplateStream(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(15 * time.Second))
+	pid := s.Conn().RemotePeer().String()
 	var raw json.RawMessage
 	if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 && n.OnTemplateFunc != nil {
-		n.OnTemplateFunc(s.Conn().RemotePeer().String(), raw)
+		if n.isPeerAllowedTemplate(pid) {
+			n.setPeerFullMode(pid, true)
+			n.OnTemplateFunc(pid, raw)
+		}
 	} else if n.GetTemplateFunc != nil {
 		if b := n.GetTemplateFunc(); len(b) > 0 {
 			_, _ = s.Write(b)
@@ -409,6 +437,9 @@ func (n *Node) PullTemplateFromPeers() {
 		return
 	}
 	for _, pid := range n.Host.Network().Peers() {
+		if !n.isPeerAllowedTemplate(pid.String()) {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
 		s, err := n.Host.NewStream(ctx, pid, TemplateProtocolID)
 		if err != nil {
@@ -419,11 +450,48 @@ func (n *Node) PullTemplateFromPeers() {
 		_ = s.CloseWrite()
 		var raw json.RawMessage
 		if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 {
+			n.setPeerFullMode(pid.String(), true)
 			n.OnTemplateFunc(pid.String(), raw)
 		}
 		s.Close()
 		cancel()
 	}
+}
+func (n *Node) handleBlockCheckStream(s network.Stream) {
+	defer s.Close()
+	if n.CheckBlockFunc == nil {
+		return
+	}
+	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+	var bh string
+	if json.NewDecoder(s).Decode(&bh) == nil && len(bh) > 0 {
+		_ = json.NewEncoder(s).Encode(n.CheckBlockFunc(bh))
+	}
+}
+func (n *Node) QueryBlockConfirmations(blockHash string) int {
+	best := 0
+	for _, pid := range n.Host.Network().Peers() {
+		if !n.isPeerAllowedTemplate(pid.String()) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(n.ctx, 8*time.Second)
+		s, err := n.Host.NewStream(ctx, pid, BlockCheckProtocolID)
+		if err != nil {
+			cancel()
+			continue
+		}
+		_ = json.NewEncoder(s).Encode(blockHash)
+		_ = s.CloseWrite()
+		var confs int
+		if json.NewDecoder(s).Decode(&confs) == nil {
+			if confs > best {
+				best = confs
+			}
+		}
+		s.Close()
+		cancel()
+	}
+	return best
 }
 func (n *Node) handleBlockRelayStream(s network.Stream) {
 	defer s.Close()

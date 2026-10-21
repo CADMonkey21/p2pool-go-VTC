@@ -185,10 +185,14 @@ func main() {
 		return sBytes, bBytes
 	}
 
-	workManager.OnTemplateBroadcast = p2pNode.BroadcastTemplate
 	workManager.RelayBlockHexFunc = p2pNode.RelaySolvedBlockHex
-	p2pNode.GetTemplateFunc = workManager.GetLatestTemplateJSON
+	workManager.CheckBlockConfirmationsFunc = p2pNode.QueryBlockConfirmations
 	p2pNode.OnRawBlockFunc = workManager.SubmitRawBlockHex
+	if !config.Active.LightMode {
+		workManager.OnTemplateBroadcast = p2pNode.BroadcastTemplate
+		p2pNode.GetTemplateFunc = workManager.GetLatestTemplateJSON
+		p2pNode.CheckBlockFunc = workManager.GetBlockConfirmations
+	}
 	if config.Active.LightMode {
 		p2pNode.OnTemplateFunc = func(p string, b []byte) { workManager.ApplyRemoteTemplateJSON(p, b) }
 		logging.Infof("Running in daemon-less LIGHT MODE (receiving block templates via P2P)")
@@ -197,7 +201,7 @@ func main() {
 				if workManager.GetLatestTemplate() == nil {
 					time.Sleep(3 * time.Second)
 				} else {
-					time.Sleep(30 * time.Second)
+					time.Sleep(15 * time.Second)
 				}
 				p2pNode.PullTemplateFromPeers()
 			}
