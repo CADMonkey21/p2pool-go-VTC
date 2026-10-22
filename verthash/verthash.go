@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"syscall"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -106,7 +105,7 @@ func NewVerthash(datFileLocation string, keepInRam bool) (*Verthash, error) {
 	if keepInRam && v.datFileSize > 0 {
 		// Use read-only shared memory mapping (MAP_SHARED) so the 1.2GB verthash.dat stays
 		// in the OS page cache, shares physical RAM pages across processes, and never uses swap!
-		mapped, mmapErr := syscall.Mmap(int(f.Fd()), 0, int(v.datFileSize), syscall.PROT_READ, syscall.MAP_SHARED)
+		mapped, mmapErr := mmapReadOnly(f, v.datFileSize)
 		if mmapErr == nil {
 			v.datFileContent = mapped
 			v.isMmap = true
@@ -125,7 +124,7 @@ func NewVerthash(datFileLocation string, keepInRam bool) (*Verthash, error) {
 
 func (v *Verthash) Close() {
 	if v.isMmap && v.datFileContent != nil {
-		_ = syscall.Munmap(v.datFileContent)
+		_ = munmap(v.datFileContent)
 		v.datFileContent = nil
 	} else if v.datFileContent != nil {
 		v.datFileContent = nil
