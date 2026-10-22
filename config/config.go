@@ -202,10 +202,17 @@ func IsTrustedPeer(peerID string) bool {
 	if peerID == "" {
 		return false
 	}
-	for _, tp := range Active.TrustedPeers {
-		if strings.TrimSpace(tp) == peerID {
-			return true
+	if len(Active.TrustedPeers) > 0 {
+		for _, tp := range Active.TrustedPeers {
+			tp = strings.TrimSpace(tp)
+			if idx := strings.LastIndex(tp, "/p2p/"); idx != -1 {
+				tp = strings.TrimSpace(tp[idx+5:])
+			}
+			if tp == peerID {
+				return true
+			}
 		}
+		return false
 	}
 	for _, ma := range Active.Peers {
 		if idx := strings.LastIndex(ma, "/p2p/"); idx != -1 {
