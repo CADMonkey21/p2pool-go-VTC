@@ -318,6 +318,6 @@ func CreateShare(
 		return nil, fmt.Errorf("failed to calculate hashes for new share: %v", err)
 	}
 
-	logging.Infof("Successfully created new share with hash %s and populated SegwitData", share.Hash.String()[:12])
+	logging.Debugf("Successfully created new share with hash %s and populated SegwitData", share.Hash.String()[:12])
 	return share, nil
 }
