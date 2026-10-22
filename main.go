@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -116,8 +117,17 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 	}
 }
 
+// defaultMemoryLimit makes the GC collect bursts from saves and peer syncs instead of
+// letting the heap double.
+const defaultMemoryLimit = 160 << 20
+
 func main() {
 	startTime := time.Now()
+
+	// GOMEMLIMIT in the environment overrides the default.
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(defaultMemoryLimit)
+	}
 
 	origDir, _ := os.Getwd()
 	staticDir := filepath.Join(origDir, "web", "static")
