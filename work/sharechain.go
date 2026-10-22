@@ -49,6 +49,7 @@ type ShareChain struct {
 	curBits           uint32
 	mutex             sync.RWMutex
 	commitMu          sync.Mutex
+	verifyMu          sync.Mutex
 	rpcClient         *rpc.Client
 	genesisHash       *chainhash.Hash
 	TipHash           *chainhash.Hash
@@ -689,13 +690,15 @@ func (sc *ShareChain) recomputeWorkAndTipLocked() {
 				pw, pl = dfs(p.String())
 			}
 		}
-		d := TargetToDiff(sh.Target)
+		d := sh.getTargetDiff()
+		inc := 1
 		if sh.ShareInfo.ShareData.StaleInfo != StaleInfoNone {
 			d = 0
+			inc = 0
 		} else if d < MinPoolShareDiff {
 			d = MinPoolShareDiff
 		}
-		sc.cumWork[h], sc.chainLen[h] = pw+d, pl+1
+		sc.cumWork[h], sc.chainLen[h] = pw+d, pl+inc
 		vis[h] = 2
 		return sc.cumWork[h], sc.chainLen[h]
 	}
@@ -714,7 +717,71 @@ func (sc *ShareChain) recomputeWorkAndTipLocked() {
 		sc.TipHash = bestH
 	}
 }
+func (sc *ShareChain) hasCompletePPLNSWindow(prev *chainhash.Hash) bool {
+	if prev == nil || prev.IsEqual(sc.genesisHash) {
+		return true
+	}
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	pDiff := sc.getExpectedShareDifficultyLocked(prev)
+	maxD := pDiff * 4.0
+	if maxD < 16.0 {
+		maxD = 16.0
+	}
+	h := prev.String()
+	maxSteps := len(sc.shares) + 1
+	var first *Share
+	var capW float64
+	var cut int64
+	var acc float64
+	validCount := 0
+	for steps := 0; steps < maxSteps && h != ""; steps++ {
+		s := sc.shares[h]
+		if s == nil {
+			return false
+		}
+		if s.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
+			if first == nil {
+				first = s
+				capW = float64(DefaultPPLNSWindow) * pDiff
+				if first.MinHeader.Bits != 0 {
+					bd := TargetToDiff(blockchain.CompactToBig(first.MinHeader.Bits))
+					if bd > 0 && capW > bd*12.0 {
+						capW = bd * 12.0
+					}
+				}
+				cut = int64(first.ShareInfo.Timestamp) - MaxPPLNSWindowAgeSecs
+			}
+			validCount++
+			if int64(s.ShareInfo.Timestamp) < cut {
+				return true
+			}
+			d := sc.GetEffectiveShareDiff(s)
+			if d > 0 {
+				if d > maxD {
+					d = maxD
+				}
+				acc += d
+				if acc >= capW {
+					return true
+				}
+			}
+			if validCount >= DefaultPPLNSWindow {
+				return true
+			}
+		}
+		p := s.ShareInfo.ShareData.PreviousShareHash
+		if p == nil || p.IsEqual(sc.genesisHash) {
+			return true
+		}
+		h = s.getPrevKey()
+	}
+	return false
+}
+
 func (sc *ShareChain) verifyPending() int {
+	sc.verifyMu.Lock()
+	defer sc.verifyMu.Unlock()
 	sc.mutex.Lock()
 	sc.recomputeWorkAndTipLocked()
 	var pend []*Share
@@ -751,7 +818,7 @@ func (sc *ShareChain) verifyPending() int {
 			continue
 		}
 		_ = i
-		post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime || sh.Type >= ShareVersionV2
+		post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime
 		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, hLen) {
 			sc.mutex.Lock()
 			delete(sc.shares, h)
@@ -770,14 +837,19 @@ func (sc *ShareChain) verifyPending() int {
 }
 func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool {
 	h := s.Hash.String()
-	expD, clmD := sc.GetExpectedShareDifficulty(p), TargetToDiff(s.Target)
-	pi := new(big.Int).SetBytes(s.POWHash.CloneBytes())
-	actD, netT := TargetToDiff(pi), blockchain.CompactToBig(s.MinHeader.Bits)
-	if (actD < expD*0.999 || clmD < expD*0.999 || clmD > expD*1.001) && pi.Cmp(netT) > 0 {
-		logging.Warnf("ShareChain: Rejected share %s: diff %.4f != consensus %.4f", h[:12], clmD, expD)
-		return false
+	sc.mutex.RLock()
+	w := sc.getOrderedChainWalkLocked(p, TargetLookbehind)
+	sc.mutex.RUnlock()
+	if len(w) >= TargetLookbehind && int64(w[TargetLookbehind-1].ShareInfo.Timestamp) >= ConsensusV2ActivationTime {
+		expD, clmD := sc.GetExpectedShareDifficulty(p), s.getTargetDiff()
+		pi := new(big.Int).SetBytes(s.POWHash.CloneBytes())
+		actD, netT := TargetToDiff(pi), blockchain.CompactToBig(s.MinHeader.Bits)
+		if (actD < expD*0.999 || clmD < expD*0.999 || clmD > expD*1.001) && pi.Cmp(netT) > 0 {
+			logging.Warnf("ShareChain: Rejected share %s: diff %.4f != consensus %.4f", h[:12], clmD, expD)
+			return false
+		}
 	}
-	if pLen >= DefaultPPLNSWindow {
+	if pLen >= TargetLookbehind && sc.hasCompletePPLNSWindow(p) && int64(s.ShareInfo.Timestamp) >= ConsensusV2ActivationTime+MaxPPLNSWindowAgeSecs {
 		if ok, r := VerifyShareCoinbase(s, sc); !ok {
 			logging.Warnf("ShareChain: Rejected share %s: %s", h[:12], r)
 			return false
@@ -877,7 +949,10 @@ func (sc *ShareChain) KnowsBlockHash(blockHash string) bool {
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
 	verCount := len(sc.verified)
-	if verCount < TargetLookbehind {
+	if verCount < TargetLookbehind || sc.TipHash == nil {
+		return true
+	}
+	if tip := sc.shares[sc.TipHash.String()]; tip == nil || time.Now().Unix()-int64(tip.ShareInfo.Timestamp) > 300 {
 		return true
 	}
 	if s := sc.shares[blockHash]; s != nil && sc.verified[blockHash] {

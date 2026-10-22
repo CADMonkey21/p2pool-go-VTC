@@ -21,11 +21,11 @@ func Vertcoin(testnet bool) Network {
 	}
 
 	n.POWHash = func(data []byte) []byte {
-		if n.Verthash == nil {
+		if ActiveNetwork.Verthash == nil {
 			logging.Errorf("Verthash engine is not available, cannot compute hash.")
 			return nil
 		}
-		hash, err := n.Verthash.Hash(data) // Use the .Hash() method from the interface
+		hash, err := ActiveNetwork.Verthash.Hash(data) // Use the .Hash() method from the interface
 		if err != nil {
 			logging.Errorf("Verthash failed during hashing: %v", err)
 			return nil

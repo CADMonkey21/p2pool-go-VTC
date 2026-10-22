@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/btcsuite/btcd/blockchain"
 	"math"
 	"net/http"
 	"sort"
@@ -431,15 +432,23 @@ func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"ready":                ready,
-		"state":                state,
-		"version":              config.Version,
-		"has_template":         hasTemplate,
-		"synced":               synced,
-		"peers":                peerCount,
-		"shares_total":         stats.SharesTotal,
-		"height":               currentHeight,
-		"difficulty":           stats.NetworkDifficulty,
+		"ready":        ready,
+		"state":        state,
+		"version":      config.Version,
+		"has_template": hasTemplate,
+		"synced":       synced,
+		"peers":        peerCount,
+		"shares_total": stats.SharesTotal,
+		"height":       currentHeight,
+		"difficulty": func() float64 {
+			if stats.NetworkDifficulty > 0 {
+				return stats.NetworkDifficulty
+			}
+			if rb := sc.GetRecentNetworkBits(); rb != 0 {
+				return work.TargetToDiff(blockchain.CompactToBig(rb))
+			}
+			return 0
+		}(),
 		"share_difficulty":     sc.GetPoolShareDifficulty(),
 		"block_reward":         blockReward,
 		"expected_payout":      expectedPayoutVTC,

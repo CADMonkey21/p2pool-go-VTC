@@ -691,9 +691,9 @@ func (wm *WorkManager) verifyHeader80(rawHex string, expectedHash string, refDif
 	if refDiff > 0 && (hdrDiff < refDiff*0.25 || hdrDiff > refDiff*4.0) {
 		return nil, false
 	}
-	if p2pnet.ActiveNetwork.POWHash != nil {
-		powLE := p2pnet.ActiveNetwork.POWHash(rawBytes)
-		if len(powLE) != 32 {
+	if p2pnet.ActiveNetwork.Verthash != nil {
+		powLE, err := p2pnet.ActiveNetwork.Verthash.Hash(rawBytes)
+		if err != nil || len(powLE) != 32 {
 			return nil, false
 		}
 		powInt := new(big.Int).SetBytes(ReverseBytes(powLE))
@@ -844,9 +844,6 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, voterKey string, r
 		fees = sub
 	}
 	if !wm.verifyTemplatePrevHeader(&t) {
-		wm.TemplateMutex.Lock()
-		wm.peerScores[peerID]--
-		wm.TemplateMutex.Unlock()
 		return false
 	}
 	wm.TemplateMutex.Lock()
