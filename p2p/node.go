@@ -416,12 +416,22 @@ func (n *Node) voterKeyForPeer(pid peer.ID) string {
 	conns := n.Host.Network().ConnsToPeer(pid)
 	for _, c := range conns {
 		parts := strings.Split(c.RemoteMultiaddr().String(), "/")
-		if len(parts) >= 3 && parts[1] == "ip4" {
-			ip := net.ParseIP(parts[2])
-			if ip != nil && !ip.IsLoopback() && !ip.IsPrivate() {
-				ip4 := ip.To4()
-				if ip4 != nil {
-					return fmt.Sprintf("%d.%d.%d.0/24", ip4[0], ip4[1], ip4[2])
+		if len(parts) >= 3 {
+			switch parts[1] {
+			case "ip4":
+				ip := net.ParseIP(parts[2])
+				if ip != nil && !ip.IsLoopback() && !ip.IsPrivate() {
+					if ip4 := ip.To4(); ip4 != nil {
+						return fmt.Sprintf("ip4:%d.%d.%d.0/24", ip4[0], ip4[1], ip4[2])
+					}
+				}
+			case "ip6":
+				ip := net.ParseIP(parts[2])
+				if ip != nil && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() {
+					masked := ip.Mask(net.CIDRMask(48, 128))
+					if masked != nil {
+						return fmt.Sprintf("ip6:%s/48", masked.String())
+					}
 				}
 			}
 		}

@@ -54,7 +54,6 @@ type persistedBlock struct {
 type peerTmplVote struct {
 	peerID string
 	pinned bool
-	local  bool
 	prev   string
 	txHash string
 	bits   string
@@ -685,10 +684,10 @@ func (wm *WorkManager) verifyHeader80(rawHex string, expectedHash string, refDif
 		return nil, false
 	}
 	hdrDiff := TargetToDiff(blockchain.CompactToBig(hdr.Bits))
-	if hdrDiff <= 0 {
+	if hdrDiff <= 0 || refDiff <= 0 {
 		return nil, false
 	}
-	if refDiff > 0 && (hdrDiff < refDiff*0.25 || hdrDiff > refDiff*4.0) {
+	if hdrDiff < refDiff*0.5 || hdrDiff > refDiff*2.0 {
 		return nil, false
 	}
 	if p2pnet.ActiveNetwork.Verthash != nil {
@@ -714,51 +713,53 @@ func (wm *WorkManager) verifyTemplatePrevHeader(t *BlockTemplate) bool {
 		return false
 	}
 	refBits := wm.ShareChain.GetRecentNetworkBits()
-	refDiff := 0.0
-	if refBits != 0 {
-		refDiff = TargetToDiff(blockchain.CompactToBig(refBits))
+	if refBits == 0 {
+		// Wait until ShareChain has verified shares before accepting templates
+		return false
 	}
-	if refDiff > 0 && (tmplDiff < refDiff*0.25 || tmplDiff > refDiff*4.0) {
+	refDiff := TargetToDiff(blockchain.CompactToBig(refBits))
+	if refDiff <= 0 || tmplDiff < refDiff*0.5 || tmplDiff > refDiff*2.0 {
 		logging.Warnf("Light Mode: Rejected template with out-of-range bits %s (diff %.2f vs ref %.2f)", t.Bits, tmplDiff, refDiff)
 		return false
 	}
-	if t.PrevBlockHeaderHex != "" {
-		wm.TemplateMutex.RLock()
-		alreadyVer := wm.verifiedBlocks[t.PreviousBlockHash]
-		wm.TemplateMutex.RUnlock()
-		if alreadyVer {
-			return true
-		}
-		hdr, ok := wm.verifyHeader80(t.PrevBlockHeaderHex, t.PreviousBlockHash, refDiff)
-		if !ok {
-			logging.Warnf("Light Mode: Rejected template: PreviousBlock %s failed 80-byte header Verthash PoW check", t.PreviousBlockHash[:12])
-			return false
-		}
-		linked := wm.ShareChain.KnowsBlockHash(t.PreviousBlockHash) || wm.ShareChain.KnowsBlockHash(hdr.PrevBlock.String())
-		curPrev := hdr.PrevBlock.String()
-		for _, ancHex := range t.AncestorHeadersHex {
-			if linked {
-				break
-			}
-			ancHdr, ancOk := wm.verifyHeader80(ancHex, curPrev, refDiff)
-			if !ancOk {
-				return false
-			}
-			if wm.ShareChain.KnowsBlockHash(curPrev) || wm.ShareChain.KnowsBlockHash(ancHdr.PrevBlock.String()) {
-				linked = true
-				break
-			}
-			curPrev = ancHdr.PrevBlock.String()
-		}
-		if !linked {
-			logging.Warnf("Light Mode: Rejected template: PreviousBlock %s does not link to verified ShareChain", t.PreviousBlockHash[:12])
-			return false
-		}
-		wm.TemplateMutex.Lock()
-		wm.verifiedBlocks[t.PreviousBlockHash] = true
-		wm.TemplateMutex.Unlock()
+	wm.TemplateMutex.RLock()
+	alreadyVer := wm.verifiedBlocks[t.PreviousBlockHash]
+	wm.TemplateMutex.RUnlock()
+	if alreadyVer {
 		return true
 	}
+	if t.PrevBlockHeaderHex == "" {
+		logging.Warnf("Light Mode: Rejected template for height %d: missing prev_header_hex for unverified block %s", t.Height, t.PreviousBlockHash[:12])
+		return false
+	}
+	hdr, ok := wm.verifyHeader80(t.PrevBlockHeaderHex, t.PreviousBlockHash, refDiff)
+	if !ok {
+		logging.Warnf("Light Mode: Rejected template: PreviousBlock %s failed 80-byte header Verthash PoW check", t.PreviousBlockHash[:12])
+		return false
+	}
+	linked := wm.ShareChain.KnowsBlockHash(t.PreviousBlockHash) || wm.ShareChain.KnowsBlockHash(hdr.PrevBlock.String())
+	curPrev := hdr.PrevBlock.String()
+	for _, ancHex := range t.AncestorHeadersHex {
+		if linked {
+			break
+		}
+		ancHdr, ancOk := wm.verifyHeader80(ancHex, curPrev, refDiff)
+		if !ancOk {
+			return false
+		}
+		if wm.ShareChain.KnowsBlockHash(curPrev) || wm.ShareChain.KnowsBlockHash(ancHdr.PrevBlock.String()) {
+			linked = true
+			break
+		}
+		curPrev = ancHdr.PrevBlock.String()
+	}
+	if !linked {
+		logging.Warnf("Light Mode: Rejected template: PreviousBlock %s does not link to verified ShareChain", t.PreviousBlockHash[:12])
+		return false
+	}
+	wm.TemplateMutex.Lock()
+	wm.verifiedBlocks[t.PreviousBlockHash] = true
+	wm.TemplateMutex.Unlock()
 	return true
 }
 
@@ -858,12 +859,10 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, voterKey string, r
 	}
 	th := txSetHash(t.Transactions)
 	isPinned := config.IsTrustedPeer(peerID)
-	isLocal := voterKey == peerID
 	if voterKey != "" {
 		wm.peerTmpl[voterKey] = peerTmplVote{
 			peerID: peerID,
 			pinned: isPinned,
-			local:  isLocal,
 			prev:   t.PreviousBlockHash,
 			txHash: th,
 			bits:   t.Bits,
@@ -894,16 +893,21 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, voterKey string, r
 	for _, v := range wm.peerTmpl {
 		if time.Since(v.ts) < 2*time.Minute && v.prev == t.PreviousBlockHash && v.bits == t.Bits {
 			agrHeader++
-			if v.pinned || v.local {
-				vCopy := v
-				pinnedVote = &vCopy
-			} else {
+			if v.pinned {
+				if pinnedVote == nil {
+					vCopy := v
+					pinnedVote = &vCopy
+				} else if otherVote == nil && v.peerID != pinnedVote.peerID {
+					vCopy := v
+					otherVote = &vCopy
+				}
+			} else if otherVote == nil {
 				vCopy := v
 				otherVote = &vCopy
 			}
 			if v.txHash == th {
 				agrExact++
-				if v.pinned || v.local {
+				if v.pinned {
 					hasTrustedExact = true
 				}
 			}

@@ -948,12 +948,8 @@ func (sc *ShareChain) KnowsBlockHash(blockHash string) bool {
 	}
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
-	verCount := len(sc.verified)
-	if verCount < TargetLookbehind || sc.TipHash == nil {
-		return true
-	}
-	if tip := sc.shares[sc.TipHash.String()]; tip == nil || time.Now().Unix()-int64(tip.ShareInfo.Timestamp) > 300 {
-		return true
+	if len(sc.verified) == 0 {
+		return false
 	}
 	if s := sc.shares[blockHash]; s != nil && sc.verified[blockHash] {
 		return true
