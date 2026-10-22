@@ -42,8 +42,22 @@ function refreshStats() {
         var pIn = (data.peers_inbound !== undefined) ? data.peers_inbound : 0;
         var pOut = (data.peers_outbound !== undefined) ? data.peers_outbound : 0;
         $('#peers_count').text(pCount + ' (' + pIn + ' in / ' + pOut + ' out)');
-        var pList = (data.peer_list && data.peer_list.length > 0) ? data.peer_list.join(', ') : 'None';
-        $('#connected_peers_list').text(pList);
+        var peersContainer = $('#connected_peers_list');
+        peersContainer.empty();
+        if (data.peer_list && data.peer_list.length > 0) {
+            var dashPort = data.stratum_port || 9172;
+            $.each(data.peer_list, function(i, peer) {
+                if (i > 0) peersContainer.append(', ');
+                var host = peer.replace(/:\d+$/, '');
+                var link = $('<a/>')
+                    .attr('href', 'http://' + host + ':' + dashPort)
+                    .attr('target', '_blank')
+                    .text(peer);
+                peersContainer.append(link);
+            });
+        } else {
+            peersContainer.text('None');
+        }
 
         // --- Update Modal Popups & Header Info ---
         $('#modal_share_difficulty').text(data.min_share_difficulty);
