@@ -190,6 +190,7 @@ func LoadConfig() {
 		Active.ShutdownToken = *shutdownTok
 	}
 	if *trustedPeersFlag != "" {
+		Active.TrustedPeers = []string{}
 		for _, p := range strings.Split(*trustedPeersFlag, ",") {
 			if p = strings.TrimSpace(p); p != "" {
 				Active.TrustedPeers = append(Active.TrustedPeers, p)
@@ -202,23 +203,14 @@ func IsTrustedPeer(peerID string) bool {
 	if peerID == "" {
 		return false
 	}
-	if len(Active.TrustedPeers) > 0 {
-		for _, tp := range Active.TrustedPeers {
-			tp = strings.TrimSpace(tp)
-			if idx := strings.LastIndex(tp, "/p2p/"); idx != -1 {
-				tp = strings.TrimSpace(tp[idx+5:])
-			}
-			if tp == peerID {
-				return true
-			}
+	// Only explicitly pinned IDs are trusted; an empty list trusts no one.
+	for _, tp := range Active.TrustedPeers {
+		tp = strings.TrimSpace(tp)
+		if idx := strings.LastIndex(tp, "/p2p/"); idx != -1 {
+			tp = strings.TrimSpace(tp[idx+5:])
 		}
-		return false
-	}
-	for _, ma := range Active.Peers {
-		if idx := strings.LastIndex(ma, "/p2p/"); idx != -1 {
-			if strings.TrimSpace(ma[idx+5:]) == peerID {
-				return true
-			}
+		if tp == peerID {
+			return true
 		}
 	}
 	return false
