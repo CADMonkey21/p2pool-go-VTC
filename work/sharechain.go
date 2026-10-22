@@ -869,3 +869,75 @@ func (sc *ShareChain) SetNetworkBitsFromTemplate(bitsHex string) {
 		}
 	}
 }
+
+func (sc *ShareChain) KnowsBlockHash(blockHash string) bool {
+	if blockHash == "" {
+		return false
+	}
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	verCount := len(sc.verified)
+	if verCount < TargetLookbehind {
+		return true
+	}
+	if s := sc.shares[blockHash]; s != nil && sc.verified[blockHash] {
+		return true
+	}
+	for h, s := range sc.shares {
+		if !sc.verified[h] || s == nil {
+			continue
+		}
+		if s.MinHeader.PreviousBlock != nil && s.MinHeader.PreviousBlock.String() == blockHash {
+			return true
+		}
+	}
+	return false
+}
+
+func (sc *ShareChain) GetRecentNetworkBits() uint32 {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	if sc.TipHash != nil {
+		if s := sc.shares[sc.TipHash.String()]; s != nil && s.MinHeader.Bits != 0 {
+			return s.MinHeader.Bits
+		}
+	}
+	for h, s := range sc.shares {
+		if sc.verified[h] && s != nil && s.MinHeader.Bits != 0 {
+			return s.MinHeader.Bits
+		}
+	}
+	return 0
+}
+
+func (sc *ShareChain) GetRandomChallengeBlockHash() string {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	var candidates []string
+	seen := make(map[string]bool)
+	tipPrev := ""
+	if sc.TipHash != nil {
+		if ts := sc.shares[sc.TipHash.String()]; ts != nil && ts.MinHeader.PreviousBlock != nil {
+			tipPrev = ts.MinHeader.PreviousBlock.String()
+		}
+	}
+	for h, s := range sc.shares {
+		if !sc.verified[h] || s == nil || s.MinHeader.PreviousBlock == nil {
+			continue
+		}
+		pb := s.MinHeader.PreviousBlock.String()
+		if pb == "" || pb == tipPrev || seen[pb] || sc.shares[pb] != nil {
+			continue
+		}
+		seen[pb] = true
+		candidates = append(candidates, pb)
+		if len(candidates) >= 64 {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	idx := int(time.Now().UnixNano()&0x7fffffff) % len(candidates)
+	return candidates[idx]
+}

@@ -3,8 +3,11 @@ package p2p
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -30,6 +33,7 @@ const TemplateProtocolID = protocol.ID("/p2pool/template/1.0.0")
 const BlockRelayProtocolID = protocol.ID("/p2pool/blockrelay/1.0.0")
 const PeerExProtocolID = protocol.ID("/p2pool/peers/1.0.0")
 const BlockCheckProtocolID = protocol.ID("/p2pool/blockcheck/1.0.0")
+const HeaderProofProtocolID = protocol.ID("/p2pool/headerproof/1.0.0")
 
 type ShareReq struct {
 	Hashes  []string `json:"hashes"`
@@ -45,25 +49,28 @@ type SyncPayload struct {
 }
 
 type Node struct {
-	Host                host.Host
-	DHT                 *dht.IpfsDHT
-	PubSub              *pubsub.PubSub
-	Topic               *pubsub.Topic
-	Sub                 *pubsub.Subscription
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	IncomingShares      chan []byte
-	bootstrapPeers      []string
-	syncMutex           sync.Mutex
-	GetSyncDataFunc     func() ([]byte, []byte)
-	OnSyncDataFunc      func(sharesJSON []byte, blocksJSON []byte)
-	GetSharesByHashFunc func(hashes []string, parents int) []byte
-	GetTemplateFunc     func() []byte
-	OnTemplateFunc      func(peerID string, tmplJSON []byte)
-	OnRawBlockFunc      func(peerID string, rawHex string) bool
-	CheckBlockFunc      func(blockHash string) int
-	peerMu              sync.RWMutex
-	peerFullMode        map[string]bool
+	Host                 host.Host
+	DHT                  *dht.IpfsDHT
+	PubSub               *pubsub.PubSub
+	Topic                *pubsub.Topic
+	Sub                  *pubsub.Subscription
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	IncomingShares       chan []byte
+	bootstrapPeers       []string
+	syncMutex            sync.Mutex
+	GetSyncDataFunc      func() ([]byte, []byte)
+	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte)
+	GetSharesByHashFunc  func(hashes []string, parents int) []byte
+	GetTemplateFunc      func() []byte
+	OnTemplateFunc       func(peerID string, voterKey string, tmplJSON []byte)
+	OnRawBlockFunc       func(peerID string, rawHex string) bool
+	CheckBlockFunc       func(blockHash string) int
+	GetRawHeaderFunc     func(blockHash string) string
+	GetChallengeHashFunc func() string
+	peerMu               sync.RWMutex
+	peerFullMode         map[string]bool
+	peerVerifiedFull     map[string]bool
 }
 
 type mdnsNotifee struct {
@@ -151,15 +158,16 @@ func NewNode(listenPort int) (*Node, error) {
 	}
 
 	node := &Node{
-		Host:           h,
-		DHT:            kaddht,
-		PubSub:         ps,
-		Topic:          topic,
-		Sub:            sub,
-		ctx:            ctx,
-		cancel:         cancel,
-		IncomingShares: make(chan []byte, 1000),
-		peerFullMode:   make(map[string]bool),
+		Host:             h,
+		DHT:              kaddht,
+		PubSub:           ps,
+		Topic:            topic,
+		Sub:              sub,
+		ctx:              ctx,
+		cancel:           cancel,
+		IncomingShares:   make(chan []byte, 1000),
+		peerFullMode:     make(map[string]bool),
+		peerVerifiedFull: make(map[string]bool),
 	}
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
@@ -168,6 +176,7 @@ func NewNode(listenPort int) (*Node, error) {
 	h.SetStreamHandler(BlockRelayProtocolID, node.handleBlockRelayStream)
 	h.SetStreamHandler(PeerExProtocolID, node.handlePeerExStream)
 	h.SetStreamHandler(BlockCheckProtocolID, node.handleBlockCheckStream)
+	h.SetStreamHandler(HeaderProofProtocolID, node.handleHeaderProofStream)
 
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
@@ -403,15 +412,87 @@ func (n *Node) isPeerAllowedTemplate(pid string) bool {
 	return !known || isFull
 }
 
+func (n *Node) voterKeyForPeer(pid peer.ID) string {
+	conns := n.Host.Network().ConnsToPeer(pid)
+	for _, c := range conns {
+		parts := strings.Split(c.RemoteMultiaddr().String(), "/")
+		if len(parts) >= 3 && parts[1] == "ip4" {
+			ip := net.ParseIP(parts[2])
+			if ip != nil && !ip.IsLoopback() && !ip.IsPrivate() {
+				ip4 := ip.To4()
+				if ip4 != nil {
+					return fmt.Sprintf("%d.%d.%d.0/24", ip4[0], ip4[1], ip4[2])
+				}
+			}
+		}
+	}
+	return pid.String()
+}
+
+func (n *Node) handleHeaderProofStream(s network.Stream) {
+	defer s.Close()
+	if n.GetRawHeaderFunc == nil {
+		return
+	}
+	_ = s.SetDeadline(time.Now().Add(8 * time.Second))
+	var bh string
+	if json.NewDecoder(s).Decode(&bh) == nil && len(bh) == 64 {
+		_ = json.NewEncoder(s).Encode(n.GetRawHeaderFunc(bh))
+	}
+}
+
+func (n *Node) verifyPeerHeaderChallenge(pid peer.ID) bool {
+	pStr := pid.String()
+	n.peerMu.RLock()
+	if n.peerVerifiedFull[pStr] {
+		n.peerMu.RUnlock()
+		return true
+	}
+	n.peerMu.RUnlock()
+
+	if n.GetChallengeHashFunc == nil {
+		return true
+	}
+	chal := n.GetChallengeHashFunc()
+	if chal == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(n.ctx, 6*time.Second)
+	defer cancel()
+	s, err := n.Host.NewStream(ctx, pid, HeaderProofProtocolID)
+	if err != nil {
+		return true
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(6 * time.Second))
+	_ = json.NewEncoder(s).Encode(chal)
+	_ = s.CloseWrite()
+	var hexHdr string
+	if json.NewDecoder(s).Decode(&hexHdr) != nil || len(hexHdr) != 160 {
+		n.setPeerFullMode(pStr, false)
+		return false
+	}
+	raw, err := hex.DecodeString(hexHdr)
+	if err != nil || len(raw) != 80 || chainhash.DoubleHashH(raw).String() != chal {
+		n.setPeerFullMode(pStr, false)
+		return false
+	}
+	n.peerMu.Lock()
+	n.peerVerifiedFull[pStr] = true
+	n.peerMu.Unlock()
+	return true
+}
+
 func (n *Node) handleTemplateStream(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(15 * time.Second))
-	pid := s.Conn().RemotePeer().String()
+	rPeer := s.Conn().RemotePeer()
+	pid := rPeer.String()
 	var raw json.RawMessage
 	if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 && n.OnTemplateFunc != nil {
-		if n.isPeerAllowedTemplate(pid) {
+		if n.isPeerAllowedTemplate(pid) && n.verifyPeerHeaderChallenge(rPeer) {
 			n.setPeerFullMode(pid, true)
-			n.OnTemplateFunc(pid, raw)
+			n.OnTemplateFunc(pid, n.voterKeyForPeer(rPeer), raw)
 		}
 	} else if n.GetTemplateFunc != nil {
 		if b := n.GetTemplateFunc(); len(b) > 0 {
@@ -450,8 +531,10 @@ func (n *Node) PullTemplateFromPeers() {
 		_ = s.CloseWrite()
 		var raw json.RawMessage
 		if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 {
-			n.setPeerFullMode(pid.String(), true)
-			n.OnTemplateFunc(pid.String(), raw)
+			if n.verifyPeerHeaderChallenge(pid) {
+				n.setPeerFullMode(pid.String(), true)
+				n.OnTemplateFunc(pid.String(), n.voterKeyForPeer(pid), raw)
+			}
 		}
 		s.Close()
 		cancel()

@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
+	"github.com/btcsuite/btcd/blockchain"
+	"math/big"
 	"os"
 	"sort"
 	"strconv"
@@ -49,10 +52,14 @@ type persistedBlock struct {
 }
 
 type peerTmplVote struct {
+	peerID string
+	pinned bool
+	local  bool
 	prev   string
 	txHash string
 	bits   string
 	height int64
+	txs    []BlockTemplateTx
 	ts     time.Time
 }
 type WorkManager struct {
@@ -75,6 +82,10 @@ type WorkManager struct {
 	lastAgreedTime              time.Time
 	lastBlockUpdate             time.Time
 	lastBlockUpdateMux          sync.RWMutex
+	verifiedBlocks              map[string]bool
+	cachedPrevHdrHex            string
+	cachedPrevHash              string
+	cachedAncestorsHex          []string
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
@@ -88,6 +99,7 @@ func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
 		peerTmpl:         make(map[string]peerTmplVote),
 		peerScores:       make(map[string]int),
 		seenBlocks:       make(map[string]time.Time),
+		verifiedBlocks:   make(map[string]bool),
 	}
 	wm.LoadBlocks()
 	return wm
@@ -263,6 +275,45 @@ func (wm *WorkManager) fetchBlockTemplate() {
 		return
 	}
 	tmpl.FullNode = true
+	wm.TemplateMutex.RLock()
+	cachedMatch := wm.cachedPrevHash == tmpl.PreviousBlockHash && wm.cachedPrevHdrHex != ""
+	cHdr := wm.cachedPrevHdrHex
+	cAnc := wm.cachedAncestorsHex
+	wm.TemplateMutex.RUnlock()
+	if !cachedMatch && wm.rpcClient != nil && tmpl.PreviousBlockHash != "" {
+		if rawHex, err := wm.rpcClient.GetRawBlockHeaderHex(tmpl.PreviousBlockHash); err == nil && len(rawHex) == 160 {
+			cHdr = rawHex
+			cAnc = nil
+			curHex := rawHex
+			for step := 0; step < 4; step++ {
+				rawBytes, err := hex.DecodeString(curHex)
+				if err != nil || len(rawBytes) != 80 {
+					break
+				}
+				var hdr wire.BlockHeader
+				if err := hdr.Deserialize(bytes.NewReader(rawBytes)); err != nil {
+					break
+				}
+				prevStr := hdr.PrevBlock.String()
+				if wm.ShareChain.KnowsBlockHash(prevStr) {
+					break
+				}
+				ancHex, err := wm.rpcClient.GetRawBlockHeaderHex(prevStr)
+				if err != nil || len(ancHex) != 160 {
+					break
+				}
+				cAnc = append(cAnc, ancHex)
+				curHex = ancHex
+			}
+			wm.TemplateMutex.Lock()
+			wm.cachedPrevHash = tmpl.PreviousBlockHash
+			wm.cachedPrevHdrHex = cHdr
+			wm.cachedAncestorsHex = cAnc
+			wm.TemplateMutex.Unlock()
+		}
+	}
+	tmpl.PrevBlockHeaderHex = cHdr
+	tmpl.AncestorHeadersHex = cAnc
 	wm.ShareChain.SetCurrentBlockTarget(tmpl.PreviousBlockHash, tmpl.Bits)
 	wm.lastBlockUpdateMux.Lock()
 	wm.lastBlockUpdate = time.Now()
@@ -604,6 +655,143 @@ func (wm *WorkManager) MergeRemoteBlocksJSON(data []byte) int {
 	return added
 }
 
+func (wm *WorkManager) GetRawBlockHeaderHex(blockHash string) string {
+	if config.Active.LightMode || wm.rpcClient == nil || len(blockHash) != 64 {
+		return ""
+	}
+	hdrHex, err := wm.rpcClient.GetRawBlockHeaderHex(blockHash)
+	if err != nil || len(hdrHex) != 160 {
+		return ""
+	}
+	return hdrHex
+}
+
+func (wm *WorkManager) verifyHeader80(rawHex string, expectedHash string, refDiff float64) (*wire.BlockHeader, bool) {
+	if len(rawHex) != 160 {
+		return nil, false
+	}
+	rawBytes, err := hex.DecodeString(rawHex)
+	if err != nil || len(rawBytes) != 80 {
+		return nil, false
+	}
+	var hdr wire.BlockHeader
+	if err := hdr.Deserialize(bytes.NewReader(rawBytes)); err != nil {
+		return nil, false
+	}
+	if expectedHash != "" && hdr.BlockHash().String() != expectedHash {
+		return nil, false
+	}
+	if hdr.Bits == 0 {
+		return nil, false
+	}
+	hdrDiff := TargetToDiff(blockchain.CompactToBig(hdr.Bits))
+	if hdrDiff <= 0 {
+		return nil, false
+	}
+	if refDiff > 0 && (hdrDiff < refDiff*0.25 || hdrDiff > refDiff*4.0) {
+		return nil, false
+	}
+	if p2pnet.ActiveNetwork.POWHash != nil {
+		powLE := p2pnet.ActiveNetwork.POWHash(rawBytes)
+		if len(powLE) != 32 {
+			return nil, false
+		}
+		powInt := new(big.Int).SetBytes(ReverseBytes(powLE))
+		if powInt.Cmp(blockchain.CompactToBig(hdr.Bits)) > 0 {
+			return nil, false
+		}
+	}
+	return &hdr, true
+}
+
+func (wm *WorkManager) verifyTemplatePrevHeader(t *BlockTemplate) bool {
+	bInt, err := strconv.ParseUint(t.Bits, 16, 32)
+	if err != nil || bInt == 0 {
+		return false
+	}
+	tmplDiff := TargetToDiff(blockchain.CompactToBig(uint32(bInt)))
+	if tmplDiff <= 0 {
+		return false
+	}
+	refBits := wm.ShareChain.GetRecentNetworkBits()
+	refDiff := 0.0
+	if refBits != 0 {
+		refDiff = TargetToDiff(blockchain.CompactToBig(refBits))
+	}
+	if refDiff > 0 && (tmplDiff < refDiff*0.25 || tmplDiff > refDiff*4.0) {
+		logging.Warnf("Light Mode: Rejected template with out-of-range bits %s (diff %.2f vs ref %.2f)", t.Bits, tmplDiff, refDiff)
+		return false
+	}
+	if t.PrevBlockHeaderHex != "" {
+		wm.TemplateMutex.RLock()
+		alreadyVer := wm.verifiedBlocks[t.PreviousBlockHash]
+		wm.TemplateMutex.RUnlock()
+		if alreadyVer {
+			return true
+		}
+		hdr, ok := wm.verifyHeader80(t.PrevBlockHeaderHex, t.PreviousBlockHash, refDiff)
+		if !ok {
+			logging.Warnf("Light Mode: Rejected template: PreviousBlock %s failed 80-byte header Verthash PoW check", t.PreviousBlockHash[:12])
+			return false
+		}
+		linked := wm.ShareChain.KnowsBlockHash(t.PreviousBlockHash) || wm.ShareChain.KnowsBlockHash(hdr.PrevBlock.String())
+		curPrev := hdr.PrevBlock.String()
+		for _, ancHex := range t.AncestorHeadersHex {
+			if linked {
+				break
+			}
+			ancHdr, ancOk := wm.verifyHeader80(ancHex, curPrev, refDiff)
+			if !ancOk {
+				return false
+			}
+			if wm.ShareChain.KnowsBlockHash(curPrev) || wm.ShareChain.KnowsBlockHash(ancHdr.PrevBlock.String()) {
+				linked = true
+				break
+			}
+			curPrev = ancHdr.PrevBlock.String()
+		}
+		if !linked {
+			logging.Warnf("Light Mode: Rejected template: PreviousBlock %s does not link to verified ShareChain", t.PreviousBlockHash[:12])
+			return false
+		}
+		wm.TemplateMutex.Lock()
+		wm.verifiedBlocks[t.PreviousBlockHash] = true
+		wm.TemplateMutex.Unlock()
+		return true
+	}
+	return true
+}
+
+func intersectTemplateTxs(a, b []BlockTemplateTx) ([]BlockTemplateTx, int64) {
+	if len(a) == 0 || len(b) == 0 {
+		return nil, 0
+	}
+	inB := make(map[string]bool, len(b))
+	for _, tx := range b {
+		k := tx.TxID
+		if k == "" {
+			k = tx.Hash
+		}
+		if k != "" {
+			inB[k] = true
+		}
+	}
+	var out []BlockTemplateTx
+	var fees int64
+	for _, tx := range a {
+		k := tx.TxID
+		if k == "" {
+			k = tx.Hash
+		}
+		if k == "" || !inB[k] || len(tx.Depends) > 0 {
+			continue
+		}
+		out = append(out, tx)
+		fees += int64(tx.Fee)
+	}
+	return out, fees
+}
+
 func (wm *WorkManager) GetBlockConfirmations(blockHash string) int {
 	if config.Active.LightMode || wm.rpcClient == nil || blockHash == "" {
 		return 0
@@ -633,13 +821,16 @@ func (wm *WorkManager) GetLatestTemplateJSON() []byte {
 	return b
 }
 
-func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
+func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, voterKey string, raw []byte) bool {
 	if !config.Active.LightMode {
 		return false
 	}
 	var t BlockTemplate
 	if json.Unmarshal(raw, &t) != nil || !t.FullNode || t.Height <= 0 || t.PreviousBlockHash == "" || t.Bits == "" {
 		return false
+	}
+	if voterKey == "" {
+		voterKey = peerID
 	}
 	sub := int64(5000000000) >> (uint(t.Height) / 840000)
 	var fees int64
@@ -652,6 +843,12 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 	if fees > sub {
 		fees = sub
 	}
+	if !wm.verifyTemplatePrevHeader(&t) {
+		wm.TemplateMutex.Lock()
+		wm.peerScores[peerID]--
+		wm.TemplateMutex.Unlock()
+		return false
+	}
 	wm.TemplateMutex.Lock()
 	if wm.peerScores[peerID] < -2 {
 		wm.TemplateMutex.Unlock()
@@ -663,8 +860,20 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		return false
 	}
 	th := txSetHash(t.Transactions)
-	if peerID != "" {
-		wm.peerTmpl[peerID] = peerTmplVote{prev: t.PreviousBlockHash, txHash: th, bits: t.Bits, height: t.Height, ts: time.Now()}
+	isPinned := config.IsTrustedPeer(peerID)
+	isLocal := voterKey == peerID
+	if voterKey != "" {
+		wm.peerTmpl[voterKey] = peerTmplVote{
+			peerID: peerID,
+			pinned: isPinned,
+			local:  isLocal,
+			prev:   t.PreviousBlockHash,
+			txHash: th,
+			bits:   t.Bits,
+			height: t.Height,
+			txs:    t.Transactions,
+			ts:     time.Now(),
+		}
 	}
 	var curH int64
 	var curPrev, curTH string
@@ -680,22 +889,41 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, raw []byte) bool {
 		wm.TemplateMutex.Unlock()
 		return false
 	}
-	agr := 0
-	weight := 0
-	for pid, v := range wm.peerTmpl {
-		if time.Since(v.ts) < 2*time.Minute && v.prev == t.PreviousBlockHash && v.bits == t.Bits && v.txHash == th {
-			agr++
-			w := 1
-			if wm.peerScores[pid] > 0 {
-				w += wm.peerScores[pid]
-				if w > 3 {
-					w = 3
+	agrExact := 0
+	agrHeader := 0
+	hasTrustedExact := false
+	var pinnedVote *peerTmplVote
+	var otherVote *peerTmplVote
+	for _, v := range wm.peerTmpl {
+		if time.Since(v.ts) < 2*time.Minute && v.prev == t.PreviousBlockHash && v.bits == t.Bits {
+			agrHeader++
+			if v.pinned || v.local {
+				vCopy := v
+				pinnedVote = &vCopy
+			} else {
+				vCopy := v
+				otherVote = &vCopy
+			}
+			if v.txHash == th {
+				agrExact++
+				if v.pinned || v.local {
+					hasTrustedExact = true
 				}
 			}
-			weight += w
 		}
 	}
-	if agr < 2 || weight < 2 {
+	if agrExact >= 2 && hasTrustedExact {
+		// Full consensus with a pinned/trusted node on exact transaction set
+	} else if agrHeader >= 2 && pinnedVote != nil && otherVote != nil {
+		commonTxs, commonFees := intersectTemplateTxs(pinnedVote.txs, otherVote.txs)
+		t.Transactions = commonTxs
+		t.CoinbaseValue = sub + commonFees
+		th = txSetHash(t.Transactions)
+	} else if (agrHeader >= 2) || (agrHeader == 1 && wm.verifiedBlocks[t.PreviousBlockHash] && (isPinned || len(wm.peerTmpl) == 1)) {
+		t.Transactions = nil
+		t.CoinbaseValue = sub
+		th = txSetHash(nil)
+	} else {
 		wm.TemplateMutex.Unlock()
 		return false
 	}

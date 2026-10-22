@@ -188,13 +188,15 @@ func main() {
 	workManager.RelayBlockHexFunc = p2pNode.RelaySolvedBlockHex
 	workManager.CheckBlockConfirmationsFunc = p2pNode.QueryBlockConfirmations
 	p2pNode.OnRawBlockFunc = workManager.SubmitRawBlockHex
+	p2pNode.GetChallengeHashFunc = sc.GetRandomChallengeBlockHash
 	if !config.Active.LightMode {
 		workManager.OnTemplateBroadcast = p2pNode.BroadcastTemplate
 		p2pNode.GetTemplateFunc = workManager.GetLatestTemplateJSON
 		p2pNode.CheckBlockFunc = workManager.GetBlockConfirmations
+		p2pNode.GetRawHeaderFunc = workManager.GetRawBlockHeaderHex
 	}
 	if config.Active.LightMode {
-		p2pNode.OnTemplateFunc = func(p string, b []byte) { workManager.ApplyRemoteTemplateJSON(p, b) }
+		p2pNode.OnTemplateFunc = func(p string, vk string, b []byte) { workManager.ApplyRemoteTemplateJSON(p, vk, b) }
 		logging.Infof("Running in daemon-less LIGHT MODE (receiving block templates via P2P)")
 		go func() {
 			for {

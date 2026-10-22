@@ -388,6 +388,36 @@ func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	d.workManager.TemplateMutex.Unlock()
 
+	blockReward := d.workManager.GetCurrentBlockReward()
+	totalRewardSats := int64(math.Round(blockReward * 1e8))
+	targetAddr := strings.TrimSpace(r.URL.Query().Get("address"))
+	if targetAddr == "" {
+		for _, m := range d.stratum.GetClients() {
+			m.Mutex.Lock()
+			wName := strings.TrimSpace(m.WorkerName)
+			m.Mutex.Unlock()
+			if wName != "" && wName != "Unknown" {
+				targetAddr = wName
+				break
+			}
+		}
+	}
+	if targetAddr == "" {
+		targetAddr = config.Active.PoolAddress
+	}
+	pplnsOutputs := work.CalculatePPLNSOutputs(totalRewardSats, targetAddr, sc)
+	pplnsPayoutMap := make(map[string]float64, len(pplnsOutputs))
+	var expectedPayoutVTC float64
+	var expectedPayoutSats int64
+	for _, out := range pplnsOutputs {
+		vtcAmt := float64(out.Amount) / 1e8
+		pplnsPayoutMap[out.Address] = vtcAmt
+		if targetAddr != "" && out.Address == targetAddr {
+			expectedPayoutVTC = vtcAmt
+			expectedPayoutSats = out.Amount
+		}
+	}
+
 	synced := d.workManager.IsSynced()
 	chainReady := config.Active.SoloMode || peerCount > 0 || stats.SharesTotal > 0
 	ready := synced && hasTemplate && chainReady
@@ -401,19 +431,25 @@ func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"ready":          ready,
-		"state":          state,
-		"version":        config.Version,
-		"has_template":   hasTemplate,
-		"synced":         synced,
-		"peers":          peerCount,
-		"shares_total":   stats.SharesTotal,
-		"height":         currentHeight,
-		"stratum_port":   config.Active.StratumPort,
-		"p2p_port":       config.Active.P2PPort,
-		"network":        config.Active.Network,
-		"testnet":        config.Active.Testnet,
-		"uptime_seconds": int64(time.Since(d.startTime).Seconds()),
+		"ready":                ready,
+		"state":                state,
+		"version":              config.Version,
+		"has_template":         hasTemplate,
+		"synced":               synced,
+		"peers":                peerCount,
+		"shares_total":         stats.SharesTotal,
+		"height":               currentHeight,
+		"difficulty":           stats.NetworkDifficulty,
+		"share_difficulty":     sc.GetPoolShareDifficulty(),
+		"block_reward":         blockReward,
+		"expected_payout":      expectedPayoutVTC,
+		"expected_payout_sats": expectedPayoutSats,
+		"payouts":              pplnsPayoutMap,
+		"stratum_port":         config.Active.StratumPort,
+		"p2p_port":             config.Active.P2PPort,
+		"network":              config.Active.Network,
+		"testnet":              config.Active.Testnet,
+		"uptime_seconds":       int64(time.Since(d.startTime).Seconds()),
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }

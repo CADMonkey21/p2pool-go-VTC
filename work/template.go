@@ -12,19 +12,21 @@ type BlockTemplate struct {
 	CoinbaseAux       struct {
 		Flags string `json:"flags"`
 	} `json:"coinbaseaux"`
-	CoinbaseValue int64    `json:"coinbasevalue"`
-	LongPollID    string   `json:"longpollid"`
-	Target        string   `json:"target"`
-	MinTime       int64    `json:"mintime"`
-	Mutable       []string `json:"mutable"`
-	NonceRange    string   `json:"noncerange"`
-	SigOpLimit    int      `json:"sigoplimit"`
-	SizeLimit     int      `json:"sizelimit"`
-	WeightLimit   int      `json:"weightlimit"`
-	CurTime       int64    `json:"curtime"`
-	Bits          string   `json:"bits"`
-	Height        int64    `json:"height"`
-	FullNode      bool     `json:"full_node,omitempty"`
+	CoinbaseValue      int64    `json:"coinbasevalue"`
+	LongPollID         string   `json:"longpollid"`
+	Target             string   `json:"target"`
+	MinTime            int64    `json:"mintime"`
+	Mutable            []string `json:"mutable"`
+	NonceRange         string   `json:"noncerange"`
+	SigOpLimit         int      `json:"sigoplimit"`
+	SizeLimit          int      `json:"sizelimit"`
+	WeightLimit        int      `json:"weightlimit"`
+	CurTime            int64    `json:"curtime"`
+	Bits               string   `json:"bits"`
+	Height             int64    `json:"height"`
+	FullNode           bool     `json:"full_node,omitempty"`
+	PrevBlockHeaderHex string   `json:"prev_header_hex,omitempty"`
+	AncestorHeadersHex []string `json:"ancestor_headers_hex,omitempty"`
 }
 
 // BlockTemplateTx represents a single transaction in the block template.

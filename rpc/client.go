@@ -231,3 +231,16 @@ func (c *Client) SendMany(amounts map[string]float64) (string, error) {
 
 	return txid, nil
 }
+
+// GetRawBlockHeaderHex retrieves the raw 80-byte hex-encoded block header for a block hash.
+func (c *Client) GetRawBlockHeaderHex(blockHash string) (string, error) {
+	resp, err := c.Call("getblockheader", []interface{}{blockHash, false})
+	if err != nil {
+		return "", err
+	}
+	var rawHex string
+	if err := json.Unmarshal(resp.Result, &rawHex); err != nil {
+		return "", err
+	}
+	return rawHex, nil
+}

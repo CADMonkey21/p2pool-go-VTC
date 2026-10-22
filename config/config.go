@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,7 @@ type Config struct {
 	RPCCookieFile   string        `yaml:"rpcCookieFile"`
 	ParentPID       int           `yaml:"parentPid"`
 	ShutdownToken   string        `yaml:"shutdownToken"`
+	TrustedPeers    []string      `yaml:"trustedPeers"`
 }
 
 var Active Config
@@ -68,6 +70,7 @@ func LoadConfig() {
 	cookieFile := flag.String("cookie", "", "Path to Vertcoin Core .cookie file")
 	parentPID := flag.Int("parentpid", 0, "Exit cleanly when this parent PID terminates")
 	shutdownTok := flag.String("shutdown-token", "", "Token for loopback POST /api/shutdown")
+	trustedPeersFlag := flag.String("trustedpeers", "", "Comma-separated list of pinned full-node libp2p Peer IDs")
 	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
 
 	flag.Parse()
@@ -82,6 +85,10 @@ func LoadConfig() {
 		Peers: []string{
 			"/ip4/138.68.53.157/tcp/9348/p2p/12D3KooWNiQ2TSXEhFgZrsJuuk9xxNheph8b23pK4RHaPSQFNDwU",
 			"/dns4/p2poolvtc.com/tcp/9348/p2p/12D3KooWNiQ2TSXEhFgZrsJuuk9xxNheph8b23pK4RHaPSQFNDwU",
+		},
+		TrustedPeers: []string{
+			"12D3KooWNiQ2TSXEhFgZrsJuuk9xxNheph8b23pK4RHaPSQFNDwU",
+			"12D3KooWL65LCCkfLnN2PaEjdXUm4BBHj24nzpABPhDatjNzPKwi",
 		},
 		RPCHost:     "127.0.0.1",
 		RPCPort:     5888,
@@ -182,4 +189,30 @@ func LoadConfig() {
 	if *shutdownTok != "" {
 		Active.ShutdownToken = *shutdownTok
 	}
+	if *trustedPeersFlag != "" {
+		for _, p := range strings.Split(*trustedPeersFlag, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				Active.TrustedPeers = append(Active.TrustedPeers, p)
+			}
+		}
+	}
+}
+
+func IsTrustedPeer(peerID string) bool {
+	if peerID == "" {
+		return false
+	}
+	for _, tp := range Active.TrustedPeers {
+		if strings.TrimSpace(tp) == peerID {
+			return true
+		}
+	}
+	for _, ma := range Active.Peers {
+		if idx := strings.LastIndex(ma, "/p2p/"); idx != -1 {
+			if strings.TrimSpace(ma[idx+5:]) == peerID {
+				return true
+			}
+		}
+	}
+	return false
 }
