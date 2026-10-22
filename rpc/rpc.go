@@ -3,10 +3,10 @@ package rpc
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/net"
+	"github.com/btcsuite/btcd/rpcclient"
 )
 
 var ConnRPC *rpcclient.Client

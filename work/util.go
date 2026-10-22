@@ -54,7 +54,6 @@ func TargetToDiff(target *big.Int) float64 {
 	return diffFloat
 }
 
-
 // CalculateMerkleLink computes the merkle branches for a transaction at a given index.
 func CalculateMerkleLink(hashes [][]byte, index int) []*chainhash.Hash {
 	branches := []*chainhash.Hash{}

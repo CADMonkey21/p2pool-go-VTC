@@ -118,7 +118,7 @@ func Errorf(format string, args ...interface{}) {
 
 func Debugln(args ...interface{}) {
 	if logLevel >= LogLevelDebug {
-		log.Println( Cyan + getPrefix("DEBUG") + " " + fmt.Sprint(args...) + Reset)
+		log.Println(Cyan + getPrefix("DEBUG") + " " + fmt.Sprint(args...) + Reset)
 	}
 }
 
