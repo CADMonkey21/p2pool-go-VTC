@@ -99,9 +99,19 @@ function refreshStats() {
         var blocksCount = (data.pool_blocks_found_24h !== undefined) ? data.pool_blocks_found_24h : (data.blocks_found_list ? data.blocks_found_list.length : 0);
         $('#num_blocks_found').text(blocksCount);
         if (data.blocks_found_list && data.blocks_found_list.length > 0) {
+            var isTestnet = (data.payouts_list && data.payouts_list.length > 0 && data.payouts_list[0].address.startsWith('tvtc1')) ||
+                            (data.active_miners_list && data.active_miners_list.length > 0 && data.active_miners_list[0].address.startsWith('tvtc1'));
+            var blockExplorerBase = isTestnet ?
+                                    'https://chainz.cryptoid.info/vtc-test/block.dws?' :
+                                    'https://chainz.cryptoid.info/vtc/block.dws?';
             $.each(data.blocks_found_list, function(index, block) {
                 var tr = $('<tr/>').addClass('c-table__row');
-                tr.append($('<td/>').addClass('c-table__cell').text(block.block_number));
+                var blockTarget = block.block_hash || block.hash || block.block_number;
+                var blockLink = $('<a/>')
+                                    .attr('href', blockExplorerBase + blockTarget + '.htm')
+                                    .attr('target', '_blank')
+                                    .text(block.block_number);
+                tr.append($('<td/>').addClass('c-table__cell').append(blockLink));
                 tr.append($('<td/>').addClass('c-table__cell').text(block.found_ago));
                 blocksTable.append(tr);
             });
