@@ -243,16 +243,12 @@ func main() {
 			}
 		}
 	}
+	p2pNode.GetMissingSharesFunc = func() []string { return sc.GetMissingParentHashes(100) }
+	p2pNode.GetStopHashesFunc = func() []string { return sc.GetStopHashes(100) }
+	go p2pNode.DownloadShares()
 	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 	go p2pNode.Bootstrap(config.Active.Peers)
 
-	go func() {
-		for range time.NewTicker(3 * time.Second).C {
-			if miss := sc.GetMissingParentHashes(8); len(miss) > 0 {
-				p2pNode.RequestShares(miss, 250)
-			}
-		}
-	}()
 	go func() {
 		for shareBytes := range p2pNode.IncomingShares {
 			var remoteShare work.Share
