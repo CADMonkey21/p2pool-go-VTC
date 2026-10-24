@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -53,6 +54,18 @@ type VersionMsg struct {
 }
 
 const peerKeyFile = "peer.key"
+
+// Stream message size limits, so a peer cannot make us buffer an unbounded message.
+const (
+	maxSmallMsgSize   = 1 << 20
+	maxShareReplySize = 32 << 20
+	maxBlockMsgSize   = 32 << 20
+	maxSyncMsgSize    = 128 << 20
+)
+
+func decodeLimited(r io.Reader, limit int64, v interface{}) error {
+	return json.NewDecoder(io.LimitReader(r, limit)).Decode(v)
+}
 
 type SyncPayload struct {
 	Shares   json.RawMessage `json:"shares"`
@@ -271,7 +284,7 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 
 	var incoming SyncPayload
-	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+	if err := decodeLimited(s, maxSyncMsgSize, &incoming); err != nil {
 		return
 	}
 	n.setPeerFullMode(s.Conn().RemotePeer().String(), incoming.FullNode)
@@ -303,7 +316,7 @@ func (n *Node) handleVersionStream(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
 	var incoming VersionMsg
-	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+	if err := decodeLimited(s, maxSmallMsgSize, &incoming); err != nil {
 		return
 	}
 	_ = json.NewEncoder(s).Encode(n.versionMsg())
@@ -327,7 +340,7 @@ func (n *Node) exchangeVersion(pid peer.ID) bool {
 	}
 	_ = s.CloseWrite()
 	var incoming VersionMsg
-	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+	if err := decodeLimited(s, maxSmallMsgSize, &incoming); err != nil {
 		return false
 	}
 	n.requestBestShare(pid, incoming.BestShareHash)
@@ -390,7 +403,7 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 	_ = s.CloseWrite()
 
 	var incoming SyncPayload
-	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+	if err := decodeLimited(s, maxSyncMsgSize, &incoming); err != nil {
 		logging.Debugf("P2P Sync: Failed decoding sync response from %s: %v", pid, err)
 		return
 	}
@@ -464,6 +477,31 @@ func (n *Node) Bootstrap(bootstrapPeers []string) error {
 	return nil
 }
 
+// ShareVerdict is a gossip share validator's decision.
+type ShareVerdict int
+
+const (
+	ShareAccept ShareVerdict = iota
+	// ShareReject drops an invalid share so it is neither delivered nor forwarded.
+	ShareReject
+	// ShareIgnore drops a share without counting it as invalid, for checks against
+	// our own clock that a peer could pass honestly.
+	ShareIgnore
+)
+
+// SetShareValidator runs f on every gossip share before it is delivered or forwarded.
+func (n *Node) SetShareValidator(f func(data []byte) ShareVerdict) error {
+	return n.PubSub.RegisterTopicValidator(P2PNetworkTopic, func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
+		switch f(msg.Data) {
+		case ShareAccept:
+			return pubsub.ValidationAccept
+		case ShareIgnore:
+			return pubsub.ValidationIgnore
+		}
+		return pubsub.ValidationReject
+	})
+}
+
 func (n *Node) BroadcastShare(shareData []byte) error {
 	return n.Topic.Publish(n.ctx, shareData)
 }
@@ -501,7 +539,7 @@ func (n *Node) handleShareReqStream(s network.Stream) {
 	}
 	_ = s.SetDeadline(time.Now().Add(30 * time.Second))
 	var req ShareReq
-	if err := json.NewDecoder(s).Decode(&req); err != nil || len(req.Hashes) == 0 {
+	if err := decodeLimited(s, maxSmallMsgSize, &req); err != nil || len(req.Hashes) == 0 {
 		return
 	}
 	resp := n.GetSharesByHashFunc(req.Hashes, req.Parents, req.Stops)
@@ -556,7 +594,7 @@ func (n *Node) handleHeaderProofStream(s network.Stream) {
 	}
 	_ = s.SetDeadline(time.Now().Add(8 * time.Second))
 	var bh string
-	if json.NewDecoder(s).Decode(&bh) == nil && len(bh) == 64 {
+	if decodeLimited(s, maxSmallMsgSize, &bh) == nil && len(bh) == 64 {
 		_ = json.NewEncoder(s).Encode(n.GetRawHeaderFunc(bh))
 	}
 }
@@ -588,7 +626,7 @@ func (n *Node) verifyPeerHeaderChallenge(pid peer.ID) bool {
 	_ = json.NewEncoder(s).Encode(chal)
 	_ = s.CloseWrite()
 	var hexHdr string
-	if json.NewDecoder(s).Decode(&hexHdr) != nil || len(hexHdr) != 160 {
+	if decodeLimited(s, maxSmallMsgSize, &hexHdr) != nil || len(hexHdr) != 160 {
 		n.setPeerFullMode(pStr, false)
 		return false
 	}
@@ -609,7 +647,7 @@ func (n *Node) handleTemplateStream(s network.Stream) {
 	rPeer := s.Conn().RemotePeer()
 	pid := rPeer.String()
 	var raw json.RawMessage
-	if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 && n.OnTemplateFunc != nil {
+	if decodeLimited(s, maxBlockMsgSize, &raw) == nil && len(raw) > 4 && n.OnTemplateFunc != nil {
 		if n.isPeerAllowedTemplate(pid) && n.verifyPeerHeaderChallenge(rPeer) {
 			n.setPeerFullMode(pid, true)
 			n.OnTemplateFunc(pid, n.voterKeyForPeer(rPeer), raw)
@@ -650,7 +688,7 @@ func (n *Node) PullTemplateFromPeers() {
 		_, _ = s.Write([]byte("null\n"))
 		_ = s.CloseWrite()
 		var raw json.RawMessage
-		if json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4 {
+		if decodeLimited(s, maxBlockMsgSize, &raw) == nil && len(raw) > 4 {
 			if n.verifyPeerHeaderChallenge(pid) {
 				n.setPeerFullMode(pid.String(), true)
 				n.OnTemplateFunc(pid.String(), n.voterKeyForPeer(pid), raw)
@@ -667,7 +705,7 @@ func (n *Node) handleBlockCheckStream(s network.Stream) {
 	}
 	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
 	var bh string
-	if json.NewDecoder(s).Decode(&bh) == nil && len(bh) > 0 {
+	if decodeLimited(s, maxSmallMsgSize, &bh) == nil && len(bh) > 0 {
 		_ = json.NewEncoder(s).Encode(n.CheckBlockFunc(bh))
 	}
 }
@@ -686,7 +724,7 @@ func (n *Node) QueryBlockConfirmations(blockHash string) int {
 		_ = json.NewEncoder(s).Encode(blockHash)
 		_ = s.CloseWrite()
 		var confs int
-		if json.NewDecoder(s).Decode(&confs) == nil {
+		if decodeLimited(s, maxSmallMsgSize, &confs) == nil {
 			if confs > best {
 				best = confs
 			}
@@ -700,7 +738,7 @@ func (n *Node) handleBlockRelayStream(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(30 * time.Second))
 	var hexStr string
-	if json.NewDecoder(s).Decode(&hexStr) == nil && len(hexStr) > 0 && n.OnRawBlockFunc != nil {
+	if decodeLimited(s, maxBlockMsgSize, &hexStr) == nil && len(hexStr) > 0 && n.OnRawBlockFunc != nil {
 		if n.OnRawBlockFunc(s.Conn().RemotePeer().String(), hexStr) {
 			_, _ = s.Write([]byte("OK"))
 		}
@@ -767,7 +805,7 @@ func (n *Node) ExchangePeers(pid peer.ID) {
 	}
 	defer s.Close()
 	var addrs []string
-	if json.NewDecoder(s).Decode(&addrs) == nil && len(addrs) > 0 {
+	if decodeLimited(s, maxSmallMsgSize, &addrs) == nil && len(addrs) > 0 {
 		go n.Bootstrap(addrs)
 	}
 }

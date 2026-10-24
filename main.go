@@ -121,6 +121,25 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 // letting the heap double.
 const defaultMemoryLimit = 160 << 20
 
+// validateGossipShare runs the checks a share needs no sharechain state for, cheapest
+// first, so invalid shares are not forwarded and cost at most one Verthash.
+func validateGossipShare(b []byte) p2p.ShareVerdict {
+	var sh work.Share
+	if json.Unmarshal(b, &sh) != nil {
+		return p2p.ShareReject
+	}
+	if work.CheckShareTime(&sh, time.Now()) != "" {
+		return p2p.ShareIgnore
+	}
+	if !work.CheckShareTargetFloor(&sh) || sh.CalculateHashes() != nil {
+		return p2p.ShareReject
+	}
+	if ok, _ := sh.IsValid(); !ok {
+		return p2p.ShareReject
+	}
+	return p2p.ShareAccept
+}
+
 func main() {
 	startTime := time.Now()
 
@@ -186,6 +205,9 @@ func main() {
 		logging.Fatalf("Failed to start p2p networking: %v", err)
 	}
 	defer p2pNode.Close()
+	if err := p2pNode.SetShareValidator(validateGossipShare); err != nil {
+		logging.Fatalf("Failed to register share validator: %v", err)
+	}
 
 	// Wire bidirectional P2P ShareChain and Blocks synchronization
 	p2pNode.GetSyncDataFunc = func(withShares bool) ([]byte, []byte) {

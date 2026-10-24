@@ -155,12 +155,25 @@ func TestLoopbackNodeOutboundOnly(t *testing.T) {
 		t.Fatal("light node did not pull template")
 	}
 
+	// The light node's validator drops the invalid share published before each valid one.
+	if err := light.SetShareValidator(func(b []byte) ShareVerdict {
+		if string(b) == "share" {
+			return ShareAccept
+		}
+		return ShareReject
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	// Gossip delivery depends on subscription exchange and heartbeats, so keep
 	// publishing until the light node sees a share.
 	deadline := time.After(15 * time.Second)
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	for {
+		if err := full.BroadcastShare([]byte("invalid")); err != nil {
+			t.Fatal(err)
+		}
 		if err := full.BroadcastShare([]byte("share")); err != nil {
 			t.Fatal(err)
 		}
@@ -174,5 +187,16 @@ func TestLoopbackNodeOutboundOnly(t *testing.T) {
 		case <-deadline:
 			t.Fatal("light node did not receive gossiped share")
 		}
+	}
+}
+
+func TestDecodeLimitedRejectsOversizedMessages(t *testing.T) {
+	msg := `"` + strings.Repeat("a", 100) + `"`
+	var v string
+	if err := decodeLimited(strings.NewReader(msg), int64(len(msg)), &v); err != nil || len(v) != 100 {
+		t.Fatalf("message at the limit: %v", err)
+	}
+	if err := decodeLimited(strings.NewReader(msg), int64(len(msg)-1), &v); err == nil {
+		t.Fatal("message over the limit decoded")
 	}
 }
