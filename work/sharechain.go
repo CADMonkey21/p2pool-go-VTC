@@ -472,7 +472,8 @@ func DecodeShareAddress(s *Share) string {
 	if s.decodedAddr != "" {
 		return s.decodedAddr
 	}
-	if s.ShareInfo.ShareData.PubKeyHashVersion == 0x00 {
+	ver := s.ShareInfo.ShareData.PubKeyHashVersion
+	if ver == 0x00 || (ver <= 16 && int64(s.ShareInfo.Timestamp) >= TaprootPayoutActivationTime) {
 		converted, err := bech32.ConvertBits(s.ShareInfo.ShareData.PubKeyHash, 8, 5, true)
 		if err != nil {
 			return ""
@@ -481,7 +482,11 @@ func DecodeShareAddress(s *Share) string {
 		if config.Active.Testnet {
 			hrp = "tvtc"
 		}
-		addr, _ := bech32.Encode(hrp, append([]byte{s.ShareInfo.ShareData.PubKeyHashVersion}, converted...))
+		encode := bech32.Encode
+		if ver > 0 {
+			encode = bech32.EncodeM
+		}
+		addr, _ := encode(hrp, append([]byte{ver}, converted...))
 		s.decodedAddr = addr
 		return addr
 	}

@@ -19,7 +19,6 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil/base58"
-	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
@@ -36,15 +35,20 @@ func doubleSHA256(data []byte) []byte {
 func isValidVtcAddress(addr string) bool {
 	addr = strings.TrimSpace(addr)
 	if strings.HasPrefix(strings.ToLower(addr), "vtc1") || strings.HasPrefix(strings.ToLower(addr), "tvtc1") {
-		hrp, _, err := bech32.Decode(strings.ToLower(addr))
+		hrp, ver, prog, err := work.DecodeSegwitAddress(addr)
 		expectedHrp := "vtc"
 		if config.Active.Testnet {
 			expectedHrp = "tvtc"
 		}
 		if err != nil {
 			logging.Errorf("Bech32 decode failed for address '%s': %v", addr, err)
+			return false
 		}
-		return err == nil && hrp == expectedHrp
+		// Taproot payouts only get a spendable script once every node builds it.
+		if ver == 1 && time.Now().Unix() < work.TaprootPayoutActivationTime {
+			return false
+		}
+		return hrp == expectedHrp && work.IsStandardPayout(ver, len(prog), true)
 	}
 
 	decoded := base58.Decode(addr)
@@ -62,6 +66,9 @@ func isValidVtcAddress(addr string) bool {
 	}
 
 	version := payload[0]
+	if len(payload) != 21 {
+		return false
+	}
 	if config.Active.Testnet {
 		return version == 0x6f || version == 0xc4
 	}
@@ -318,7 +325,7 @@ func (s *StratumServer) handleMinerConnection(conn net.Conn) {
 func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	id := extractID(req.ID)
 	var params []string
-	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
+	if req.Params == nil || json.Unmarshal(*req.Params, &params) != nil || len(params) < 5 {
 		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{25, "Malformed submission", nil}})
 		return
 	}
@@ -504,7 +511,7 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 	}
 
 	var params []string
-	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) == 0 {
+	if req.Params == nil || json.Unmarshal(*req.Params, &params) != nil || len(params) == 0 {
 		_ = c.send(JSONRPCResponse{ID: id, Result: false, Error: []interface{}{24, "Malformed authorize params", nil}})
 		go s.dropClient(c)
 		return

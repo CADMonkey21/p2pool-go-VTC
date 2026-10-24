@@ -14,7 +14,6 @@ import (
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
 	"github.com/btcsuite/btcd/btcutil/base58"
-	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
@@ -101,9 +100,20 @@ const (
 	ShareVersionV2            = uint64(24)
 	ConsensusV2ActivationTime = int64(1792470600)
 	V2MandatoryActivationTime = int64(1792519200)
+	// From this time witness v1+ (Taproot) payouts get their real script. Before it,
+	// nodes encoded them as base58 and paid an unspendable P2PKH-like script.
+	TaprootPayoutActivationTime = int64(1794009600)
 )
 
 func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
+	if s.MinHeader.PreviousBlock == nil {
+		return nil, fmt.Errorf("share has no previous block hash")
+	}
+	for _, b := range s.MerkleLink.Branch {
+		if b == nil {
+			return nil, fmt.Errorf("share merkle branch has a null hash")
+		}
+	}
 	var coinbaseTx wire.MsgTx
 	if err := coinbaseTx.Deserialize(bytes.NewReader(s.ShareInfo.ShareData.CoinBase)); err != nil {
 		return nil, fmt.Errorf("failed to deserialize coinbase tx: %v", err)
@@ -173,6 +183,12 @@ func (s *Share) IsValid() (bool, string) {
 	if s.Target == nil || s.Target.Sign() <= 0 {
 		return false, "target is zero or negative"
 	}
+	if s.Target.BitLen() > 256 {
+		return false, "target is wider than 256 bits"
+	}
+	if !shareHasStandardPayout(s) {
+		return false, "share payout is not a standard address"
+	}
 
 	if int64(s.MinHeader.Timestamp) >= V2MandatoryActivationTime && s.Type < ShareVersionV2 {
 		return false, "outdated share version"
@@ -217,18 +233,14 @@ func CreateShare(
 	var pkhVersion byte
 
 	if strings.HasPrefix(strings.ToLower(payoutAddress), "vtc1") || strings.HasPrefix(strings.ToLower(payoutAddress), "tvtc1") {
-		hrp, decodedBech32, err := bech32.Decode(strings.ToLower(payoutAddress))
+		hrp, ver, prog, err := DecodeSegwitAddress(payoutAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode bech32 payout address '%s': %v", payoutAddress, err)
 		}
 		if hrp != "vtc" && hrp != "tvtc" {
 			return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
 		}
-		pkhVersion = decodedBech32[0]
-		pkh, err = bech32.ConvertBits(decodedBech32[1:], 5, 8, false)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert bits for bech32 address '%s': %v", payoutAddress, err)
-		}
+		pkhVersion, pkh = ver, prog
 	} else {
 		decoded58 := base58.Decode(payoutAddress)
 		if len(decoded58) < 5 {
