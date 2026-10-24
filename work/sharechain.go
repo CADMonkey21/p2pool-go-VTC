@@ -45,6 +45,7 @@ type ShareChain struct {
 	verified          map[string]bool
 	cumWork           map[string]float64
 	chainLen          map[string]int
+	children          map[string][]string // previous share hash -> held shares built on it
 	curPrevBlock      string
 	curBits           uint32
 	mutex             sync.RWMutex
@@ -64,7 +65,7 @@ type ShareChain struct {
 
 func NewShareChain(rpcClient *rpc.Client) *ShareChain {
 	sc := &ShareChain{
-		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int),
+		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int), children: make(map[string][]string),
 		rpcClient:      rpcClient,
 		FoundBlockChan: make(chan *Share, 100),
 	}
@@ -99,6 +100,7 @@ func (sc *ShareChain) HasShare(hashStr string) bool {
 
 func (sc *ShareChain) AddShares(newShares []Share) int {
 	sc.mutex.Lock()
+	var added []string
 	for i := range newShares {
 		sh := newShares[i]
 		if sh.Hash == nil {
@@ -121,7 +123,9 @@ func (sc *ShareChain) AddShares(newShares []Share) int {
 		cp.decodedAddr = DecodeShareAddress(&cp)
 		sc.shares[h] = &cp
 		sc.changes++
+		added = append(added, h)
 	}
+	sc.addWorkLocked(added)
 	sc.mutex.Unlock()
 	v := sc.verifyPending()
 	if v > 0 {
@@ -132,22 +136,23 @@ func (sc *ShareChain) AddShares(newShares []Share) int {
 func (sc *ShareChain) PruneOldShares() {
 	sc.mutex.Lock()
 	defer sc.mutex.Unlock()
-	cutoff := time.Now().Add(-maxShareAge).Unix()
-	pruned := 0
-	for hStr, s := range sc.shares {
-		if int64(s.ShareInfo.Timestamp) < cutoff {
-			delete(sc.shares, hStr)
-			delete(sc.verified, hStr)
-			delete(sc.cumWork, hStr)
-			delete(sc.chainLen, hStr)
-			pruned++
-		}
-	}
-	if pruned > 0 {
-		sc.changes++
-		sc.recomputeWorkAndTipLocked()
+	if pruned := sc.pruneLocked(time.Now().Add(-maxShareAge).Unix()); pruned > 0 {
 		logging.Debugf("ShareChain: Pruned %d shares older than 72 hours", pruned)
 	}
+}
+
+func (sc *ShareChain) pruneLocked(cutoff int64) int {
+	var old []string
+	for h, s := range sc.shares {
+		if int64(s.ShareInfo.Timestamp) < cutoff {
+			old = append(old, h)
+		}
+	}
+	if len(old) > 0 {
+		sc.changes++
+		sc.removeSharesLocked(old)
+	}
+	return len(old)
 }
 
 func (sc *ShareChain) Load() error {
@@ -699,24 +704,139 @@ func (sc *ShareChain) loadTrusted(fs []Share) {
 	sc.mutex.Unlock()
 	sc.updateStats()
 }
+
+// recomputeWorkAndTipLocked rebuilds the children index, every share's cumulative
+// work and length, and the tip from scratch.
 func (sc *ShareChain) recomputeWorkAndTipLocked() {
-	vis := make(map[string]uint8, len(sc.shares))
-	var dfs func(string) (float64, int)
-	dfs = func(h string) (float64, int) {
-		if vis[h] == 2 {
-			return sc.cumWork[h], sc.chainLen[h]
+	sc.children = make(map[string][]string)
+	sc.cumWork = make(map[string]float64, len(sc.shares))
+	sc.chainLen = make(map[string]int, len(sc.shares))
+	hs := make([]string, 0, len(sc.shares))
+	for h, sh := range sc.shares {
+		if sh != nil {
+			sc.linkLocked(h, sh)
+			hs = append(hs, h)
 		}
+	}
+	sc.updateWorkLocked(hs)
+	sc.selectTipLocked()
+}
+
+// addWorkLocked indexes newly stored shares and gives them and their descendants
+// their cumulative work, so children stored before their parent gain its work.
+func (sc *ShareChain) addWorkLocked(hs []string) {
+	for _, h := range hs {
+		sc.linkLocked(h, sc.shares[h])
+	}
+	sc.considerTipLocked(sc.updateWorkLocked(hs))
+}
+
+// removeSharesLocked deletes shares and drops their work from their descendants.
+func (sc *ShareChain) removeSharesLocked(hs []string) {
+	rescan := false
+	for _, h := range hs {
+		if sc.unlinkShareLocked(h) {
+			rescan = true
+		}
+	}
+	sc.dropWorkLocked(hs, rescan)
+}
+
+// unlinkShareLocked deletes a share from the maps and the children index, leaving
+// its descendants' work to dropWorkLocked. It reports whether the share was a tip
+// candidate.
+func (sc *ShareChain) unlinkShareLocked(h string) bool {
+	sh := sc.shares[h]
+	if sh == nil {
+		return false
+	}
+	cand := sc.isTipCandidateLocked(h)
+	if p := sc.prevKeyLocked(sh); p != "" {
+		cs := sc.children[p]
+		for i, c := range cs {
+			if c == h {
+				cs[i] = cs[len(cs)-1]
+				cs = cs[:len(cs)-1]
+				break
+			}
+		}
+		if len(cs) == 0 {
+			delete(sc.children, p)
+		} else {
+			sc.children[p] = cs
+		}
+	}
+	delete(sc.shares, h)
+	delete(sc.verified, h)
+	delete(sc.cumWork, h)
+	delete(sc.chainLen, h)
+	return cand
+}
+
+// dropWorkLocked recomputes the work of the descendants of unlinked shares and
+// reselects the tip if a candidate lost work or rescan is set.
+func (sc *ShareChain) dropWorkLocked(removed []string, rescan bool) {
+	var seeds []string
+	for _, h := range removed {
+		seeds = append(seeds, sc.children[h]...)
+	}
+	for _, h := range sc.updateWorkLocked(seeds) {
+		if rescan {
+			break
+		}
+		rescan = sc.isTipCandidateLocked(h)
+	}
+	if rescan {
+		sc.selectTipLocked()
+	}
+}
+
+func (sc *ShareChain) linkLocked(h string, sh *Share) {
+	if p := sc.prevKeyLocked(sh); p != "" {
+		sc.children[p] = append(sc.children[p], h)
+	}
+}
+
+func (sc *ShareChain) prevKeyLocked(sh *Share) string {
+	if p := sh.ShareInfo.ShareData.PreviousShareHash; p == nil || p.IsEqual(sc.genesisHash) {
+		return ""
+	}
+	return sh.getPrevKey()
+}
+
+// updateWorkLocked sets the cumulative work and length of the held shares in hs and
+// all their descendants, each to its held parent's plus its own, and returns the
+// shares it updated.
+func (sc *ShareChain) updateWorkLocked(hs []string) []string {
+	dirty := make(map[string]bool, len(hs))
+	var all []string
+	for _, h := range hs {
+		if sc.shares[h] != nil && !dirty[h] {
+			dirty[h] = true
+			all = append(all, h)
+		}
+	}
+	for i := 0; i < len(all); i++ {
+		for _, c := range sc.children[all[i]] {
+			if !dirty[c] {
+				dirty[c] = true
+				all = append(all, c)
+			}
+		}
+	}
+	var q []string
+	for _, h := range all {
+		if p := sc.prevKeyLocked(sc.shares[h]); p == "" || !dirty[p] {
+			q = append(q, h)
+		}
+	}
+	for i := 0; i < len(q); i++ {
+		h := q[i]
 		sh := sc.shares[h]
-		if sh == nil || vis[h] == 1 {
-			return 0, 0
-		}
-		vis[h] = 1
 		var pw float64
 		var pl int
-		if p := sh.ShareInfo.ShareData.PreviousShareHash; p != nil && !p.IsEqual(sc.genesisHash) {
-			if sc.shares[p.String()] != nil {
-				pw, pl = dfs(p.String())
-			}
+		if p := sc.prevKeyLocked(sh); p != "" && sc.shares[p] != nil {
+			pw, pl = sc.cumWork[p], sc.chainLen[p]
 		}
 		d := sh.getTargetDiff()
 		inc := 1
@@ -727,24 +847,58 @@ func (sc *ShareChain) recomputeWorkAndTipLocked() {
 			d = MinPoolShareDiff
 		}
 		sc.cumWork[h], sc.chainLen[h] = pw+d, pl+inc
-		vis[h] = 2
-		return sc.cumWork[h], sc.chainLen[h]
+		q = append(q, sc.children[h]...)
 	}
+	return all
+}
+
+func (sc *ShareChain) isTipCandidateLocked(h string) bool {
+	sh := sc.shares[h]
+	return sc.verified[h] && sh != nil && sh.Hash != nil && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone
+}
+
+func betterTip(w float64, h string, bestW float64, bestS string) bool {
+	return w > bestW+1e-9 || (w >= bestW-1e-9 && h > bestS)
+}
+
+// selectTipLocked sets the tip to the verified, non-stale share with the most work,
+// or leaves it if there is none.
+func (sc *ShareChain) selectTipLocked() {
 	var bestH *chainhash.Hash
 	var bestW float64
 	var bestS string
 	for h, sh := range sc.shares {
-		w, _ := dfs(h)
-		if sc.verified[h] && sh != nil && sh.Hash != nil && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone {
-			if bestH == nil || w > bestW+1e-9 || (w >= bestW-1e-9 && h > bestS) {
-				bestH, bestW, bestS = sh.Hash, w, h
-			}
+		if sc.isTipCandidateLocked(h) && (bestH == nil || betterTip(sc.cumWork[h], h, bestW, bestS)) {
+			bestH, bestW, bestS = sh.Hash, sc.cumWork[h], h
 		}
 	}
 	if bestH != nil {
 		sc.TipHash = bestH
 	}
 }
+
+// considerTipLocked moves the tip to any of hs that beats it. Between selections
+// work only grows and candidates are only added, so this picks what
+// selectTipLocked would.
+func (sc *ShareChain) considerTipLocked(hs []string) {
+	var bestH *chainhash.Hash
+	var bestW float64
+	var bestS string
+	if sc.TipHash != nil {
+		if t := sc.TipHash.String(); sc.isTipCandidateLocked(t) {
+			bestH, bestW, bestS = sc.TipHash, sc.cumWork[t], t
+		}
+	}
+	for _, h := range hs {
+		if sc.isTipCandidateLocked(h) && (bestH == nil || betterTip(sc.cumWork[h], h, bestW, bestS)) {
+			bestH, bestW, bestS = sc.shares[h].Hash, sc.cumWork[h], h
+		}
+	}
+	if bestH != nil {
+		sc.TipHash = bestH
+	}
+}
+
 func (sc *ShareChain) hasCompletePPLNSWindow(prev *chainhash.Hash) bool {
 	if prev == nil || prev.IsEqual(sc.genesisHash) {
 		return true
@@ -811,7 +965,6 @@ func (sc *ShareChain) verifyPending() int {
 	sc.verifyMu.Lock()
 	defer sc.verifyMu.Unlock()
 	sc.mutex.Lock()
-	sc.recomputeWorkAndTipLocked()
 	var pend []*Share
 	for h, sh := range sc.shares {
 		if !sc.verified[h] && sh != nil && sh.Hash != nil {
@@ -827,6 +980,7 @@ func (sc *ShareChain) verifyPending() int {
 	})
 	sc.mutex.Unlock()
 	vn := 0
+	var rejected []string
 	for i, sh := range pend {
 		h, p := sh.Hash.String(), sh.ShareInfo.ShareData.PreviousShareHash
 		sc.mutex.RLock()
@@ -849,21 +1003,31 @@ func (sc *ShareChain) verifyPending() int {
 		post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime
 		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, hLen) {
 			sc.mutex.Lock()
-			delete(sc.shares, h)
+			sc.unlinkShareLocked(h)
+			rejected = append(rejected, h)
 			sc.changes++
 			sc.mutex.Unlock()
 			continue
 		}
 		sc.mutex.Lock()
-		sc.verified[h] = true
+		sc.markVerifiedLocked(h)
 		sc.mutex.Unlock()
 		vn++
 	}
-	sc.mutex.Lock()
-	sc.recomputeWorkAndTipLocked()
-	sc.mutex.Unlock()
+	if len(rejected) > 0 {
+		// Descendants of rejected shares keep their work until the pass ends, so
+		// later shares in the pass see the lengths they were sorted by.
+		sc.mutex.Lock()
+		sc.dropWorkLocked(rejected, false)
+		sc.mutex.Unlock()
+	}
 	return vn
 }
+func (sc *ShareChain) markVerifiedLocked(h string) {
+	sc.verified[h] = true
+	sc.considerTipLocked([]string{h})
+}
+
 func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool {
 	h := s.Hash.String()
 	sc.mutex.RLock()

@@ -10,7 +10,7 @@ import (
 func newTestShareChain() *ShareChain {
 	nullHash, _ := chainhash.NewHash(make([]byte, 32))
 	return &ShareChain{
-		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int),
+		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int), children: make(map[string][]string),
 		genesisHash: nullHash,
 		TipHash:     nullHash,
 	}
