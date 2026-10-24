@@ -94,6 +94,8 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
    ```
    Point your Verthash miner to `stratum+tcp://<your-node-ip>:9172` with your Vertcoin wallet address as the username, and open `http://<your-node-ip>:9172` in your browser to view the live dashboard.
 
+   The dashboard is embedded in the binary, so it runs without the `web/static` folder. To work on the UI without rebuilding, keep a `web/static` folder in the working directory or next to the executable: the node serves that copy from disk instead (the startup log shows which source is in use).
+
 ### Command-Line Flags & OCM Readiness API
 ```bash
 ./p2pool-go-vtc -light -datadir /path/to/data -stratum 9172 -p2p 9348 -verthash /path/to/verthash.dat -loglevel info
