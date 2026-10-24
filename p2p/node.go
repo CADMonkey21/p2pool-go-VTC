@@ -23,6 +23,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -110,10 +111,37 @@ func loadOrCreateIdentity() (crypto.PrivKey, error) {
 	return priv, nil
 }
 
-func NewNode(listenPort int) (*Node, error) {
+// listenMultiaddr builds the libp2p TCP listen multiaddr for an IPv4 or IPv6
+// bind address (brackets around IPv6 are optional). An empty address means 0.0.0.0.
+func listenMultiaddr(bindAddr string, port int) (string, net.IP, error) {
+	bindAddr = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(bindAddr), "["), "]")
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+	ip := net.ParseIP(bindAddr)
+	if ip == nil {
+		return "", nil, fmt.Errorf("invalid P2P bind address %q: must be an IPv4 or IPv6 address", bindAddr)
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return fmt.Sprintf("/ip4/%s/tcp/%d", ip4, port), ip4, nil
+	}
+	return fmt.Sprintf("/ip6/%s/tcp/%d", ip, port), ip, nil
+}
+
+// NewNode starts the libp2p host on bindAddr:listenPort. When bindAddr is a
+// loopback address the node runs outbound-only: it opens no non-loopback
+// sockets (no UPnP, mDNS or UDP transports), advertises no addresses and uses
+// the DHT in client mode, so peers never try to dial it.
+func NewNode(listenPort int, bindAddr string, disableUPnP bool) (*Node, error) {
 	if listenPort <= 0 {
 		listenPort = 4001
 	}
+	listenAddr, bindIP, err := listenMultiaddr(bindAddr, listenPort)
+	if err != nil {
+		return nil, err
+	}
+	outboundOnly := bindIP.IsLoopback()
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	privKey, err := loadOrCreateIdentity()
@@ -122,18 +150,31 @@ func NewNode(listenPort int) (*Node, error) {
 		return nil, fmt.Errorf("failed to load or generate peer identity: %w", err)
 	}
 
-	listenAddr := fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", listenPort)
-	h, err := libp2p.New(
+	opts := []libp2p.Option{
 		libp2p.Identity(privKey),
 		libp2p.ListenAddrStrings(listenAddr),
-		libp2p.NATPortMap(),
-	)
+	}
+	if outboundOnly {
+		opts = append(opts,
+			// TCP only: QUIC/WebRTC/WebTransport dials would bind UDP sockets on all interfaces.
+			libp2p.Transport(tcp.NewTCPTransport),
+			// Loopback addresses are useless to remote peers; advertise nothing.
+			libp2p.AddrsFactory(func([]multiaddr.Multiaddr) []multiaddr.Multiaddr { return nil }),
+		)
+	} else if !disableUPnP {
+		opts = append(opts, libp2p.NATPortMap())
+	}
+	h, err := libp2p.New(opts...)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create host: %w", err)
 	}
 
-	kaddht, err := dht.New(ctx, h, dht.Mode(dht.ModeServer))
+	dhtMode := dht.ModeServer
+	if outboundOnly {
+		dhtMode = dht.ModeClient
+	}
+	kaddht, err := dht.New(ctx, h, dht.Mode(dhtMode))
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create dht: %w", err)
@@ -178,12 +219,18 @@ func NewNode(listenPort int) (*Node, error) {
 	h.SetStreamHandler(BlockCheckProtocolID, node.handleBlockCheckStream)
 	h.SetStreamHandler(HeaderProofProtocolID, node.handleHeaderProofStream)
 
-	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
-	if err := mdnsService.Start(); err != nil {
-		logging.Warnf("P2P: mDNS discovery could not start: %v", err)
+	// mDNS listens on UDP 5353 on every interface, so it is skipped for loopback binds.
+	if !outboundOnly {
+		mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
+		if err := mdnsService.Start(); err != nil {
+			logging.Warnf("P2P: mDNS discovery could not start: %v", err)
+		}
 	}
 
 	logging.Infof("P2P Node started! Persistent Peer ID: %s", h.ID())
+	if outboundOnly {
+		logging.Infof("P2P: Listening on loopback %s only; outbound-only mode (no mDNS, UPnP or advertised addresses, DHT client)", listenAddr)
+	}
 	for _, addr := range h.Addrs() {
 		logging.Infof("P2P Connect Multiaddr: %s/p2p/%s", addr.String(), h.ID())
 	}
@@ -627,6 +674,11 @@ func (n *Node) RelaySolvedBlockHex(hexStr string) int {
 func (n *Node) peerAddrs() []string {
 	var out []string
 	for _, c := range n.Host.Network().Conns() {
+		// An inbound peer that advertised no listen addresses (e.g. an outbound-only
+		// node bound to loopback) cannot be dialed back, so don't hand it out.
+		if c.Stat().Direction == network.DirInbound && len(n.Host.Peerstore().Addrs(c.RemotePeer())) == 0 {
+			continue
+		}
 		a := c.RemoteMultiaddr().String()
 		if strings.HasPrefix(a, "/ip4/127.") || strings.HasPrefix(a, "/ip4/192.168.") || strings.HasPrefix(a, "/ip4/10.") {
 			continue

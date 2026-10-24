@@ -181,7 +181,7 @@ func main() {
 	if p2pPort <= 0 {
 		p2pPort = 4001
 	}
-	p2pNode, err := p2p.NewNode(p2pPort)
+	p2pNode, err := p2p.NewNode(p2pPort, config.Active.P2PBind, config.Active.DisableUPnP)
 	if err != nil {
 		logging.Fatalf("Failed to start p2p networking: %v", err)
 	}

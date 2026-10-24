@@ -62,7 +62,7 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
 
 | Port | Setting in `config.yaml` | Default | Purpose | Firewall / Port Forwarding Action |
 | :--- | :--- | :--- | :--- | :--- |
-| **P2P Port** | `p2pPort` | `9348` | For `go-libp2p` node-to-node GossipSub communication and DHT/mDNS discovery. | **Required:** Must be **port-forwarded** if connecting to external nodes over the internet. |
+| **P2P Port** | `p2pPort` | `9348` | For `go-libp2p` node-to-node GossipSub communication and DHT/mDNS discovery. | **Required:** Must be **port-forwarded** if connecting to external nodes over the internet. Not needed for outbound-only nodes (`p2pBind: 127.0.0.1`). |
 | **Stratum / Web Port** | `stratumPort` | `9172` | Multiplexed (`cmux`) port for miner Stratum connections and the HTTP Web UI. | **Allow on local firewall.** Only port-forward on your router if hosting a public node. |
 | **RPC Port** | `rpcPort` | `5888` | Local JSON-RPC connection to your Vertcoin daemon (`vertcoind`). | **No action needed.** Keep restricted to `127.0.0.1` (`localhost`). |
 
@@ -98,6 +98,8 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
 ```bash
 ./p2pool-go-vtc -light -datadir /path/to/data -stratum 9172 -p2p 9348 -verthash /path/to/verthash.dat -loglevel info
 ```
+- **Outbound-only P2P (`-p2pbind 127.0.0.1`):** Binds the libp2p listener to loopback so no inbound port (and no Windows Firewall prompt) is needed. The node still dials peers, joins GossipSub, syncs the sharechain and pulls templates, but skips mDNS, UPnP and UDP transports, advertises no addresses and runs the DHT in client mode. `-p2pbind` accepts any IPv4 or IPv6 address (default `0.0.0.0`; config key `p2pBind`).
+- **No UPnP (`-disable-upnp`):** Skips UPnP/NAT-PMP port mapping of the P2P port (config key `disableUpnp`). A typical One-Click Miner launch is `./p2pool-go-vtc -light -p2pbind 127.0.0.1 -disable-upnp -bind 127.0.0.1`.
 - **Readiness Endpoint (`/api/status`):** Returns JSON (`"ready": true`, `"has_template": true`, `"synced": true`, `"peers"`, `"shares_total"`, `"height"`) for One-Click Miner health checks.
 - **Dashboard Stats Endpoint (`/api/stats`):** Returns live hashrates, active miners, PPLNS payouts, and connected P2P peers.
 

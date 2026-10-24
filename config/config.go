@@ -45,6 +45,8 @@ type Config struct {
 	ParentPID       int           `yaml:"parentPid"`
 	ShutdownToken   string        `yaml:"shutdownToken"`
 	TrustedPeers    []string      `yaml:"trustedPeers"`
+	P2PBind         string        `yaml:"p2pBind"`
+	DisableUPnP     bool          `yaml:"disableUpnp"`
 }
 
 var Active Config
@@ -71,6 +73,8 @@ func LoadConfig() {
 	parentPID := flag.Int("parentpid", 0, "Exit cleanly when this parent PID terminates")
 	shutdownTok := flag.String("shutdown-token", "", "Token for loopback POST /api/shutdown")
 	trustedPeersFlag := flag.String("trustedpeers", "", "Comma-separated list of pinned full-node libp2p Peer IDs")
+	p2pBind := flag.String("p2pbind", "", "Bind address (IPv4 or IPv6) for the libp2p P2P listener (default: 0.0.0.0); a loopback address makes the node outbound-only")
+	disableUPnP := flag.Bool("disable-upnp", false, "Disable UPnP/NAT-PMP port mapping of the P2P port")
 	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
 
 	flag.Parse()
@@ -94,6 +98,7 @@ func LoadConfig() {
 		RPCPort:     5888,
 		StratumPort: 9172,
 		P2PPort:     9348,
+		P2PBind:     "0.0.0.0",
 		Fee:         1.0,
 		PPLNSWindow: 8640,
 		LogLevel:    "info",
@@ -173,6 +178,12 @@ func LoadConfig() {
 	}
 	if *soloMode {
 		Active.SoloMode = true
+	}
+	if *p2pBind != "" {
+		Active.P2PBind = *p2pBind
+	}
+	if *disableUPnP {
+		Active.DisableUPnP = true
 	}
 	if *forceBlockFind {
 		Active.ForceBlockFind = true

@@ -51,6 +51,18 @@ stratumPort: 9172
 # Can also be passed via CLI: -p2p 9348
 p2pPort: 9348
 
+# IPv4 or IPv6 address the P2P listener binds to (default "0.0.0.0" = all interfaces).
+# Set to "127.0.0.1" (or "::1") to run outbound-only: the node still dials peers, syncs the
+# sharechain and pulls templates, but accepts no inbound peers, opens no non-loopback sockets
+# (no mDNS, UPnP or QUIC), advertises no addresses and uses the DHT in client mode.
+# Useful for -light nodes behind a firewall (e.g. One-Click Miner on Windows).
+# Can also be passed via CLI: -p2pbind 127.0.0.1
+p2pBind: "0.0.0.0"
+
+# Disable UPnP/NAT-PMP port mapping of the P2P port on your router (always off for loopback binds).
+# Can also be passed via CLI: -disable-upnp
+disableUpnp: false
+
 
 # --- General Settings ---
 # The level of detail for console and p2pool.log output.
