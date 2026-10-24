@@ -210,3 +210,53 @@ func (sc *ShareChain) Close() error {
 	sc.db = nil
 	return err
 }
+
+// ExportShares returns all verified shares currently in memory, sorted oldest-first.
+func (sc *ShareChain) ExportShares(limit int) []Share {
+	sc.mutex.RLock()
+	out := make([]Share, 0, len(sc.verified))
+	for h := range sc.verified {
+		if s := sc.shares[h]; s != nil {
+			out = append(out, *s)
+		}
+	}
+	sc.mutex.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ShareInfo.Timestamp < out[j].ShareInfo.Timestamp
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+
+// DumpShareDB reads all shares directly from sharechain.db in read-only mode when the node is stopped.
+func DumpShareDB() ([]Share, error) {
+	db, err := bbolt.Open(shareDBFile, 0600, &bbolt.Options{ReadOnly: true, Timeout: 1 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	var shares []Share
+	err = db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketShares)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			var sh Share
+			if err := json.Unmarshal(v, &sh); err != nil {
+				return fmt.Errorf("decode share %x: %w", k, err)
+			}
+			shares = append(shares, sh)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(shares, func(i, j int) bool {
+		return shares[i].ShareInfo.Timestamp < shares[j].ShareInfo.Timestamp
+	})
+	return shares, nil
+}

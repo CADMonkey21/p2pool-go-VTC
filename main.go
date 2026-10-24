@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"io"
 	"net/http"
+	"strconv"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -157,6 +159,23 @@ func main() {
 	}
 
 	config.LoadConfig()
+
+	if config.Active.DumpShares {
+		if shares, err := work.DumpShareDB(); err == nil {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(shares)
+			os.Exit(0)
+		}
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/shares", config.Active.StratumPort))
+		if err != nil || resp.StatusCode != http.StatusOK {
+			fmt.Fprintf(os.Stderr, "Failed to dump shares from DB or running node: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(os.Stdout, resp.Body)
+		os.Exit(0)
+	}
 
 	logFile, _ := os.OpenFile("p2pool.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
 	defer logFile.Close()
@@ -348,6 +367,16 @@ func main() {
 		}()
 	}
 	mux.HandleFunc("/api/status", apiHandler.ServeStatus)
+	mux.HandleFunc("/api/shares", func(w http.ResponseWriter, r *http.Request) {
+		h, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if r.Method != http.MethodGet || (h != "127.0.0.1" && h != "::1") {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(sc.ExportShares(limit))
+	})
 	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		h, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if r.Method != "POST" || (h != "127.0.0.1" && h != "::1") || (config.Active.ShutdownToken == "" || r.Header.Get("X-Shutdown-Token") != config.Active.ShutdownToken) {

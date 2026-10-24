@@ -49,6 +49,7 @@ type Config struct {
 	TrustedPeers    []string      `yaml:"trustedPeers"`
 	P2PBind         string        `yaml:"p2pBind"`
 	DisableUPnP     bool          `yaml:"disableUpnp"`
+	DumpShares      bool          `yaml:"-"`
 }
 
 var Active Config
@@ -79,6 +80,7 @@ func LoadConfig() {
 	p2pBind := flag.String("p2pbind", "", "Bind address (IPv4 or IPv6) for the libp2p P2P listener (default: 0.0.0.0); a loopback address makes the node outbound-only")
 	disableUPnP := flag.Bool("disable-upnp", false, "Disable UPnP/NAT-PMP port mapping of the P2P port")
 	forceBlockFind := flag.Bool("forceblock", false, "TESTING ONLY: Force every share to be a block")
+	dumpShares := flag.Bool("dump-shares", false, "Dump verified shares as JSON to stdout and exit")
 
 	flag.Parse()
 	if *showVer {
@@ -190,6 +192,9 @@ func LoadConfig() {
 	}
 	if *forceBlockFind {
 		Active.ForceBlockFind = true
+	}
+	if *dumpShares {
+		Active.DumpShares = true
 	}
 	if *bindAddr != "" {
 		Active.StratumBind = *bindAddr
