@@ -245,6 +245,13 @@ func main() {
 	}
 	p2pNode.GetMissingSharesFunc = func() []string { return sc.GetMissingParentHashes(100) }
 	p2pNode.GetStopHashesFunc = func() []string { return sc.GetStopHashes(100) }
+	p2pNode.GetBestShareFunc = func() string {
+		if tip := sc.GetTipHash(); tip != nil && sc.HasShare(tip.String()) {
+			return tip.String()
+		}
+		return ""
+	}
+	p2pNode.HasShareFunc = sc.HasShare
 	go p2pNode.DownloadShares()
 	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 	go p2pNode.Bootstrap(config.Active.Peers)

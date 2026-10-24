@@ -34,6 +34,7 @@ const BlockRelayProtocolID = protocol.ID("/p2pool/blockrelay/1.0.0")
 const PeerExProtocolID = protocol.ID("/p2pool/peers/1.0.0")
 const BlockCheckProtocolID = protocol.ID("/p2pool/blockcheck/1.0.0")
 const HeaderProofProtocolID = protocol.ID("/p2pool/headerproof/1.0.0")
+const VersionProtocolID = protocol.ID("/p2pool/version/1.0.0")
 
 // ShareReq asks a peer for the shares in Hashes, each followed by up to Parents
 // ancestors. The walk back from each hash ends before any hash in Stops. Peers
@@ -42,6 +43,12 @@ type ShareReq struct {
 	Hashes  []string `json:"hashes"`
 	Parents int      `json:"parents"`
 	Stops   []string `json:"stops,omitempty"`
+}
+
+// VersionMsg is swapped when a node contacts a peer, like p2pool's version message,
+// so each side can request the other's best share right away.
+type VersionMsg struct {
+	BestShareHash string `json:"best_share_hash,omitempty"`
 }
 
 const peerKeyFile = "peer.key"
@@ -68,6 +75,8 @@ type Node struct {
 	GetSharesByHashFunc  func(hashes []string, parents int, stops []string) []byte
 	GetMissingSharesFunc func() []string
 	GetStopHashesFunc    func() []string
+	GetBestShareFunc     func() string
+	HasShareFunc         func(hash string) bool
 	GetTemplateFunc      func() []byte
 	OnTemplateFunc       func(peerID string, voterKey string, tmplJSON []byte)
 	OnRawBlockFunc       func(peerID string, rawHex string) bool
@@ -185,6 +194,7 @@ func NewNode(listenPort int) (*Node, error) {
 	h.SetStreamHandler(PeerExProtocolID, node.handlePeerExStream)
 	h.SetStreamHandler(BlockCheckProtocolID, node.handleBlockCheckStream)
 	h.SetStreamHandler(HeaderProofProtocolID, node.handleHeaderProofStream)
+	h.SetStreamHandler(VersionProtocolID, node.handleVersionStream)
 
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
@@ -231,10 +241,70 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	time.Sleep(500 * time.Millisecond)
 }
 
+func (n *Node) versionMsg() VersionMsg {
+	var v VersionMsg
+	if n.GetBestShareFunc != nil {
+		v.BestShareHash = n.GetBestShareFunc()
+	}
+	return v
+}
+
+func (n *Node) handleVersionStream(s network.Stream) {
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+	var incoming VersionMsg
+	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+		return
+	}
+	_ = json.NewEncoder(s).Encode(n.versionMsg())
+	_ = s.CloseWrite()
+	go n.requestBestShare(s.Conn().RemotePeer(), incoming.BestShareHash)
+}
+
+// exchangeVersion swaps version messages with pid and requests its best share if it
+// is new to us. It returns false if pid does not speak the version protocol.
+func (n *Node) exchangeVersion(pid peer.ID) bool {
+	ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+	defer cancel()
+	s, err := n.Host.NewStream(ctx, pid, VersionProtocolID)
+	if err != nil {
+		return false
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := json.NewEncoder(s).Encode(n.versionMsg()); err != nil {
+		return false
+	}
+	_ = s.CloseWrite()
+	var incoming VersionMsg
+	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+		return false
+	}
+	n.requestBestShare(pid, incoming.BestShareHash)
+	return true
+}
+
+// requestBestShare asks pid for its best share and the ancestors we lack, unless we
+// already hold it. The download loop fetches any parents still missing.
+func (n *Node) requestBestShare(pid peer.ID, hash string) {
+	if hash == "" || n.HasShareFunc == nil || n.HasShareFunc(hash) || n.OnSyncDataFunc == nil {
+		return
+	}
+	var stops []string
+	if n.GetStopHashesFunc != nil {
+		stops = n.GetStopHashesFunc()
+	}
+	if _, err := n.fetchShares(pid, ShareReq{Hashes: []string{hash}, Parents: maxDownloadParents, Stops: stops}); err != nil {
+		logging.Debugf("P2P: Best share request to peer %s failed: %v", pid, err)
+	}
+	n.wakeDownload()
+}
+
 func (n *Node) SyncWithPeer(pid peer.ID) {
 	if pid == n.Host.ID() || n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
 		return
 	}
+	n.exchangeVersion(pid)
 	if !n.syncMutex.TryLock() {
 		return
 	}
