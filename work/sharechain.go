@@ -1,11 +1,8 @@
 package work
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"math/big"
-	"os"
 	"sort"
 	"sync"
 	"time"
@@ -17,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"go.etcd.io/bbolt"
 )
 
 const maxShareAge = 72 * time.Hour
@@ -73,7 +71,8 @@ type ShareChain struct {
 	mutex             sync.RWMutex
 	changes           uint64 // shares added or removed since Load; guarded by mutex
 	commitMu          sync.Mutex
-	savedChanges      uint64 // changes as of the last save; guarded by commitMu
+	db                *bbolt.DB           // guarded by commitMu
+	dirty             map[string]struct{} // shares verified or removed since the last commit; guarded by mutex
 	verifyMu          sync.Mutex
 	rpcClient         *rpc.Client
 	genesisHash       *chainhash.Hash
@@ -248,86 +247,6 @@ func (sc *ShareChain) pruneUnverified(now time.Time) {
 	sc.changes++
 	sc.removeSharesLocked(drop)
 	logging.Debugf("ShareChain: Pruned %d unverified shares", len(drop))
-}
-
-func (sc *ShareChain) Load() error {
-	path := "sharechain.json"
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	var fileShares []Share
-	if len(b) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(b, &fileShares); err != nil {
-		return err
-	}
-	sort.Slice(fileShares, func(i, j int) bool {
-		return fileShares[i].ShareInfo.Timestamp < fileShares[j].ShareInfo.Timestamp
-	})
-	sc.loadTrusted(fileShares)
-	logging.Infof("Loaded %d shares from disk", len(fileShares))
-	return nil
-}
-
-// Commit writes the sharechain to sharechain.json unless no shares have been added or
-// removed since the last save.
-func (sc *ShareChain) Commit() error {
-	sc.commitMu.Lock()
-	defer sc.commitMu.Unlock()
-	sc.mutex.RLock()
-	changes := sc.changes
-	if changes == sc.savedChanges {
-		sc.mutex.RUnlock()
-		return nil
-	}
-	sharesToSave := make([]Share, 0, len(sc.shares))
-	for _, s := range sc.shares {
-		sharesToSave = append(sharesToSave, *s)
-	}
-	sc.mutex.RUnlock()
-
-	path := "sharechain.json"
-	tmpPath := "sharechain.json.tmp"
-	if err := writeSharesJSON(tmpPath, sharesToSave); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	sc.savedChanges = changes
-	return nil
-}
-
-// writeSharesJSON encodes shares one at a time, one per line, so the whole file is
-// never held in memory.
-func writeSharesJSON(path string, shares []Share) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	w := bufio.NewWriter(f)
-	enc := json.NewEncoder(w) // Encode appends a newline after each share
-	w.WriteString("[\n")
-	for i := range shares {
-		if i > 0 {
-			w.WriteString(",")
-		}
-		if err := enc.Encode(&shares[i]); err != nil {
-			f.Close()
-			return err
-		}
-	}
-	w.WriteString("]\n")
-	if err := w.Flush(); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // GetSharesForSync returns up to maxCount most recent shares for fast P2P stream synchronization.
@@ -873,6 +792,7 @@ func (sc *ShareChain) unlinkShareLocked(h string) bool {
 	delete(sc.received, h)
 	delete(sc.cumWork, h)
 	delete(sc.chainLen, h)
+	sc.markDirtyLocked(h)
 	return cand
 }
 
@@ -1139,6 +1059,7 @@ func (sc *ShareChain) verifyPending() (int, map[string]bool) {
 func (sc *ShareChain) markVerifiedLocked(h string) {
 	sc.verified[h] = true
 	delete(sc.received, h)
+	sc.markDirtyLocked(h)
 	sc.considerTipLocked([]string{h})
 }
 

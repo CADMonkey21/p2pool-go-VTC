@@ -118,7 +118,7 @@ func (n *Node) wakeDownload() {
 func (n *Node) shareReqPeers() []peer.ID {
 	var out []peer.ID
 	for _, pid := range n.Host.Network().Peers() {
-		if ok, _ := n.Host.Peerstore().SupportsProtocols(pid, ShareReqProtocolID); len(ok) > 0 {
+		if ok, _ := n.Host.Peerstore().SupportsProtocols(pid, ShareReqZProtocolID, ShareReqProtocolID); len(ok) > 0 {
 			out = append(out, pid)
 		}
 	}
@@ -130,18 +130,18 @@ func (n *Node) shareReqPeers() []peer.ID {
 func (n *Node) fetchShares(pid peer.ID, req ShareReq) (int, error) {
 	ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
 	defer cancel()
-	s, err := n.Host.NewStream(ctx, pid, ShareReqProtocolID)
+	s, err := n.Host.NewStream(ctx, pid, ShareReqZProtocolID, ShareReqProtocolID)
 	if err != nil {
 		return 0, err
 	}
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(30 * time.Second))
-	if err := json.NewEncoder(s).Encode(req); err != nil {
+	if err := writeJSON(s, req); err != nil {
 		return 0, err
 	}
 	_ = s.CloseWrite()
 	var shares []json.RawMessage
-	if err := decodeLimited(s, maxShareReplySize, &shares); err != nil {
+	if err := readJSON(s, &shares); err != nil {
 		return 0, err
 	}
 	if len(shares) > 0 {

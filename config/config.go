@@ -54,7 +54,7 @@ type Config struct {
 var Active Config
 
 func LoadConfig() {
-	dataDir := flag.String("datadir", "", "Data directory for config.yaml, sharechain.json, blocks.json, peer.key, and p2pool.log")
+	dataDir := flag.String("datadir", "", "Data directory for config.yaml, sharechain.db, blocks.json, peer.key, and p2pool.log")
 	net := flag.String("n", "", "Network (default: vertcoin)")
 	testnet := flag.Bool("testnet", false, "Use Vertcoin testnet")
 	rpcHost := flag.String("rpchost", "", "Vertcoind RPC Host (default: 127.0.0.1)")

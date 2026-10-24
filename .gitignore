@@ -19,6 +19,8 @@ config.yaml
 
 p2pool-go-vtc
 sharechain.json
+sharechain.json.migrated
+sharechain.db
 peer.key
 p2pool.log
 blocks.json

@@ -58,11 +58,11 @@ less -R p2pool.log
 - `[INFO] Verthash: Verthasher initialized successfully (verthash.dat: ..., keepInRam: true)`
   * `verthash.dat` has been loaded into RAM for sub-millisecond share PoW verification.
 - `[INFO] Loaded 859 shares from disk`
-  * `sharechain.json` was found and loaded into `ShareChain` memory on startup.
+  * The verified shares in `sharechain.db` were loaded into `ShareChain` memory on startup. On the first start after upgrading, a `[INFO] Migrated N shares from sharechain.json to sharechain.db` line precedes it.
 - `[INFO] MAIN: Startup complete – Stratum + Web UI on :9172. Press Ctrl+C to exit.`
   * The `cmux` listener is live and serving both Stratum miners and the HTTP Web UI on port `9172`.
 - `[WARN] Shutdown signal received. Saving share chain and exiting…` / `[INFO] Sharechain committed successfully.`
-  * The node caught `Ctrl+C` or `SIGTERM` and safely wrote its current share window to `sharechain.json`.
+  * The node caught `Ctrl+C` or `SIGTERM` and safely wrote the shares verified or pruned since the last save to `sharechain.db`.
 
 ### P2P Networking & Light Mode (`p2p/`)
 

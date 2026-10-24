@@ -28,7 +28,7 @@ An official cloud-hosted bootstrap seed node and public dashboard is live at:
 - **Direct Non-Custodial PPLNS Payouts:** Calculates and embeds proportional PPLNS payouts directly into the block's coinbase transaction outputs (`gentx`), eliminating the need for custodial pool hot wallets or secondary `sendmany` distribution transactions.
 - **Live BIP22 Consensus Verification:** Automatically runs `TestBlockValidity()` against `vertcoind` (`getblocktemplate` proposal mode) on every new block height to guarantee block headers, SegWit witness commitments, Merkle roots, and coinbase outputs pass 100% of Vertcoin Core consensus rules while mining.
 - **Robust Variable Difficulty (Vardiff):** Automatically tunes individual miner target difficulties to maintain steady share submission rates across rigs of any size.
-- **Persistent Share Chain & Block History:** Saves and reloads the active share chain (`sharechain.json`) and found block history (`blocks.json`) across node restarts.
+- **Persistent Share Chain & Block History:** Saves and reloads the verified share chain (`sharechain.db`, a bbolt database written incrementally; an older `sharechain.json` is imported once and renamed to `sharechain.json.migrated`) and found block history (`blocks.json`) across node restarts.
 
 ---
 
@@ -136,7 +136,7 @@ See [LOG_GUIDE.md](LOG_GUIDE.md) for an overview of console log messages and lev
   - [x] Single-port `cmux` HTTP Web Dashboard & `/api/stats` JSON endpoint
   - [x] Dynamic Host-Aware Web UI branding (`p2poolvtc.com` / local IP detection)
   - [x] Multi-rig address aggregation and Synchronized CLI/Web UI metrics
-  - [x] On-disk ShareChain (`sharechain.json`) and Found Block (`blocks.json`) persistence
+  - [x] On-disk ShareChain (`sharechain.db`) and Found Block (`blocks.json`) persistence
 
 ---
 
