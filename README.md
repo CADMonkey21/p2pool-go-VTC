@@ -154,3 +154,10 @@ If you want to support the development of this project, feel free to donate!
 ```text
 vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l
 ```
+
+### Optional Initial Difficulty Hint & Reconnect Vardiff
+
+`p2pool-go-vtc` automatically remembers a miner's last settled Vardiff across transient disconnects (30-minute TTL) and estimates an initial starting difficulty from recent ShareChain history on node restarts. Miners can also explicitly request an initial starting difficulty (clamped to `[min_diff, pool_share_diff]`):
+
+* **Username suffix:** `<VTC_ADDRESS>+0.5` or `<VTC_ADDRESS>.rig1+0.5`
+* **Password hint:** `-p d=0.5` (or `diff=0.5` / `sd=0.5`)

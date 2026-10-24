@@ -79,3 +79,8 @@ Instead of legacy Python P2Pool's custom 2011 TCP wire protocol, `p2pool-go-VTC`
 - **`cmux`**: Multiplexes incoming TCP connections on `stratumPort` (`9172`)—routing HTTP `GET` requests to `httpSrv` (`web/dashboard.go` and `./web/static`) and raw JSON-RPC lines to `StratumServer`.
 - **Multi-Rig Aggregation:** `web/dashboard.go` aggregates multiple connections sharing the same Vertcoin wallet address into a single combined row on the dashboard while tracking individual client rate monitors underneath.
 - **Sharechain Persistence & Export (`work/sharestore.go`):** Persists verified shares incrementally in a `bbolt` database (`sharechain.db`), automatically migrating any legacy `sharechain.json` once on startup (renaming it to `sharechain.json.migrated`). Verified shares can be exported as JSON anytime via `-dump-shares` or the loopback-only `/api/shares?limit=N` HTTP endpoint.
+
+### Reconnect Vardiff & Difficulty Hints (`stratum/server.go`)
+- **In-Memory Reconnect Cache**: `StratumServer` caches each authorized worker's latest difficulty (`host|worker` and `worker`) for 30 minutes (`reconnectDiffTTL`) whenever Vardiff updates or a client disconnects.
+- **ShareChain Cold-Start Estimation**: If a node restarts (clearing the in-memory cache), `estimateDiffFromShareChain` inspects the last 30 minutes of verified shares in `ShareChain` for the authorizing payout address and computes an appropriate starting difficulty for `target_time`.
+- **Miner Hint Override**: `parseAuthorizeUserAndHint` supports explicit starting difficulty hints via `+<diff>` on the username (`vtc1...+0.5`) or `d=<diff>` / `diff=<diff>` / `sd=<diff>` in the Stratum password field, clamped to `[min_diff, pool_share_diff]`.

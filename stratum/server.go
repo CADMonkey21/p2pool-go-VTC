@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"strconv"
@@ -114,6 +115,13 @@ func formatStratumPrevHash(rpcPrevHashHex string) string {
 	return hex.EncodeToString(stratumBytes)
 }
 
+const reconnectDiffTTL = 30 * time.Minute
+
+type cachedDiff struct {
+	diff      float64
+	updatedAt time.Time
+}
+
 type StratumServer struct {
 	workManager         *work.WorkManager
 	p2pNode             *p2p.Node
@@ -122,6 +130,8 @@ type StratumServer struct {
 	lastJob             *Job
 	latestPrevBlockHash *chainhash.Hash
 	lastJobMutex        sync.RWMutex
+	diffCache           map[string]cachedDiff
+	diffCacheMutex      sync.Mutex
 }
 
 func NewStratumServer(wm *work.WorkManager, node *p2p.Node) *StratumServer {
@@ -225,6 +235,14 @@ func (s *StratumServer) dropClient(c *Client) {
 		return
 	}
 	c.closed.Store(true)
+
+	c.Mutex.Lock()
+	worker := c.WorkerName
+	curDiff := c.CurrentDifficulty
+	c.Mutex.Unlock()
+	if worker != "" && curDiff > 0 {
+		s.rememberClientDiff(c, worker, curDiff)
+	}
 
 	c.Conn.Close()
 
@@ -525,7 +543,12 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	addr := strings.TrimSpace(strings.Split(params[0], ".")[0])
+	rawUser := strings.TrimSpace(params[0])
+	rawPass := ""
+	if len(params) > 1 {
+		rawPass = strings.TrimSpace(params[1])
+	}
+	addr, hintDiff := parseAuthorizeUserAndHint(rawUser, rawPass)
 	logging.Infof("Stratum: Miner authorizing address: '%s'", addr)
 
 	if !isValidVtcAddress(addr) {
@@ -535,29 +558,20 @@ func (s *StratumServer) handleAuthorize(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
-	c.Mutex.Lock()
+	normAddr := addr
 	if strings.HasPrefix(strings.ToLower(addr), "vtc1") || strings.HasPrefix(strings.ToLower(addr), "tvtc1") {
-		c.WorkerName = strings.ToLower(addr)
-	} else {
-		c.WorkerName = addr
+		normAddr = strings.ToLower(addr)
 	}
+
+	c.Mutex.Lock()
+	c.WorkerName = normAddr
 	c.Authorized = true
 	c.Mutex.Unlock()
 
-	minDiff := config.Active.Vardiff.MinDiff
-	if minDiff <= 0 {
-		minDiff = 0.01
-	}
-	poolShareDiff := s.workManager.ShareChain.GetPoolShareDifficulty()
-	if minDiff > poolShareDiff {
-		minDiff = poolShareDiff
-	}
+	startDiff := s.initialDifficultyForClient(c, normAddr, hintDiff)
 
 	_ = c.send(JSONRPCResponse{ID: id, Result: true, Error: nil})
-	if p := s.workManager.ShareChain.GetPoolShareDifficulty(); minDiff > p {
-		minDiff = p
-	}
-	s.sendDifficulty(c, minDiff)
+	s.sendDifficulty(c, startDiff)
 
 	s.lastJobMutex.RLock()
 	job := s.lastJob
@@ -574,8 +588,212 @@ func (s *StratumServer) sendDifficulty(c *Client, diff float64) {
 	}
 	c.Mutex.Lock()
 	c.CurrentDifficulty = diff
+	worker := c.WorkerName
 	c.Mutex.Unlock()
+	if worker != "" && diff > 0 {
+		s.rememberClientDiff(c, worker, diff)
+	}
 	_ = c.send(JSONRPCResponse{Method: "mining.set_difficulty", Params: []interface{}{diff}})
+}
+
+func parseAuthorizeUserAndHint(rawUser, rawPass string) (string, float64) {
+	userPart := strings.TrimSpace(rawUser)
+	var hint float64
+
+	if plusIdx := strings.LastIndex(userPart, "+"); plusIdx > 0 {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(userPart[plusIdx+1:]), 64); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0 {
+			hint = v
+		}
+		userPart = userPart[:plusIdx]
+	}
+
+	addr := strings.TrimSpace(strings.Split(userPart, ".")[0])
+
+	if hint <= 0 && rawPass != "" {
+		for _, tok := range strings.FieldsFunc(rawPass, func(r rune) bool {
+			return r == ',' || r == ';' || r == ' ' || r == '	'
+		}) {
+			tok = strings.TrimSpace(tok)
+			lower := strings.ToLower(tok)
+			var valStr string
+			switch {
+			case strings.HasPrefix(lower, "d="):
+				valStr = tok[2:]
+			case strings.HasPrefix(lower, "diff="):
+				valStr = tok[5:]
+			case strings.HasPrefix(lower, "sd="):
+				valStr = tok[3:]
+			}
+			if valStr != "" {
+				if v, err := strconv.ParseFloat(strings.TrimSpace(valStr), 64); err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0 {
+					hint = v
+					break
+				}
+			}
+		}
+	}
+
+	return addr, hint
+}
+
+func clientHostKey(c *Client) string {
+	if c == nil || c.Conn == nil || c.Conn.RemoteAddr() == nil {
+		return ""
+	}
+	addrStr := c.Conn.RemoteAddr().String()
+	if host, _, err := net.SplitHostPort(addrStr); err == nil {
+		return host
+	}
+	return addrStr
+}
+
+func (s *StratumServer) rememberClientDiff(c *Client, worker string, diff float64) {
+	if worker == "" || diff <= 0 || math.IsNaN(diff) || math.IsInf(diff, 0) {
+		return
+	}
+	now := time.Now()
+	host := clientHostKey(c)
+
+	s.diffCacheMutex.Lock()
+	defer s.diffCacheMutex.Unlock()
+	if s.diffCache == nil {
+		s.diffCache = make(map[string]cachedDiff)
+	}
+	for k, v := range s.diffCache {
+		if now.Sub(v.updatedAt) > reconnectDiffTTL {
+			delete(s.diffCache, k)
+		}
+	}
+	if host != "" {
+		s.diffCache[host+"|"+worker] = cachedDiff{diff: diff, updatedAt: now}
+	}
+	s.diffCache[worker] = cachedDiff{diff: diff, updatedAt: now}
+}
+
+func (s *StratumServer) lookupCachedDiff(c *Client, worker string) (float64, bool) {
+	if worker == "" {
+		return 0, false
+	}
+	now := time.Now()
+	host := clientHostKey(c)
+
+	s.diffCacheMutex.Lock()
+	defer s.diffCacheMutex.Unlock()
+	if s.diffCache == nil {
+		return 0, false
+	}
+	if host != "" {
+		if entry, ok := s.diffCache[host+"|"+worker]; ok && now.Sub(entry.updatedAt) <= reconnectDiffTTL && entry.diff > 0 {
+			return entry.diff, true
+		}
+	}
+	if entry, ok := s.diffCache[worker]; ok && now.Sub(entry.updatedAt) <= reconnectDiffTTL && entry.diff > 0 {
+		return entry.diff, true
+	}
+	return 0, false
+}
+
+func (s *StratumServer) estimateDiffFromShareChain(worker string, targetTime float64) float64 {
+	if s.workManager == nil || s.workManager.ShareChain == nil || worker == "" {
+		return 0
+	}
+	shares, _ := s.workManager.ShareChain.GetRecentShares(120)
+	if len(shares) == 0 {
+		return 0
+	}
+	cutoff := time.Now().Add(-reconnectDiffTTL).Unix()
+	const windowSec = 1800.0
+	var totalWork float64
+	var matched int
+	var earliest, latest int64
+	for i := range shares {
+		sh := shares[i]
+		if sh == nil {
+			continue
+		}
+		ts := int64(sh.ShareInfo.Timestamp)
+		if ts < cutoff || sh.ShareInfo.ShareData.StaleInfo != work.StaleInfoNone {
+			continue
+		}
+		addr := work.DecodeShareAddress(sh)
+		if strings.HasPrefix(strings.ToLower(addr), "vtc1") || strings.HasPrefix(strings.ToLower(addr), "tvtc1") {
+			addr = strings.ToLower(addr)
+		}
+		if addr != worker || sh.Target == nil || sh.Target.Sign() <= 0 {
+			continue
+		}
+		d := s.workManager.ShareChain.GetEffectiveShareDiff(sh)
+		if d <= 0 || math.IsNaN(d) || math.IsInf(d, 0) {
+			continue
+		}
+		totalWork += d
+		matched++
+		if earliest == 0 || ts < earliest {
+			earliest = ts
+		}
+		if ts > latest {
+			latest = ts
+		}
+	}
+	if matched < 2 {
+		return 0
+	}
+	span := float64(latest - earliest)
+	if span < 60.0 {
+		span = 60.0
+	}
+	if span > windowSec {
+		span = windowSec
+	}
+	if targetTime <= 0 {
+		targetTime = 5.0
+	}
+	return (totalWork / span) * targetTime
+}
+
+func (s *StratumServer) initialDifficultyForClient(c *Client, worker string, hintDiff float64) float64 {
+	minDiff := config.Active.Vardiff.MinDiff
+	if minDiff <= 0 {
+		minDiff = 0.01
+	}
+	maxDiff := 10.0
+	if s.workManager != nil && s.workManager.ShareChain != nil {
+		if poolShareDiff := s.workManager.ShareChain.GetPoolShareDifficulty(); poolShareDiff > 0 && poolShareDiff < maxDiff {
+			maxDiff = poolShareDiff
+		}
+	}
+	if minDiff > maxDiff {
+		minDiff = maxDiff
+	}
+
+	targetTime := config.Active.Vardiff.TargetTime
+	if targetTime <= 0 {
+		targetTime = 5.0
+	}
+
+	chosen := minDiff
+	source := "default minDiff"
+	if hintDiff > 0 {
+		chosen = hintDiff
+		source = "miner difficulty hint"
+	} else if cached, ok := s.lookupCachedDiff(c, worker); ok {
+		chosen = cached
+		source = "reconnect vardiff cache"
+	} else if est := s.estimateDiffFromShareChain(worker, targetTime); est > minDiff {
+		chosen = est
+		source = "sharechain history estimate"
+	}
+
+	if chosen < minDiff {
+		chosen = minDiff
+	}
+	if chosen > maxDiff {
+		chosen = maxDiff
+	}
+	if source != "default minDiff" {
+		logging.Infof("Stratum: Initial difficulty for '%s' set to %.5f (%s)", worker, chosen, source)
+	}
+	return chosen
 }
 
 func (s *StratumServer) vardiffLoop(c *Client) {

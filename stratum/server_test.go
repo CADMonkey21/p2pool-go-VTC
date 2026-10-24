@@ -62,3 +62,41 @@ func TestIsValidVtcAddressRejectsMalformed(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAuthorizeUserAndHint(t *testing.T) {
+	tests := []struct {
+		user     string
+		pass     string
+		wantAddr string
+		wantHint float64
+	}{
+		{"vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct.rig1", "x", "vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", 0},
+		{"vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct+0.58", "x", "vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", 0.58},
+		{"vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct.rig1+0.42", "x", "vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", 0.42},
+		{"vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", "d=0.65", "vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", 0.65},
+		{"vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", "x,diff=0.33", "vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", 0.33},
+		{"vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", "d=-5", "vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct", 0},
+	}
+	for _, tc := range tests {
+		addr, hint := parseAuthorizeUserAndHint(tc.user, tc.pass)
+		if addr != tc.wantAddr || hint != tc.wantHint {
+			t.Errorf("parseAuthorizeUserAndHint(%q, %q) = (%q, %v), want (%q, %v)",
+				tc.user, tc.pass, addr, hint, tc.wantAddr, tc.wantHint)
+		}
+	}
+}
+
+func TestReconnectVardiffCache(t *testing.T) {
+	s := &StratumServer{}
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	c := NewClient(a)
+	worker := "vtc1q49etcvzld4ra2hatcqg9rwq5d8ddrplgkkzcct"
+
+	s.rememberClientDiff(c, worker, 0.525)
+	got, ok := s.lookupCachedDiff(c, worker)
+	if !ok || got != 0.525 {
+		t.Fatalf("lookupCachedDiff = (%v, %v), want (0.525, true)", got, ok)
+	}
+}
