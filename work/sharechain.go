@@ -21,6 +21,27 @@ import (
 
 const maxShareAge = 72 * time.Hour
 
+// DownloadShares asks for a missing parent within seconds and asks again every 45s
+// while it stays missing, so a share still unverified after unverifiedShareTTL has
+// had dozens of chances at its parent from every peer and its parent is not coming.
+// maxUnverifiedShares bounds a flood of shares that build on nothing.
+const (
+	unverifiedShareTTL  = 20 * time.Minute
+	maxUnverifiedShares = DefaultPPLNSWindow
+)
+
+// ShareOutcome is the result of adding one share.
+type ShareOutcome int
+
+const (
+	// SharePending is stored but not verified yet, usually for a missing parent.
+	SharePending ShareOutcome = iota
+	ShareAccepted
+	ShareDuplicate
+	// ShareInvalid is invalid on its own, whatever our chain holds.
+	ShareInvalid
+)
+
 type PoolStats struct {
 	PoolHashrate      float64 `json:"pool_hashrate"`
 	NetworkHashrate   float64 `json:"network_hashrate"`
@@ -43,6 +64,7 @@ type NetworkMinerStats struct {
 type ShareChain struct {
 	shares            map[string]*Share
 	verified          map[string]bool
+	received          map[string]time.Time // when each unverified share arrived
 	cumWork           map[string]float64
 	chainLen          map[string]int
 	children          map[string][]string // previous share hash -> held shares built on it
@@ -65,7 +87,7 @@ type ShareChain struct {
 
 func NewShareChain(rpcClient *rpc.Client) *ShareChain {
 	sc := &ShareChain{
-		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int), children: make(map[string][]string),
+		shares: make(map[string]*Share), verified: make(map[string]bool), received: make(map[string]time.Time), cumWork: make(map[string]float64), chainLen: make(map[string]int), children: make(map[string][]string),
 		rpcClient:      rpcClient,
 		FoundBlockChan: make(chan *Share, 100),
 	}
@@ -81,6 +103,7 @@ func (sc *ShareChain) maintenanceLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		sc.PruneOldShares()
+		sc.pruneUnverified(time.Now())
 		sc.updateStats()
 	}
 }
@@ -99,43 +122,66 @@ func (sc *ShareChain) HasShare(hashStr string) bool {
 }
 
 func (sc *ShareChain) AddShares(newShares []Share) int {
+	_, v := sc.AddSharesOutcomes(newShares)
+	return v
+}
+
+// AddSharesOutcomes adds shares like AddShares and also returns each one's outcome.
+func (sc *ShareChain) AddSharesOutcomes(newShares []Share) ([]ShareOutcome, int) {
+	out := make([]ShareOutcome, len(newShares))
+	added := make([]string, len(newShares))
+	var workHashes []string
 	now := time.Now()
 	sc.mutex.Lock()
-	var added []string
 	for i := range newShares {
 		sh := newShares[i]
 		if CheckShareTime(&sh, now) != "" || !CheckShareTargetFloor(&sh) {
+			out[i] = ShareInvalid
 			continue
 		}
 		if sh.Hash == nil {
 			_ = sh.CalculateHash()
 		}
 		if sh.Hash == nil {
+			out[i] = ShareInvalid
 			continue
 		}
 		h := sh.Hash.String()
 		if _, ok := sc.shares[h]; ok {
+			out[i] = ShareDuplicate
 			continue
 		}
 		if sh.POWHash == nil {
 			_ = sh.CalculatePOWHash()
 		}
 		if ok, _ := sh.IsValid(); !ok {
+			out[i] = ShareInvalid
 			continue
 		}
 		cp := sh
 		cp.decodedAddr = DecodeShareAddress(&cp)
 		sc.shares[h] = &cp
+		sc.received[h] = now
+		added[i] = h
 		sc.changes++
-		added = append(added, h)
+		workHashes = append(workHashes, h)
 	}
-	sc.addWorkLocked(added)
+	sc.addWorkLocked(workHashes)
 	sc.mutex.Unlock()
-	v := sc.verifyPending()
+	v, rejected := sc.verifyPending()
 	if v > 0 {
 		sc.updateStats()
 	}
-	return v
+	sc.mutex.RLock()
+	for i, h := range added {
+		if rejected[h] {
+			out[i] = ShareInvalid
+		} else if h != "" && sc.verified[h] {
+			out[i] = ShareAccepted
+		}
+	}
+	sc.mutex.RUnlock()
+	return out, v
 }
 func (sc *ShareChain) PruneOldShares() {
 	sc.mutex.Lock()
@@ -157,6 +203,51 @@ func (sc *ShareChain) pruneLocked(cutoff int64) int {
 		sc.removeSharesLocked(old)
 	}
 	return len(old)
+}
+
+// pruneUnverified drops shares still unverified unverifiedShareTTL after they
+// arrived, unless a verified share builds on them, then the oldest received beyond
+// maxUnverifiedShares.
+func (sc *ShareChain) pruneUnverified(now time.Time) {
+	sc.verifyMu.Lock()
+	defer sc.verifyMu.Unlock()
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	if len(sc.received) == 0 {
+		return
+	}
+	held := make(map[string]bool)
+	for h := range sc.verified {
+		sh := sc.shares[h]
+		for sh != nil {
+			p := sh.getPrevKey()
+			if p == "" || sc.verified[p] || held[p] {
+				break
+			}
+			if sh = sc.shares[p]; sh != nil {
+				held[p] = true
+			}
+		}
+	}
+	var drop []string
+	keep := make([]string, 0, len(sc.received))
+	for h, t := range sc.received {
+		if !held[h] && now.Sub(t) >= unverifiedShareTTL {
+			drop = append(drop, h)
+		} else {
+			keep = append(keep, h)
+		}
+	}
+	if len(keep) > maxUnverifiedShares {
+		sort.Slice(keep, func(i, j int) bool { return sc.received[keep[i]].Before(sc.received[keep[j]]) })
+		drop = append(drop, keep[:len(keep)-maxUnverifiedShares]...)
+	}
+	if len(drop) == 0 {
+		return
+	}
+	sc.changes++
+	sc.removeSharesLocked(drop)
+	logging.Debugf("ShareChain: Pruned %d unverified shares", len(drop))
 }
 
 func (sc *ShareChain) Load() error {
@@ -779,6 +870,7 @@ func (sc *ShareChain) unlinkShareLocked(h string) bool {
 	}
 	delete(sc.shares, h)
 	delete(sc.verified, h)
+	delete(sc.received, h)
 	delete(sc.cumWork, h)
 	delete(sc.chainLen, h)
 	return cand
@@ -972,7 +1064,9 @@ func (sc *ShareChain) hasCompletePPLNSWindow(prev *chainhash.Hash) bool {
 	return false
 }
 
-func (sc *ShareChain) verifyPending() int {
+// verifyPending verifies the pending shares it can and returns how many it verified
+// and the hashes of those it rejected.
+func (sc *ShareChain) verifyPending() (int, map[string]bool) {
 	sc.verifyMu.Lock()
 	defer sc.verifyMu.Unlock()
 	sc.mutex.Lock()
@@ -984,14 +1078,15 @@ func (sc *ShareChain) verifyPending() int {
 	}
 	if len(pend) == 0 {
 		sc.mutex.Unlock()
-		return 0
+		return 0, nil
 	}
 	sort.Slice(pend, func(i, j int) bool {
 		return sc.chainLen[pend[i].Hash.String()] < sc.chainLen[pend[j].Hash.String()]
 	})
 	sc.mutex.Unlock()
 	vn := 0
-	var rejected []string
+	var rejectedList []string
+	var rejected map[string]bool
 	for i, sh := range pend {
 		h, p := sh.Hash.String(), sh.ShareInfo.ShareData.PreviousShareHash
 		sc.mutex.RLock()
@@ -1017,9 +1112,13 @@ func (sc *ShareChain) verifyPending() int {
 		if eff >= ConsensusV2ActivationTime && !sc.checkConsensus(sh, p, hLen, eff) {
 			sc.mutex.Lock()
 			sc.unlinkShareLocked(h)
-			rejected = append(rejected, h)
+			rejectedList = append(rejectedList, h)
 			sc.changes++
 			sc.mutex.Unlock()
+			if rejected == nil {
+				rejected = make(map[string]bool)
+			}
+			rejected[h] = true
 			continue
 		}
 		sc.mutex.Lock()
@@ -1027,18 +1126,19 @@ func (sc *ShareChain) verifyPending() int {
 		sc.mutex.Unlock()
 		vn++
 	}
-	if len(rejected) > 0 {
+	if len(rejectedList) > 0 {
 		// Descendants of rejected shares keep their work until the pass ends, so
 		// later shares in the pass see the lengths they were sorted by.
 		sc.mutex.Lock()
-		sc.dropWorkLocked(rejected, false)
+		sc.dropWorkLocked(rejectedList, false)
 		sc.mutex.Unlock()
 	}
-	return vn
+	return vn, rejected
 }
 
 func (sc *ShareChain) markVerifiedLocked(h string) {
 	sc.verified[h] = true
+	delete(sc.received, h)
 	sc.considerTipLocked([]string{h})
 }
 
