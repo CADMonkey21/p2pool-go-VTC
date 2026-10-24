@@ -27,24 +27,25 @@ jobs:
         run: |
           mkdir -p dist
           VERSION=${GITHUB_REF#refs/tags/}
+          LDFLAGS="-s -w -X github.com/CADMonkey21/p2pool-go-VTC/config.Version=${VERSION}"
 
           # Linux amd64
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/p2pool-go-vtc .
           tar -czvf dist/p2pool-go-vtc-${VERSION}-linux-amd64.tar.gz -C dist p2pool-go-vtc -C .. README.md
           rm dist/p2pool-go-vtc
 
           # Linux arm64 (Raspberry Pi 4/5 / ARM servers)
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/p2pool-go-vtc .
           tar -czvf dist/p2pool-go-vtc-${VERSION}-linux-arm64.tar.gz -C dist p2pool-go-vtc -C .. README.md
           rm dist/p2pool-go-vtc
 
           # Windows amd64
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/p2pool-go-vtc.exe .
           zip -j dist/p2pool-go-vtc-${VERSION}-windows-amd64.zip dist/p2pool-go-vtc.exe README.md
           rm dist/p2pool-go-vtc.exe
 
           # macOS arm64 (Apple Silicon)
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/p2pool-go-vtc .
           tar -czvf dist/p2pool-go-vtc-${VERSION}-darwin-arm64.tar.gz -C dist p2pool-go-vtc -C .. README.md
           rm dist/p2pool-go-vtc
 
