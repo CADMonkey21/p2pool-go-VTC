@@ -150,13 +150,16 @@ func main() {
 		debug.SetMemoryLimit(defaultMemoryLimit)
 	}
 
-	origDir, _ := os.Getwd()
-	staticDir := filepath.Join(origDir, "web", "static")
-	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
-		if exePath, err := os.Executable(); err == nil {
-			staticDir = filepath.Join(filepath.Dir(exePath), "web", "static")
-		}
+	// A web/static directory in the working directory or next to the
+	// executable overrides the dashboard embedded in the binary.
+	var staticDirs []string
+	if origDir, err := os.Getwd(); err == nil {
+		staticDirs = append(staticDirs, filepath.Join(origDir, "web", "static"))
 	}
+	if exePath, err := os.Executable(); err == nil {
+		staticDirs = append(staticDirs, filepath.Join(filepath.Dir(exePath), "web", "static"))
+	}
+	staticFS, staticSrc := web.StaticFS(staticDirs...)
 
 	config.LoadConfig()
 
@@ -390,7 +393,8 @@ func main() {
 		default:
 		}
 	})
-	mux.Handle("/", http.FileServer(http.Dir(staticDir)))
+	logging.Infof("Web UI: serving dashboard from %s", staticSrc)
+	mux.Handle("/", http.FileServer(staticFS))
 
 	httpSrv := &http.Server{
 		Handler: mux,

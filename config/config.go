@@ -12,7 +12,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const Version = "v1.1.0"
+// Version is the release version. Release builds set it with
+// -ldflags "-X github.com/CADMonkey21/p2pool-go-VTC/config.Version=<tag>".
+var Version = "v1.1.0"
 
 type VardiffConfig struct {
 	TargetTime   float64 `yaml:"targetTime"`
