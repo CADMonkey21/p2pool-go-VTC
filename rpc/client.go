@@ -3,6 +3,7 @@ package rpc
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -37,6 +38,39 @@ type RPCError struct {
 
 func (e *RPCError) Error() string {
 	return fmt.Sprintf("RPC Error - Code: %d, Message: %s", e.Code, e.Message)
+}
+
+// HTTPError is returned when vertcoind answers with a non-2xx status.
+type HTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP Error %d: %s (Check your rpcuser/rpcpass and rpcallowip)", e.StatusCode, e.Body)
+}
+
+const rpcInWarmup = -28
+
+// IsTransient reports whether err is a transport failure, an HTTP 5xx or vertcoind warming up,
+// i.e. whether the same call may succeed if repeated.
+func IsTransient(err error) bool {
+	var rej *BlockRejectedError
+	var rpcErr *RPCError
+	var httpErr *HTTPError
+	switch {
+	case err == nil, errors.As(err, &rej):
+		return false
+	case errors.As(err, &rpcErr):
+		return rpcErr.Code == rpcInWarmup
+	case errors.As(err, &httpErr):
+		var resp RPCResponse
+		if json.Unmarshal([]byte(httpErr.Body), &resp) == nil && resp.Error != nil {
+			return resp.Error.Code == rpcInWarmup
+		}
+		return httpErr.StatusCode >= 500
+	}
+	return true
 }
 
 // Client is a JSON-RPC client for vertcoind.
@@ -174,7 +208,7 @@ func (c *Client) callInternal(method string, params []interface{}, retry401 bool
 		return c.callInternal(method, params, true)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP Error %d: %s (Check your rpcuser/rpcpass and rpcallowip)", resp.StatusCode, string(body))
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var rpcResp RPCResponse

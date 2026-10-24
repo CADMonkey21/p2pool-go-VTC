@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -116,6 +115,15 @@ func (c *Client) ProposeBlock(block *wire.MsgBlock) (string, error) {
 	return reason, nil
 }
 
+// BlockRejectedError is returned by SubmitBlock when vertcoind answers with a rejection reason.
+type BlockRejectedError struct {
+	Reason string
+}
+
+func (e *BlockRejectedError) Error() string {
+	return "submitblock rejected by vertcoind: " + e.Reason
+}
+
 // SubmitBlock sends a serialized solved block to Vertcoin Core and verifies it was accepted.
 func (c *Client) SubmitBlock(block *wire.MsgBlock) error {
 	var blockBuf bytes.Buffer
@@ -137,9 +145,9 @@ func (c *Client) SubmitBlock(block *wire.MsgBlock) error {
 	if resp.Result != nil && string(resp.Result) != "null" {
 		var reason string
 		if err := json.Unmarshal(resp.Result, &reason); err == nil && reason != "" {
-			return fmt.Errorf("submitblock rejected by vertcoind: %s", reason)
+			return &BlockRejectedError{Reason: reason}
 		}
-		return fmt.Errorf("submitblock rejected by vertcoind: %s", string(resp.Result))
+		return &BlockRejectedError{Reason: string(resp.Result)}
 	}
 
 	return nil
