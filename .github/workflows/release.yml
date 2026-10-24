@@ -1,0 +1,57 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.7'
+
+      - name: Run Tests
+        run: go test ./...
+
+      - name: Build Cross-Platform Binaries
+        run: |
+          mkdir -p dist
+          VERSION=${GITHUB_REF#refs/tags/}
+
+          # Linux amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc .
+          tar -czvf dist/p2pool-go-vtc-${VERSION}-linux-amd64.tar.gz -C dist p2pool-go-vtc -C .. README.md
+          rm dist/p2pool-go-vtc
+
+          # Linux arm64 (Raspberry Pi 4/5 / ARM servers)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc .
+          tar -czvf dist/p2pool-go-vtc-${VERSION}-linux-arm64.tar.gz -C dist p2pool-go-vtc -C .. README.md
+          rm dist/p2pool-go-vtc
+
+          # Windows amd64
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc.exe .
+          zip -j dist/p2pool-go-vtc-${VERSION}-windows-amd64.zip dist/p2pool-go-vtc.exe README.md
+          rm dist/p2pool-go-vtc.exe
+
+          # macOS arm64 (Apple Silicon)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/p2pool-go-vtc .
+          tar -czvf dist/p2pool-go-vtc-${VERSION}-darwin-arm64.tar.gz -C dist p2pool-go-vtc -C .. README.md
+          rm dist/p2pool-go-vtc
+
+          cd dist && sha256sum * > SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
