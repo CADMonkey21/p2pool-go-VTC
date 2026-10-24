@@ -57,6 +57,9 @@ type SyncPayload struct {
 	Shares   json.RawMessage `json:"shares"`
 	Blocks   json.RawMessage `json:"blocks"`
 	FullNode bool            `json:"full_node,omitempty"`
+	// Pull is set by a sender that fetches shares with share requests instead. It
+	// sends no shares, and a responder that understands the field replies with none.
+	Pull bool `json:"pull,omitempty"`
 }
 
 type Node struct {
@@ -70,7 +73,7 @@ type Node struct {
 	IncomingShares       chan []byte
 	bootstrapPeers       []string
 	syncMutex            sync.Mutex
-	GetSyncDataFunc      func() ([]byte, []byte)
+	GetSyncDataFunc      func(withShares bool) ([]byte, []byte)
 	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte)
 	GetSharesByHashFunc  func(hashes []string, parents int, stops []string) []byte
 	GetMissingSharesFunc func() []string
@@ -227,7 +230,7 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	n.setPeerFullMode(s.Conn().RemotePeer().String(), incoming.FullNode)
 	go n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
 
-	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	sharesJSON, blocksJSON := n.GetSyncDataFunc(!incoming.Pull)
 	outgoing := SyncPayload{
 		Shares:   sharesJSON,
 		Blocks:   blocksJSON,
@@ -304,11 +307,15 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 	if pid == n.Host.ID() || n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
 		return
 	}
-	n.exchangeVersion(pid)
-	if !n.syncMutex.TryLock() {
-		return
+	// A peer that speaks the version protocol serves share requests, so neither
+	// side sends its share window and the sync only swaps found blocks.
+	pull := n.exchangeVersion(pid)
+	if !pull {
+		if !n.syncMutex.TryLock() {
+			return
+		}
+		defer n.syncMutex.Unlock()
 	}
-	defer n.syncMutex.Unlock()
 
 	ctx, cancel := context.WithTimeout(n.ctx, 60*time.Second)
 	defer cancel()
@@ -322,11 +329,12 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 
-	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	sharesJSON, blocksJSON := n.GetSyncDataFunc(!pull)
 	outgoing := SyncPayload{
 		Shares:   sharesJSON,
 		Blocks:   blocksJSON,
 		FullNode: n.GetTemplateFunc != nil,
+		Pull:     pull,
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
 		logging.Debugf("P2P Sync: Failed sending sync request to %s: %v", pid, err)

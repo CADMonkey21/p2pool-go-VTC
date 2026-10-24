@@ -188,9 +188,11 @@ func main() {
 	defer p2pNode.Close()
 
 	// Wire bidirectional P2P ShareChain and Blocks synchronization
-	p2pNode.GetSyncDataFunc = func() ([]byte, []byte) {
-		shares := sc.GetSharesForSync(10000)
-		sBytes, _ := json.Marshal(shares)
+	p2pNode.GetSyncDataFunc = func(withShares bool) ([]byte, []byte) {
+		var sBytes []byte
+		if withShares {
+			sBytes, _ = json.Marshal(sc.GetSharesForSync(10000))
+		}
 		bBytes := workManager.GetPersistedBlocksJSON()
 		return sBytes, bBytes
 	}
