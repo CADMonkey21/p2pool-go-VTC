@@ -25,7 +25,7 @@ An official cloud-hosted bootstrap seed node and public dashboard is live at:
 - **Decentralized `go-libp2p` Mesh:** Powered by the same networking stack used by Ethereum's consensus layer, featuring Kademlia DHT, automatic UPnP NAT port mapping, persistent cryptographic Peer IDs (`peer.key`), and zero-configuration local LAN `mDNS` peer discovery.
 - **Single-Port Multiplexing (`cmux`):** Automatically serves both TCP Stratum mining traffic and the HTTP Web Dashboard over a single shared port (`9172`).
 - **Live Host-Aware Web Dashboard:** A built-in web interface that refreshes every 5 seconds to display real-time pool hashrates, multi-rig aggregated miner performance, worker difficulties, recent blocks, and estimated payouts, automatically adapting its branding and Stratum connection string to your domain or IP.
-- **Direct Non-Custodial PPLNS Payouts:** Calculates and embeds proportional PPLNS payouts (and pool fees) directly into the block's coinbase transaction outputs (`gentx`), eliminating the need for custodial pool hot wallets or secondary `sendmany` distribution transactions.
+- **Direct Non-Custodial PPLNS Payouts:** Calculates and embeds proportional PPLNS payouts directly into the block's coinbase transaction outputs (`gentx`), eliminating the need for custodial pool hot wallets or secondary `sendmany` distribution transactions.
 - **Live BIP22 Consensus Verification:** Automatically runs `TestBlockValidity()` against `vertcoind` (`getblocktemplate` proposal mode) on every new block height to guarantee block headers, SegWit witness commitments, Merkle roots, and coinbase outputs pass 100% of Vertcoin Core consensus rules while mining.
 - **Robust Variable Difficulty (Vardiff):** Automatically tunes individual miner target difficulties to maintain steady share submission rates across rigs of any size.
 - **Persistent Share Chain & Block History:** Saves and reloads the active share chain (`sharechain.json`) and found block history (`blocks.json`) across node restarts.
@@ -130,7 +130,7 @@ See [LOG_GUIDE.md](LOG_GUIDE.md) for an overview of console log messages and lev
 - **Share Chain & Payouts**
   - [x] Deterministic PPLNS weight calculation across the ShareChain window
   - [x] Mainnet block discovery and submission verified
-  - [x] Direct non-custodial coinbase PPLNS + pool fee payouts verified on Mainnet
+  - [x] Direct non-custodial coinbase PPLNS payouts verified on Mainnet
   - [x] Automatic 100-block maturity tracking
 - **UI, Monitoring & Persistence**
   - [x] Single-port `cmux` HTTP Web Dashboard & `/api/stats` JSON endpoint
