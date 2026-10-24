@@ -962,7 +962,7 @@ func (sc *ShareChain) SetCurrentBlockTarget(prevHash, bitsHex string) {
 func (sc *ShareChain) SetNetworkBitsFromTemplate(bitsHex string) {
 	var b uint32
 	if _, err := fmt.Sscanf(bitsHex, "%x", &b); err == nil && b != 0 {
-		nd := TargetToDiff(blockchain.CompactToBig(b)) / 256.0
+		nd := BitsToNetworkDiff(b)
 		if nd > 0 {
 			sc.poolStatsMutex.Lock()
 			sc.networkDifficulty = nd
