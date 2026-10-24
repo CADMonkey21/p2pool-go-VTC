@@ -11,6 +11,7 @@ require (
 	github.com/libp2p/go-libp2p-pubsub v0.16.0
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/soheilhy/cmux v0.1.5
+	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 )

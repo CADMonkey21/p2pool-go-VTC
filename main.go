@@ -373,4 +373,7 @@ func main() {
 	} else {
 		logging.Infof("Sharechain committed successfully.")
 	}
+	if err := sc.Close(); err != nil {
+		logging.Errorf("Could not close sharechain store: %v", err)
+	}
 }

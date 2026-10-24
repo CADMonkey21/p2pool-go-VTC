@@ -27,7 +27,7 @@ util/               # Endianness helpers and Merkle branch/root calculators
 verthash/           # Verthash PoW hashing implementation backed by verthash.dat
 web/                # HTTP dashboard API (/api/stats) and static frontend assets (web/static/)
 work/               # Core share construction, PPLNS coinbase builder, ShareChain, and WorkManager
-.gitignore          # Ignores compiled binaries, sharechain.json, peer.key, and runtime logs
+.gitignore          # Ignores compiled binaries, sharechain.db, sharechain.json, peer.key, and runtime logs
 README.md           # Project overview and setup instructions
 DEV_GUIDE.md        # Developer architecture guide
 PRE_SETUP_GUIDE.md  # Prerequisite installation guide (Go, vertcoind, verthash.dat, firewall)
