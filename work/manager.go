@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/btcsuite/btcd/blockchain"
@@ -18,6 +19,7 @@ import (
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
 	"github.com/CADMonkey21/p2pool-go-VTC/util"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
@@ -32,6 +34,8 @@ const (
 )
 
 const blocksFile = "blocks.json"
+
+var submitBlockBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 
 type PayoutBlock struct {
 	BlockHash          *chainhash.Hash
@@ -489,6 +493,15 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 	}
 
 	blockHash := block.BlockHash()
+	txs := make([]*btcutil.Tx, len(block.Transactions))
+	for i, tx := range block.Transactions {
+		txs[i] = btcutil.NewTx(tx)
+	}
+	if root := blockchain.CalcMerkleRoot(txs, false); root != block.Header.MerkleRoot {
+		logging.Errorf("SubmitBlock: MERKLE ROOT MISMATCH for block %s (Height %d), refusing to submit: header %s, computed %s from %d txs (coinbase %s, link index %d, %d branch hashes, share %s)",
+			blockHash.String(), template.Height, block.Header.MerkleRoot.String(), root.String(), len(txs), txs[0].Hash().String(), share.MerkleLink.Index, len(share.MerkleLink.Branch), share.Hash)
+		return fmt.Errorf("merkle root mismatch: header %s, computed %s", block.Header.MerkleRoot.String(), root.String())
+	}
 	logging.Infof("Submitting solved block %s (Height %d) directly to vertcoind...", blockHash.String(), template.Height)
 
 	if wm.RelayBlockHexFunc != nil {
@@ -502,7 +515,7 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 		}
 	}
 	if !config.Active.LightMode {
-		if err := wm.rpcClient.SubmitBlock(block); err != nil {
+		if err := wm.submitBlockWithRetry(block); err != nil {
 			logging.Errorf("SubmitBlock RPC rejected or failed: %v", err)
 			return err
 		}
@@ -529,6 +542,24 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 	default:
 	}
 	return nil
+}
+
+// submitBlockWithRetry retries transient submitblock failures with backoff. A "duplicate"
+// rejection means vertcoind already holds the block, e.g. from an earlier attempt or a peer relay.
+func (wm *WorkManager) submitBlockWithRetry(block *wire.MsgBlock) error {
+	for i := 0; ; i++ {
+		err := wm.rpcClient.SubmitBlock(block)
+		var rej *rpc.BlockRejectedError
+		if errors.As(err, &rej) && rej.Reason == "duplicate" {
+			logging.Infof("SubmitBlock: vertcoind already has block %s (attempt %d)", block.BlockHash().String(), i+1)
+			return nil
+		}
+		if !rpc.IsTransient(err) || i >= len(submitBlockBackoff) {
+			return err
+		}
+		logging.Warnf("SubmitBlock attempt %d failed: %v; retrying in %v", i+1, err, submitBlockBackoff[i])
+		time.Sleep(submitBlockBackoff[i])
+	}
 }
 
 func (wm *WorkManager) GetRecentBlocks(count int) ([]PayoutBlock, error) {
