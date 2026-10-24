@@ -920,17 +920,34 @@ func (sc *ShareChain) GetMissingParentHashes(max int) []string {
 	}
 	return out
 }
-func (sc *ShareChain) GetSharesByHashWithParents(hashes []string, parents int) []Share {
+
+// MaxShareReply caps the number of shares returned for one share request.
+const MaxShareReply = 1000
+
+// GetSharesByHashWithParents returns each requested share followed by up to parents of
+// its ancestors, like p2pool's sharereq. A walk ends before any hash in stops, and the
+// reply holds at most MaxShareReply shares.
+func (sc *ShareChain) GetSharesByHashWithParents(hashes []string, parents int, stops []string) []Share {
+	if len(hashes) == 0 {
+		return nil
+	}
+	if parents < 0 {
+		parents = 0
+	}
+	if p := MaxShareReply / len(hashes); parents > p {
+		parents = p
+	}
+	stop := make(map[string]bool, len(stops))
+	for _, h := range stops {
+		stop[h] = true
+	}
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
-	if parents <= 0 {
-		parents = 250
-	}
 	seen := make(map[string]bool)
 	var out []Share
 	for _, cur := range hashes {
-		for i := 0; i < parents && cur != ""; i++ {
-			if seen[cur] || sc.shares[cur] == nil {
+		for i := 0; i <= parents && cur != "" && len(out) < MaxShareReply; i++ {
+			if seen[cur] || stop[cur] || sc.shares[cur] == nil {
 				break
 			}
 			s := sc.shares[cur]

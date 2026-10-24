@@ -219,8 +219,8 @@ func main() {
 			}
 		}()
 	}
-	p2pNode.GetSharesByHashFunc = func(hashes []string, parents int) []byte {
-		b, _ := json.Marshal(sc.GetSharesByHashWithParents(hashes, parents))
+	p2pNode.GetSharesByHashFunc = func(hashes []string, parents int, stops []string) []byte {
+		b, _ := json.Marshal(sc.GetSharesByHashWithParents(hashes, parents, stops))
 		return b
 	}
 	p2pNode.OnSyncDataFunc = func(sharesJSON []byte, blocksJSON []byte) {
