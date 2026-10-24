@@ -135,7 +135,6 @@ type aggregatedMiner struct {
 
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	sc := d.workManager.ShareChain
 	poolStats := sc.GetStats()
@@ -377,7 +376,6 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ServeStatus provides a lightweight readiness and sync check endpoint for OCM integration.
 func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	peerCount := 0
 	if d.p2pNode != nil && d.p2pNode.Host != nil {
