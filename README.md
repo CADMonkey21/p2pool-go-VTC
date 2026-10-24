@@ -98,6 +98,7 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
 ```bash
 ./p2pool-go-vtc -light -datadir /path/to/data -stratum 9172 -p2p 9348 -verthash /path/to/verthash.dat -loglevel info
 ```
+- **Bootstrap Peers (`-peers`):** Comma-separated libp2p multiaddrs, each ending in `/p2p/<PeerID>` (e.g. `-peers "/ip4/1.2.3.4/tcp/9348/p2p/12D3KooW...,/dns4/example.com/tcp/9348/p2p/12D3KooW..."`). When set, it replaces the built-in defaults and any `peers:` in `config.yaml`; invalid entries are logged and skipped.
 - **Readiness Endpoint (`/api/status`):** Returns JSON (`"ready": true`, `"has_template": true`, `"synced": true`, `"peers"`, `"shares_total"`, `"height"`) for One-Click Miner health checks.
 - **Dashboard Stats Endpoint (`/api/stats`):** Returns live hashrates, active miners, PPLNS payouts, and connected P2P peers.
 

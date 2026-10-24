@@ -15,6 +15,8 @@ datadir: ""
 # To connect to remote internet p2pool-go-VTC nodes, list their full libp2p
 # multiaddr (printed in the startup log as "P2P Connect Multiaddr").
 # Note: This Go mesh does not connect to legacy Python P2Pool nodes.
+# Can also be passed via CLI (replaces this list and the built-in defaults):
+#   -peers "/ip4/1.2.3.4/tcp/9348/p2p/<PeerID>,/dns4/example.com/tcp/9348/p2p/<PeerID>"
 peers:
   - "/ip4/138.68.53.157/tcp/9348/p2p/12D3KooWNiQ2TSXEhFgZrsJuuk9xxNheph8b23pK4RHaPSQFNDwU"
   - "/dns4/p2poolvtc.com/tcp/9348/p2p/12D3KooWNiQ2TSXEhFgZrsJuuk9xxNheph8b23pK4RHaPSQFNDwU"
