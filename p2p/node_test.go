@@ -99,10 +99,10 @@ func TestLoopbackNodeOutboundOnly(t *testing.T) {
 	}
 
 	synced := make(chan struct{}, 1)
-	full.GetSyncDataFunc = func() ([]byte, []byte) { return []byte(`["full-share"]`), []byte(`[]`) }
+	full.GetSyncDataFunc = func(bool) ([]byte, []byte) { return []byte(`["full-share"]`), []byte(`[]`) }
 	full.OnSyncDataFunc = func([]byte, []byte) {}
 	full.GetTemplateFunc = func() []byte { return []byte(`{"height":1}`) }
-	light.GetSyncDataFunc = func() ([]byte, []byte) { return []byte(`[]`), []byte(`[]`) }
+	light.GetSyncDataFunc = func(bool) ([]byte, []byte) { return []byte(`[]`), []byte(`[]`) }
 	light.OnSyncDataFunc = func(shares, _ []byte) {
 		if bytes.Contains(shares, []byte("full-share")) {
 			select {
