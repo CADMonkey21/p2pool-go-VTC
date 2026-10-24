@@ -78,3 +78,4 @@ Instead of legacy Python P2Pool's custom 2011 TCP wire protocol, `p2pool-go-VTC`
 
 - **`cmux`**: Multiplexes incoming TCP connections on `stratumPort` (`9172`)—routing HTTP `GET` requests to `httpSrv` (`web/dashboard.go` and `./web/static`) and raw JSON-RPC lines to `StratumServer`.
 - **Multi-Rig Aggregation:** `web/dashboard.go` aggregates multiple connections sharing the same Vertcoin wallet address into a single combined row on the dashboard while tracking individual client rate monitors underneath.
+- **Sharechain Persistence & Export (`work/sharestore.go`):** Persists verified shares incrementally in a `bbolt` database (`sharechain.db`), automatically migrating any legacy `sharechain.json` once on startup (renaming it to `sharechain.json.migrated`). Verified shares can be exported as JSON anytime via `-dump-shares` or the loopback-only `/api/shares?limit=N` HTTP endpoint.
