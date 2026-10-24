@@ -166,8 +166,8 @@ func TestLoopbackNodeOutboundOnly(t *testing.T) {
 		}
 		select {
 		case msg := <-light.IncomingShares:
-			if string(msg) != "share" {
-				t.Errorf("gossip message = %q", msg)
+			if string(msg.Data) != "share" || msg.From != full.Host.ID() {
+				t.Errorf("gossip message = %q from %s", msg.Data, msg.From)
 			}
 			return
 		case <-tick.C:

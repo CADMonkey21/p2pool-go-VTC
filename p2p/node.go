@@ -71,7 +71,7 @@ type Node struct {
 	Sub                  *pubsub.Subscription
 	ctx                  context.Context
 	cancel               context.CancelFunc
-	IncomingShares       chan []byte
+	IncomingShares       chan IncomingShare
 	bootstrapPeers       []string
 	syncMutex            sync.Mutex
 	GetSyncDataFunc      func(withShares bool) ([]byte, []byte)
@@ -91,6 +91,7 @@ type Node struct {
 	peerFullMode         map[string]bool
 	peerVerifiedFull     map[string]bool
 	downloadWake         chan struct{}
+	scores               peerScores
 }
 
 type mdnsNotifee struct {
@@ -225,11 +226,17 @@ func NewNode(listenPort int, bindAddr string, disableUPnP bool) (*Node, error) {
 		Sub:              sub,
 		ctx:              ctx,
 		cancel:           cancel,
-		IncomingShares:   make(chan []byte, 1000),
+		IncomingShares:   make(chan IncomingShare, 1000),
 		peerFullMode:     make(map[string]bool),
 		peerVerifiedFull: make(map[string]bool),
 		downloadWake:     make(chan struct{}, 1),
+		scores:           peerScores{m: make(map[peer.ID]*peerScore)},
 	}
+	h.Network().Notify(&network.NotifyBundle{DisconnectedF: func(nw network.Network, c network.Conn) {
+		if nw.Connectedness(c.RemotePeer()) != network.Connected {
+			node.scores.forget(c.RemotePeer())
+		}
+	}})
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
 	h.SetStreamHandler(ShareReqProtocolID, node.handleShareReqStream)
@@ -483,7 +490,7 @@ func (n *Node) listenLoop() {
 			continue
 		}
 
-		n.IncomingShares <- msg.Data
+		n.IncomingShares <- IncomingShare{Data: msg.Data, From: msg.ReceivedFrom}
 	}
 }
 

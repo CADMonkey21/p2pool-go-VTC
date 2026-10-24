@@ -259,15 +259,20 @@ func main() {
 	go p2pNode.Bootstrap(config.Active.Peers)
 
 	go func() {
-		for shareBytes := range p2pNode.IncomingShares {
+		for in := range p2pNode.IncomingShares {
 			var remoteShare work.Share
-			if json.Unmarshal(shareBytes, &remoteShare) != nil {
+			if json.Unmarshal(in.Data, &remoteShare) != nil || remoteShare.CalculateHashes() != nil {
+				p2pNode.RecordShareOutcome(in.From, true)
 				continue
 			}
-			if remoteShare.CalculateHashes() != nil {
-				continue
+			outcomes, added := sc.AddSharesOutcomes([]work.Share{remoteShare})
+			// Pending and duplicate shares say nothing about the peer.
+			switch outcomes[0] {
+			case work.ShareAccepted:
+				p2pNode.RecordShareOutcome(in.From, false)
+			case work.ShareInvalid:
+				p2pNode.RecordShareOutcome(in.From, true)
 			}
-			added := sc.AddShares([]work.Share{remoteShare})
 
 			powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
 			netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
