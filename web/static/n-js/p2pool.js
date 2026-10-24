@@ -4,6 +4,58 @@
 var api_url = "/api/stats";
 var reload_interval = 5000; // 5 seconds
 var currency_symbol = "VTC"; // You can change this if you fork for another coin
+var explorer_provider = "auto"; // Options: "auto", "cryptoid", "vtcblocks", "bitinfocharts"
+var active_mainnet_explorer = "cryptoid";
+
+function checkExplorerHealth() {
+    if (explorer_provider !== "auto") {
+        active_mainnet_explorer = explorer_provider;
+        return;
+    }
+    $.ajax({
+        url: "https://chainz.cryptoid.info/vtc/api.dws?q=getblockcount",
+        method: "GET",
+        timeout: 3500,
+        success: function(res) {
+            if (res && !isNaN(parseInt(res, 10))) {
+                active_mainnet_explorer = "cryptoid";
+            } else {
+                active_mainnet_explorer = "vtcblocks";
+            }
+        },
+        error: function() {
+            active_mainnet_explorer = "vtcblocks";
+        }
+    });
+}
+checkExplorerHealth();
+setInterval(checkExplorerHealth, 300000);
+
+function getAddressExplorerUrl(address) {
+    if (address && address.startsWith("tvtc1")) {
+        return "https://chainz.cryptoid.info/vtc-test/address.dws?" + address + ".htm";
+    }
+    var provider = (explorer_provider === "auto") ? active_mainnet_explorer : explorer_provider;
+    if (provider === "vtcblocks") {
+        return "https://vtcblocks.com/address/" + address;
+    } else if (provider === "bitinfocharts") {
+        return "https://bitinfocharts.com/vertcoin/address/" + address;
+    }
+    return "https://chainz.cryptoid.info/vtc/address.dws?" + address + ".htm";
+}
+
+function getBlockExplorerUrl(blockTarget, isTestnet) {
+    if (isTestnet) {
+        return "https://chainz.cryptoid.info/vtc-test/block.dws?" + blockTarget + ".htm";
+    }
+    var provider = (explorer_provider === "auto") ? active_mainnet_explorer : explorer_provider;
+    if (provider === "vtcblocks") {
+        return "https://vtcblocks.com/block/" + blockTarget;
+    } else if (provider === "bitinfocharts") {
+        return "https://bitinfocharts.com/vertcoin/block/" + blockTarget;
+    }
+    return "https://chainz.cryptoid.info/vtc/block.dws?" + blockTarget + ".htm";
+}
 
 // ==================================================================
 // MAIN DATA REFRESH FUNCTION
@@ -74,11 +126,7 @@ function refreshStats() {
             $.each(data.active_miners, function(index, miner) {
                 var tr = $('<tr/>').addClass('c-table__row');
 
-                var isTestnet = miner.address.startsWith('tvtc1');
-                var explorerBaseUrl = isTestnet ?
-                                    'https://chainz.cryptoid.info/vtc-test/address.dws?' :
-                                    'https://chainz.cryptoid.info/vtc/address.dws?';
-                var explorerUrl = explorerBaseUrl + miner.address + '.htm';
+                var explorerUrl = getAddressExplorerUrl(miner.address);
 
                 var addressLink = $('<a/>')
                                     .attr('href', explorerUrl)
@@ -114,15 +162,12 @@ function refreshStats() {
         $('#num_blocks_found').text(blocksCount);
         if (data.blocks_found_list && data.blocks_found_list.length > 0) {
             var isTestnet = (data.payouts_list && data.payouts_list.length > 0 && data.payouts_list[0].address.startsWith('tvtc1')) ||
-                            (data.active_miners_list && data.active_miners_list.length > 0 && data.active_miners_list[0].address.startsWith('tvtc1'));
-            var blockExplorerBase = isTestnet ?
-                                    'https://chainz.cryptoid.info/vtc-test/block.dws?' :
-                                    'https://chainz.cryptoid.info/vtc/block.dws?';
+                            (data.active_miners && data.active_miners.length > 0 && data.active_miners[0].address.startsWith('tvtc1'));
             $.each(data.blocks_found_list, function(index, block) {
                 var tr = $('<tr/>').addClass('c-table__row');
                 var blockTarget = block.block_hash || block.hash || block.block_number;
                 var blockLink = $('<a/>')
-                                    .attr('href', blockExplorerBase + blockTarget + '.htm')
+                                    .attr('href', getBlockExplorerUrl(blockTarget, isTestnet))
                                     .attr('target', '_blank')
                                     .text(block.block_number);
                 tr.append($('<td/>').addClass('c-table__cell').append(blockLink));
@@ -141,11 +186,7 @@ function refreshStats() {
             $.each(data.payouts_list, function(index, payout) {
                 var tr = $('<tr/>').addClass('c-table__row');
 
-                var isTestnet = payout.address.startsWith('tvtc1');
-                var explorerBaseUrl = isTestnet ?
-                                    'https://chainz.cryptoid.info/vtc-test/address.dws?' :
-                                    'https://chainz.cryptoid.info/vtc/address.dws?';
-                var explorerUrl = explorerBaseUrl + payout.address + '.htm';
+                var explorerUrl = getAddressExplorerUrl(payout.address);
 
                 var addressLink = $('<a/>')
                                     .attr('href', explorerUrl)
