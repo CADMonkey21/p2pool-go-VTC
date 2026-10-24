@@ -45,7 +45,6 @@ type ShareChain struct {
 	verified          map[string]bool
 	cumWork           map[string]float64
 	chainLen          map[string]int
-	missingBackoff    map[string]time.Time
 	curPrevBlock      string
 	curBits           uint32
 	mutex             sync.RWMutex
@@ -65,7 +64,7 @@ type ShareChain struct {
 
 func NewShareChain(rpcClient *rpc.Client) *ShareChain {
 	sc := &ShareChain{
-		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int), missingBackoff: make(map[string]time.Time),
+		shares: make(map[string]*Share), verified: make(map[string]bool), cumWork: make(map[string]float64), chainLen: make(map[string]int),
 		rpcClient:      rpcClient,
 		FoundBlockChan: make(chan *Share, 100),
 	}
@@ -888,35 +887,114 @@ func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool
 	return true
 }
 
+// GetMissingParentHashes returns up to max parent hashes the sharechain lacks, like
+// p2pool's desired set: the missing parent at the end of each chain whose head is
+// newer than maxShareAge and less than a full PPLNS window plus lookbehind deep.
 func (sc *ShareChain) GetMissingParentHashes(max int) []string {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	if sc.TipHash != nil && sc.chainLen[sc.TipHash.String()] >= DefaultPPLNSWindow+TargetLookbehind {
-		return nil
-	}
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
 	cut := time.Now().Add(-maxShareAge).Unix()
-	now := time.Now()
+	tails := make(map[string]string)
 	seen := make(map[string]bool)
 	var out []string
-	for _, sh := range sc.shares {
-		if sh == nil || int64(sh.ShareInfo.Timestamp) < cut {
+	for _, h := range sc.headsLocked() {
+		sh := sc.shares[h]
+		if int64(sh.ShareInfo.Timestamp) < cut || sc.chainLen[h] >= DefaultPPLNSWindow+TargetLookbehind {
 			continue
 		}
-		if sc.chainLen[sh.Hash.String()] >= DefaultPPLNSWindow+TargetLookbehind {
-			continue
-		}
-		p := sh.ShareInfo.ShareData.PreviousShareHash
-		if p != nil && !p.IsEqual(sc.genesisHash) {
-			ps := p.String()
-			if sc.shares[ps] == nil && !seen[ps] && now.After(sc.missingBackoff[ps]) {
-				seen[ps] = true
-				sc.missingBackoff[ps] = now.Add(45 * time.Second)
-				out = append(out, ps)
-				if max > 0 && len(out) >= max {
-					break
-				}
+		if t := sc.missingTailLocked(h, tails); t != "" && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+			if max > 0 && len(out) >= max {
+				break
 			}
 		}
+	}
+	return out
+}
+
+// missingTailLocked returns the missing parent hash at the end of the chain below h,
+// or "" if the chain reaches genesis. tails memoizes results across calls.
+func (sc *ShareChain) missingTailLocked(h string, tails map[string]string) string {
+	var path []string
+	tail := ""
+	for cur := h; ; {
+		if t, ok := tails[cur]; ok {
+			tail = t
+			break
+		}
+		sh := sc.shares[cur]
+		if sh == nil {
+			tail = cur
+			break
+		}
+		path = append(path, cur)
+		p := sh.ShareInfo.ShareData.PreviousShareHash
+		if p == nil || p.IsEqual(sc.genesisHash) || len(path) > len(sc.shares) {
+			break
+		}
+		cur = sh.getPrevKey()
+	}
+	for _, p := range path {
+		tails[p] = tail
+	}
+	return tail
+}
+
+// headsLocked returns the hashes of shares that no other share builds on, most
+// cumulative work first.
+func (sc *ShareChain) headsLocked() []string {
+	hasChild := make(map[string]bool, len(sc.shares))
+	for _, sh := range sc.shares {
+		if sh != nil {
+			if p := sh.getPrevKey(); p != "" {
+				hasChild[p] = true
+			}
+		}
+	}
+	var heads []string
+	for h, sh := range sc.shares {
+		if sh != nil && !hasChild[h] {
+			heads = append(heads, h)
+		}
+	}
+	sort.Slice(heads, func(i, j int) bool {
+		wi, wj := sc.cumWork[heads[i]], sc.cumWork[heads[j]]
+		if wi != wj {
+			return wi > wj
+		}
+		return heads[i] > heads[j]
+	})
+	return heads
+}
+
+// GetStopHashes returns up to max hashes for a share request's stops, like p2pool's
+// download_shares: each chain head and its 10th ancestor, or its oldest one held.
+func (sc *ShareChain) GetStopHashes(max int) []string {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	seen := make(map[string]bool)
+	var out []string
+	add := func(h string) {
+		if !seen[h] && (max <= 0 || len(out) < max) {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	for _, h := range sc.headsLocked() {
+		if max > 0 && len(out) >= max {
+			break
+		}
+		add(h)
+		anc := h
+		for i := 0; i < 10; i++ {
+			p := sc.shares[anc].getPrevKey()
+			if p == "" || sc.shares[p] == nil {
+				break
+			}
+			anc = p
+		}
+		add(anc)
 	}
 	return out
 }

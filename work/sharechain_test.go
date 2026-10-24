@@ -129,3 +129,50 @@ func TestGetSharesByHashWithParentsCap(t *testing.T) {
 		t.Fatalf("1200 hashes: got %d shares, want %d", len(got), MaxShareReply)
 	}
 }
+
+func TestGetMissingParentHashes(t *testing.T) {
+	sc := newTestShareChain()
+	addTestChain(sc, 1, 20, nil)
+	// A peer's newer chain whose parent is not held yet.
+	gap := testHash(9, 0)
+	addTestChain(sc, 2, 5, gap)
+	sc.recomputeWorkAndTipLocked()
+
+	for i := 0; i < 2; i++ {
+		got := sc.GetMissingParentHashes(10)
+		if len(got) != 1 || got[0] != gap.String() {
+			t.Fatalf("call %d: got %v, want only the gap's hash", i, got)
+		}
+	}
+
+	// A head already a full window plus lookbehind deep wants nothing below it.
+	sc = newTestShareChain()
+	addTestChain(sc, 1, DefaultPPLNSWindow+TargetLookbehind, gap)
+	sc.recomputeWorkAndTipLocked()
+	if got := sc.GetMissingParentHashes(10); len(got) != 0 {
+		t.Fatalf("full-depth chain: got %v, want none", got)
+	}
+}
+
+func TestGetStopHashes(t *testing.T) {
+	sc := newTestShareChain()
+	main := addTestChain(sc, 1, 20, nil)
+	fork := addTestChain(sc, 2, 3, testHash(1, 9))
+	short := addTestChain(sc, 3, 2, testHash(9, 0))
+	sc.recomputeWorkAndTipLocked()
+
+	got := sc.GetStopHashes(100)
+	want := []string{main[19], main[9], fork[2], main[2], short[1], short[0]}
+	if len(got) != len(want) {
+		t.Fatalf("got %d stops, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("stop %d: got %s, want %s", i, got[i][:8], want[i][:8])
+		}
+	}
+
+	if got := sc.GetStopHashes(3); len(got) != 3 || got[0] != main[19] || got[1] != main[9] {
+		t.Fatalf("max 3: got %d stops, want the best head and its ancestor first", len(got))
+	}
+}
