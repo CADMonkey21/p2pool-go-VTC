@@ -34,10 +34,21 @@ const BlockRelayProtocolID = protocol.ID("/p2pool/blockrelay/1.0.0")
 const PeerExProtocolID = protocol.ID("/p2pool/peers/1.0.0")
 const BlockCheckProtocolID = protocol.ID("/p2pool/blockcheck/1.0.0")
 const HeaderProofProtocolID = protocol.ID("/p2pool/headerproof/1.0.0")
+const VersionProtocolID = protocol.ID("/p2pool/version/1.0.0")
 
+// ShareReq asks a peer for the shares in Hashes, each followed by up to Parents
+// ancestors. The walk back from each hash ends before any hash in Stops. Peers
+// that predate Stops ignore it.
 type ShareReq struct {
 	Hashes  []string `json:"hashes"`
 	Parents int      `json:"parents"`
+	Stops   []string `json:"stops,omitempty"`
+}
+
+// VersionMsg is swapped when a node contacts a peer, like p2pool's version message,
+// so each side can request the other's best share right away.
+type VersionMsg struct {
+	BestShareHash string `json:"best_share_hash,omitempty"`
 }
 
 const peerKeyFile = "peer.key"
@@ -46,6 +57,9 @@ type SyncPayload struct {
 	Shares   json.RawMessage `json:"shares"`
 	Blocks   json.RawMessage `json:"blocks"`
 	FullNode bool            `json:"full_node,omitempty"`
+	// Pull is set by a sender that fetches shares with share requests instead. It
+	// sends no shares, and a responder that understands the field replies with none.
+	Pull bool `json:"pull,omitempty"`
 }
 
 type Node struct {
@@ -59,9 +73,13 @@ type Node struct {
 	IncomingShares       chan []byte
 	bootstrapPeers       []string
 	syncMutex            sync.Mutex
-	GetSyncDataFunc      func() ([]byte, []byte)
+	GetSyncDataFunc      func(withShares bool) ([]byte, []byte)
 	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte)
-	GetSharesByHashFunc  func(hashes []string, parents int) []byte
+	GetSharesByHashFunc  func(hashes []string, parents int, stops []string) []byte
+	GetMissingSharesFunc func() []string
+	GetStopHashesFunc    func() []string
+	GetBestShareFunc     func() string
+	HasShareFunc         func(hash string) bool
 	GetTemplateFunc      func() []byte
 	OnTemplateFunc       func(peerID string, voterKey string, tmplJSON []byte)
 	OnRawBlockFunc       func(peerID string, rawHex string) bool
@@ -71,6 +89,7 @@ type Node struct {
 	peerMu               sync.RWMutex
 	peerFullMode         map[string]bool
 	peerVerifiedFull     map[string]bool
+	downloadWake         chan struct{}
 }
 
 type mdnsNotifee struct {
@@ -168,6 +187,7 @@ func NewNode(listenPort int) (*Node, error) {
 		IncomingShares:   make(chan []byte, 1000),
 		peerFullMode:     make(map[string]bool),
 		peerVerifiedFull: make(map[string]bool),
+		downloadWake:     make(chan struct{}, 1),
 	}
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
@@ -177,6 +197,7 @@ func NewNode(listenPort int) (*Node, error) {
 	h.SetStreamHandler(PeerExProtocolID, node.handlePeerExStream)
 	h.SetStreamHandler(BlockCheckProtocolID, node.handleBlockCheckStream)
 	h.SetStreamHandler(HeaderProofProtocolID, node.handleHeaderProofStream)
+	h.SetStreamHandler(VersionProtocolID, node.handleVersionStream)
 
 	mdnsService := mdns.NewMdnsService(h, P2PNetworkTopic, &mdnsNotifee{n: node, h: h, ctx: ctx})
 	if err := mdnsService.Start(); err != nil {
@@ -209,7 +230,7 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	n.setPeerFullMode(s.Conn().RemotePeer().String(), incoming.FullNode)
 	go n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
 
-	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	sharesJSON, blocksJSON := n.GetSyncDataFunc(!incoming.Pull)
 	outgoing := SyncPayload{
 		Shares:   sharesJSON,
 		Blocks:   blocksJSON,
@@ -223,14 +244,78 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	time.Sleep(500 * time.Millisecond)
 }
 
+func (n *Node) versionMsg() VersionMsg {
+	var v VersionMsg
+	if n.GetBestShareFunc != nil {
+		v.BestShareHash = n.GetBestShareFunc()
+	}
+	return v
+}
+
+func (n *Node) handleVersionStream(s network.Stream) {
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+	var incoming VersionMsg
+	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+		return
+	}
+	_ = json.NewEncoder(s).Encode(n.versionMsg())
+	_ = s.CloseWrite()
+	go n.requestBestShare(s.Conn().RemotePeer(), incoming.BestShareHash)
+}
+
+// exchangeVersion swaps version messages with pid and requests its best share if it
+// is new to us. It returns false if pid does not speak the version protocol.
+func (n *Node) exchangeVersion(pid peer.ID) bool {
+	ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+	defer cancel()
+	s, err := n.Host.NewStream(ctx, pid, VersionProtocolID)
+	if err != nil {
+		return false
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := json.NewEncoder(s).Encode(n.versionMsg()); err != nil {
+		return false
+	}
+	_ = s.CloseWrite()
+	var incoming VersionMsg
+	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+		return false
+	}
+	n.requestBestShare(pid, incoming.BestShareHash)
+	return true
+}
+
+// requestBestShare asks pid for its best share and the ancestors we lack, unless we
+// already hold it. The download loop fetches any parents still missing.
+func (n *Node) requestBestShare(pid peer.ID, hash string) {
+	if hash == "" || n.HasShareFunc == nil || n.HasShareFunc(hash) || n.OnSyncDataFunc == nil {
+		return
+	}
+	var stops []string
+	if n.GetStopHashesFunc != nil {
+		stops = n.GetStopHashesFunc()
+	}
+	if _, err := n.fetchShares(pid, ShareReq{Hashes: []string{hash}, Parents: maxDownloadParents, Stops: stops}); err != nil {
+		logging.Debugf("P2P: Best share request to peer %s failed: %v", pid, err)
+	}
+	n.wakeDownload()
+}
+
 func (n *Node) SyncWithPeer(pid peer.ID) {
 	if pid == n.Host.ID() || n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
 		return
 	}
-	if !n.syncMutex.TryLock() {
-		return
+	// A peer that speaks the version protocol serves share requests, so neither
+	// side sends its share window and the sync only swaps found blocks.
+	pull := n.exchangeVersion(pid)
+	if !pull {
+		if !n.syncMutex.TryLock() {
+			return
+		}
+		defer n.syncMutex.Unlock()
 	}
-	defer n.syncMutex.Unlock()
 
 	ctx, cancel := context.WithTimeout(n.ctx, 60*time.Second)
 	defer cancel()
@@ -244,11 +329,12 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 
-	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	sharesJSON, blocksJSON := n.GetSyncDataFunc(!pull)
 	outgoing := SyncPayload{
 		Shares:   sharesJSON,
 		Blocks:   blocksJSON,
 		FullNode: n.GetTemplateFunc != nil,
+		Pull:     pull,
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
 		logging.Debugf("P2P Sync: Failed sending sync request to %s: %v", pid, err)
@@ -371,34 +457,11 @@ func (n *Node) handleShareReqStream(s network.Stream) {
 	if err := json.NewDecoder(s).Decode(&req); err != nil || len(req.Hashes) == 0 {
 		return
 	}
-	resp := n.GetSharesByHashFunc(req.Hashes, req.Parents)
+	resp := n.GetSharesByHashFunc(req.Hashes, req.Parents, req.Stops)
 	_, _ = s.Write(resp)
 	_ = s.CloseWrite()
 }
 
-func (n *Node) RequestShares(hashes []string, parents int) {
-	if len(hashes) == 0 || n.OnSyncDataFunc == nil {
-		return
-	}
-	for _, pid := range n.Host.Network().Peers() {
-		ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
-		s, err := n.Host.NewStream(ctx, pid, ShareReqProtocolID)
-		if err != nil {
-			cancel()
-			continue
-		}
-		_ = json.NewEncoder(s).Encode(ShareReq{Hashes: hashes, Parents: parents})
-		_ = s.CloseWrite()
-		var raw json.RawMessage
-		ok := json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4
-		s.Close()
-		cancel()
-		if ok {
-			n.OnSyncDataFunc(raw, nil)
-			return
-		}
-	}
-}
 func (n *Node) setPeerFullMode(pid string, isFull bool) {
 	n.peerMu.Lock()
 	n.peerFullMode[pid] = isFull

@@ -188,9 +188,11 @@ func main() {
 	defer p2pNode.Close()
 
 	// Wire bidirectional P2P ShareChain and Blocks synchronization
-	p2pNode.GetSyncDataFunc = func() ([]byte, []byte) {
-		shares := sc.GetSharesForSync(10000)
-		sBytes, _ := json.Marshal(shares)
+	p2pNode.GetSyncDataFunc = func(withShares bool) ([]byte, []byte) {
+		var sBytes []byte
+		if withShares {
+			sBytes, _ = json.Marshal(sc.GetSharesForSync(10000))
+		}
 		bBytes := workManager.GetPersistedBlocksJSON()
 		return sBytes, bBytes
 	}
@@ -219,8 +221,8 @@ func main() {
 			}
 		}()
 	}
-	p2pNode.GetSharesByHashFunc = func(hashes []string, parents int) []byte {
-		b, _ := json.Marshal(sc.GetSharesByHashWithParents(hashes, parents))
+	p2pNode.GetSharesByHashFunc = func(hashes []string, parents int, stops []string) []byte {
+		b, _ := json.Marshal(sc.GetSharesByHashWithParents(hashes, parents, stops))
 		return b
 	}
 	p2pNode.OnSyncDataFunc = func(sharesJSON []byte, blocksJSON []byte) {
@@ -243,16 +245,19 @@ func main() {
 			}
 		}
 	}
+	p2pNode.GetMissingSharesFunc = func() []string { return sc.GetMissingParentHashes(100) }
+	p2pNode.GetStopHashesFunc = func() []string { return sc.GetStopHashes(100) }
+	p2pNode.GetBestShareFunc = func() string {
+		if tip := sc.GetTipHash(); tip != nil && sc.HasShare(tip.String()) {
+			return tip.String()
+		}
+		return ""
+	}
+	p2pNode.HasShareFunc = sc.HasShare
+	go p2pNode.DownloadShares()
 	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 	go p2pNode.Bootstrap(config.Active.Peers)
 
-	go func() {
-		for range time.NewTicker(3 * time.Second).C {
-			if miss := sc.GetMissingParentHashes(8); len(miss) > 0 {
-				p2pNode.RequestShares(miss, 250)
-			}
-		}
-	}()
 	go func() {
 		for shareBytes := range p2pNode.IncomingShares {
 			var remoteShare work.Share
