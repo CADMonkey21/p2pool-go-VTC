@@ -48,6 +48,7 @@ Instead of legacy Python P2Pool's custom 2011 TCP wire protocol, `p2pool-go-VTC`
 - **P2P Stream Protocols (`libp2p`):**
   - `/p2pool/sync/1.0.0`: Hydrates the contiguous verified ShareChain on startup.
   - `/p2pool/sharereq/1.0.0`: Requests missing parent ancestor shares by hash for topological verification.
+  - `/p2pool/sync/1.1.0` & `/p2pool/sharereq/1.1.0`: The same JSON, zstd-compressed in each direction (decompressed size capped at 64 MiB). Dialers offer 1.1.0 first and fall back to 1.0.0 for older peers; both versions stay registered.
   - `/p2pool/template/1.0.0` & `/p2pool/blockrelay/1.0.0`: Pushes/serves `BlockTemplate` JSON to `-light` nodes and relays solved `wire.MsgBlock` hex back to full-node peers.
 - **GossipSub Mesh:** Nodes subscribe to the `vtc-p2pool-shares-v1` topic. When a local miner submits a valid share, `StratumServer` broadcasts the serialized `work.Share` over GossipSub. Incoming peer shares are read from `p2pNode.IncomingShares`, cryptographically re-verified via `CalculateHashes()` and `IsValid()`, and added to `ShareChain`.
 

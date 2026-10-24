@@ -232,7 +232,9 @@ func NewNode(listenPort int, bindAddr string, disableUPnP bool) (*Node, error) {
 	}
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
+	h.SetStreamHandler(SyncZProtocolID, node.handleSyncStream)
 	h.SetStreamHandler(ShareReqProtocolID, node.handleShareReqStream)
+	h.SetStreamHandler(ShareReqZProtocolID, node.handleShareReqStream)
 	h.SetStreamHandler(TemplateProtocolID, node.handleTemplateStream)
 	h.SetStreamHandler(BlockRelayProtocolID, node.handleBlockRelayStream)
 	h.SetStreamHandler(PeerExProtocolID, node.handlePeerExStream)
@@ -271,7 +273,7 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 
 	var incoming SyncPayload
-	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+	if err := readJSON(s, &incoming); err != nil {
 		return
 	}
 	n.setPeerFullMode(s.Conn().RemotePeer().String(), incoming.FullNode)
@@ -283,7 +285,7 @@ func (n *Node) handleSyncStream(s network.Stream) {
 		Blocks:   blocksJSON,
 		FullNode: n.GetTemplateFunc != nil,
 	}
-	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
+	if err := writeJSON(s, &outgoing); err != nil {
 		logging.Debugf("P2P Sync: Failed sending sync response to peer %s: %v", s.Conn().RemotePeer(), err)
 		return
 	}
@@ -367,7 +369,7 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 	ctx, cancel := context.WithTimeout(n.ctx, 60*time.Second)
 	defer cancel()
 
-	s, err := n.Host.NewStream(ctx, pid, SyncProtocolID)
+	s, err := n.Host.NewStream(ctx, pid, SyncZProtocolID, SyncProtocolID)
 	if err != nil {
 		logging.Debugf("P2P Sync: Peer %s stream open err: %v", pid, err)
 		return
@@ -383,14 +385,14 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 		FullNode: n.GetTemplateFunc != nil,
 		Pull:     pull,
 	}
-	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
+	if err := writeJSON(s, &outgoing); err != nil {
 		logging.Debugf("P2P Sync: Failed sending sync request to %s: %v", pid, err)
 		return
 	}
 	_ = s.CloseWrite()
 
 	var incoming SyncPayload
-	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
+	if err := readJSON(s, &incoming); err != nil {
 		logging.Debugf("P2P Sync: Failed decoding sync response from %s: %v", pid, err)
 		return
 	}
@@ -501,11 +503,11 @@ func (n *Node) handleShareReqStream(s network.Stream) {
 	}
 	_ = s.SetDeadline(time.Now().Add(30 * time.Second))
 	var req ShareReq
-	if err := json.NewDecoder(s).Decode(&req); err != nil || len(req.Hashes) == 0 {
+	if err := readJSON(s, &req); err != nil || len(req.Hashes) == 0 {
 		return
 	}
 	resp := n.GetSharesByHashFunc(req.Hashes, req.Parents, req.Stops)
-	_, _ = s.Write(resp)
+	_ = writePayload(s, resp)
 	_ = s.CloseWrite()
 }
 
