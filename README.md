@@ -100,6 +100,7 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
 ```
 - **Outbound-only P2P (`-p2pbind 127.0.0.1`):** Binds the libp2p listener to loopback so no inbound port (and no Windows Firewall prompt) is needed. The node still dials peers, joins GossipSub, syncs the sharechain and pulls templates, but skips mDNS, UPnP and UDP transports, advertises no addresses and runs the DHT in client mode. `-p2pbind` accepts any IPv4 or IPv6 address (default `0.0.0.0`; config key `p2pBind`).
 - **No UPnP (`-disable-upnp`):** Skips UPnP/NAT-PMP port mapping of the P2P port (config key `disableUpnp`). A typical One-Click Miner launch is `./p2pool-go-vtc -light -p2pbind 127.0.0.1 -disable-upnp -bind 127.0.0.1`.
+- **Bootstrap Peers (`-peers`):** Comma-separated libp2p multiaddrs, each ending in `/p2p/<PeerID>` (e.g. `-peers "/ip4/1.2.3.4/tcp/9348/p2p/12D3KooW...,/dns4/example.com/tcp/9348/p2p/12D3KooW..."`). When set, it replaces the built-in defaults and any `peers:` in `config.yaml`; invalid entries are logged and skipped.
 - **Readiness Endpoint (`/api/status`):** Returns JSON (`"ready": true`, `"has_template": true`, `"synced": true`, `"peers"`, `"shares_total"`, `"height"`) for One-Click Miner health checks.
 - **Dashboard Stats Endpoint (`/api/stats`):** Returns live hashrates, active miners, PPLNS payouts, and connected P2P peers.
 

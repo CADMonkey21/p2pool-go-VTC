@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	"gopkg.in/yaml.v3"
 )
 
@@ -72,6 +74,7 @@ func LoadConfig() {
 	cookieFile := flag.String("cookie", "", "Path to Vertcoin Core .cookie file")
 	parentPID := flag.Int("parentpid", 0, "Exit cleanly when this parent PID terminates")
 	shutdownTok := flag.String("shutdown-token", "", "Token for loopback POST /api/shutdown")
+	peersFlag := flag.String("peers", "", "Comma-separated list of bootstrap libp2p multiaddrs (replaces defaults and config.yaml peers)")
 	trustedPeersFlag := flag.String("trustedpeers", "", "Comma-separated list of pinned full-node libp2p Peer IDs")
 	p2pBind := flag.String("p2pbind", "", "Bind address (IPv4 or IPv6) for the libp2p P2P listener (default: 0.0.0.0); a loopback address makes the node outbound-only")
 	disableUPnP := flag.Bool("disable-upnp", false, "Disable UPnP/NAT-PMP port mapping of the P2P port")
@@ -200,6 +203,13 @@ func LoadConfig() {
 	if *shutdownTok != "" {
 		Active.ShutdownToken = *shutdownTok
 	}
+	if *peersFlag != "" {
+		if peers := parsePeerList(*peersFlag); len(peers) > 0 {
+			Active.Peers = peers
+		} else {
+			logging.Warnf("No valid entries in -peers; keeping existing bootstrap peers.")
+		}
+	}
 	if *trustedPeersFlag != "" {
 		Active.TrustedPeers = []string{}
 		for _, p := range strings.Split(*trustedPeersFlag, ",") {
@@ -208,6 +218,28 @@ func LoadConfig() {
 			}
 		}
 	}
+}
+
+// parsePeerList splits a comma-separated list of libp2p multiaddrs, dropping
+// empty entries and warning about any that lack a valid /p2p/<PeerID>.
+func parsePeerList(s string) []string {
+	peers := []string{}
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		ma, err := multiaddr.NewMultiaddr(p)
+		if err != nil {
+			logging.Warnf("Ignoring invalid -peers multiaddr '%s': %v", p, err)
+			continue
+		}
+		if _, err := peer.AddrInfoFromP2pAddr(ma); err != nil {
+			logging.Warnf("Ignoring -peers entry '%s' without /p2p/<PeerID>: %v", p, err)
+			continue
+		}
+		peers = append(peers, p)
+	}
+	return peers
 }
 
 func IsTrustedPeer(peerID string) bool {
