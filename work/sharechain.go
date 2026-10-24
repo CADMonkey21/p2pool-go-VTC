@@ -98,9 +98,13 @@ func (sc *ShareChain) HasShare(hashStr string) bool {
 }
 
 func (sc *ShareChain) AddShares(newShares []Share) int {
+	now := time.Now()
 	sc.mutex.Lock()
 	for i := range newShares {
 		sh := newShares[i]
+		if CheckShareTime(&sh, now) != "" || !CheckShareTargetFloor(&sh) {
+			continue
+		}
 		if sh.Hash == nil {
 			_ = sh.CalculateHash()
 		}
@@ -846,8 +850,10 @@ func (sc *ShareChain) verifyPending() int {
 			continue
 		}
 		_ = i
-		post := int64(sh.ShareInfo.Timestamp) >= ConsensusV2ActivationTime
-		if post && sh.ShareInfo.ShareData.StaleInfo == StaleInfoNone && !sc.checkConsensus(sh, p, hLen) {
+		sc.mutex.RLock()
+		eff := sc.effectiveTimeLocked(sh, p)
+		sc.mutex.RUnlock()
+		if eff >= ConsensusV2ActivationTime && !sc.checkConsensus(sh, p, hLen, eff) {
 			sc.mutex.Lock()
 			delete(sc.shares, h)
 			sc.changes++
@@ -864,8 +870,53 @@ func (sc *ShareChain) verifyPending() int {
 	sc.mutex.Unlock()
 	return vn
 }
-func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool {
+
+// effectiveTimeLocked returns the later of a share's timestamp and its parent's, so a
+// share cannot opt out of rules that activated before its parent by backdating itself.
+func (sc *ShareChain) effectiveTimeLocked(s *Share, p *chainhash.Hash) int64 {
+	t := int64(s.ShareInfo.Timestamp)
+	if p != nil && !p.IsEqual(sc.genesisHash) {
+		if ps := sc.shares[p.String()]; ps != nil && int64(ps.ShareInfo.Timestamp) > t {
+			t = int64(ps.ShareInfo.Timestamp)
+		}
+	}
+	return t
+}
+
+// medianTimePastLocked returns the median timestamp of the MedianTimeShares non-stale
+// shares ending at p, and false if fewer are held.
+func (sc *ShareChain) medianTimePastLocked(p *chainhash.Hash) (int64, bool) {
+	if p == nil || p.IsEqual(sc.genesisHash) {
+		return 0, false
+	}
+	w := sc.getOrderedChainWalkLocked(p, MedianTimeShares)
+	if len(w) < MedianTimeShares {
+		return 0, false
+	}
+	ts := make([]int64, len(w))
+	for i, s := range w {
+		ts[i] = int64(s.ShareInfo.Timestamp)
+	}
+	sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
+	return ts[len(ts)/2], true
+}
+
+func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int, eff int64) bool {
 	h := s.Hash.String()
+	if eff >= V2MandatoryActivationTime && s.Type < ShareVersionV2 {
+		logging.Warnf("ShareChain: Rejected share %s: outdated share version", h[:12])
+		return false
+	}
+	sc.mutex.RLock()
+	mtp, mtpOK := sc.medianTimePastLocked(p)
+	sc.mutex.RUnlock()
+	if eff >= ConsensusV3ActivationTime && mtpOK && int64(s.ShareInfo.Timestamp) < mtp {
+		logging.Warnf("ShareChain: Rejected share %s: timestamp %d before median time past %d", h[:12], s.ShareInfo.Timestamp, mtp)
+		return false
+	}
+	if s.ShareInfo.ShareData.StaleInfo != StaleInfoNone {
+		return true
+	}
 	sc.mutex.RLock()
 	w := sc.getOrderedChainWalkLocked(p, TargetLookbehind)
 	sc.mutex.RUnlock()
@@ -878,7 +929,7 @@ func (sc *ShareChain) checkConsensus(s *Share, p *chainhash.Hash, pLen int) bool
 			return false
 		}
 	}
-	if pLen >= TargetLookbehind && sc.hasCompletePPLNSWindow(p) && int64(s.ShareInfo.Timestamp) >= ConsensusV2ActivationTime+MaxPPLNSWindowAgeSecs {
+	if pLen >= TargetLookbehind && sc.hasCompletePPLNSWindow(p) && eff >= ConsensusV2ActivationTime+MaxPPLNSWindowAgeSecs {
 		if ok, r := VerifyShareCoinbase(s, sc); !ok {
 			logging.Warnf("ShareChain: Rejected share %s: %s", h[:12], r)
 			return false

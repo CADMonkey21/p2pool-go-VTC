@@ -101,6 +101,12 @@ const (
 	ShareVersionV2            = uint64(24)
 	ConsensusV2ActivationTime = int64(1792470600)
 	V2MandatoryActivationTime = int64(1792519200)
+	// Shares whose parent is at or after this time must not be older than the median
+	// timestamp of their last MedianTimeShares ancestors.
+	ConsensusV3ActivationTime = int64(1794009600)
+	MedianTimeShares          = 11
+	// MaxShareTimeFuture matches Vertcoin's limit on block timestamps ahead of local time.
+	MaxShareTimeFuture = 2 * time.Hour
 )
 
 func (s *Share) FullBlockHeader() (*wire.BlockHeader, error) {
@@ -188,6 +194,26 @@ func (s *Share) IsValid() (bool, string) {
 	}
 
 	return false, "hash is greater than target"
+}
+
+// CheckShareTime reports why a share's timestamps are unacceptable at time now, or "".
+// It depends on the local clock, so a share it rejects may be acceptable later.
+func CheckShareTime(s *Share, now time.Time) string {
+	for _, ts := range []int64{int64(s.ShareInfo.Timestamp), int64(s.MinHeader.Timestamp)} {
+		if ts > now.Add(MaxShareTimeFuture).Unix() {
+			return "share timestamp too far in the future"
+		}
+		if ts < now.Add(-maxShareAge).Unix() {
+			return "share timestamp older than the share retention window"
+		}
+	}
+	return ""
+}
+
+// CheckShareTargetFloor reports whether a share's declared target is no easier than
+// the minimum pool share difficulty, which every honest share's target meets.
+func CheckShareTargetFloor(s *Share) bool {
+	return s.getTargetDiff() >= MinPoolShareDiff*0.999
 }
 
 func CreateShare(
