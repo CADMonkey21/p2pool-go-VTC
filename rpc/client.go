@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 )
@@ -151,7 +152,7 @@ type MiningInfo struct {
 func NewClient(cfg config.Config) *Client {
 	endpoint := fmt.Sprintf("http://%s:%d", cfg.RPCHost, cfg.RPCPort)
 	return &Client{
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 		endpoint:   endpoint,
 		username:   cfg.RPCUser,
 		password:   cfg.RPCPass,

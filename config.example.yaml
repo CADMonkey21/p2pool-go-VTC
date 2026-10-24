@@ -32,10 +32,11 @@ rpcPass: "your_rpc_password"
 
 
 # --- Pool Settings ---
-# Your Vertcoin address for receiving the pool operator fee directly in the coinbase transaction.
+# Pool operator fee address. Not currently paid: every node must build identical
+# coinbase outputs, so the PPLNS split pays miners only and ignores poolAddress and fee.
 poolAddress: "vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l"
 
-# The fee (in percent) that the node embeds for the pool operator in solved blocks (e.g., 1.0 = 1%).
+# The fee in percent (e.g., 1.0 = 1%). Committed in each share's metadata but not paid.
 fee: 1.0
 
 # Target number of pool-difficulty share equivalents in the rolling PPLNS window (work-capped, max 24h lookback)

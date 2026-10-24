@@ -27,19 +27,18 @@ type PayoutOutput struct {
 func AddressToScriptPubKey(payoutAddress string) ([]byte, error) {
 	payoutAddress = strings.TrimSpace(payoutAddress)
 	if strings.HasPrefix(strings.ToLower(payoutAddress), "vtc1") || strings.HasPrefix(strings.ToLower(payoutAddress), "tvtc1") {
-		hrp, decoded, err := bech32.Decode(strings.ToLower(payoutAddress))
+		hrp, witnessVersion, witnessProgram, err := DecodeSegwitAddress(payoutAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode bech32 address '%s': %v", payoutAddress, err)
 		}
 		if hrp != "vtc" && hrp != "tvtc" {
 			return nil, fmt.Errorf("address is not a valid vertcoin bech32 address (hrp: %s)", hrp)
 		}
-		witnessVersion := decoded[0]
-		witnessProgram, err := bech32.ConvertBits(decoded[1:], 5, 8, false)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert witness program for address '%s': %v", payoutAddress, err)
+		op := byte(txscript.OP_0)
+		if witnessVersion > 0 {
+			op = txscript.OP_1 + witnessVersion - 1
 		}
-		return NewScriptBuilder().AddOp(witnessVersion).AddData(witnessProgram).Script(), nil
+		return NewScriptBuilder().AddOp(op).AddData(witnessProgram).Script(), nil
 	}
 
 	decoded := base58.Decode(payoutAddress)
@@ -54,6 +53,48 @@ func AddressToScriptPubKey(payoutAddress string) ([]byte, error) {
 	}
 	// P2PKH scriptPubKey: OP_DUP OP_HASH160 <20-byte PubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
 	return NewScriptBuilder().AddOp(txscript.OP_DUP).AddOp(txscript.OP_HASH160).AddData(pkh).AddOp(txscript.OP_EQUALVERIFY).AddOp(txscript.OP_CHECKSIG).Script(), nil
+}
+
+// DecodeSegwitAddress decodes a segwit address, requiring a bech32 checksum for
+// witness version 0 and bech32m for later versions (BIP 173, BIP 350).
+func DecodeSegwitAddress(addr string) (string, byte, []byte, error) {
+	hrp, data, enc, err := bech32.DecodeGeneric(strings.ToLower(strings.TrimSpace(addr)))
+	if err != nil {
+		return "", 0, nil, err
+	}
+	if len(data) == 0 || data[0] > 16 {
+		return "", 0, nil, fmt.Errorf("invalid witness version")
+	}
+	if (data[0] == 0) != (enc == bech32.Version0) {
+		return "", 0, nil, fmt.Errorf("wrong checksum variant for witness version %d", data[0])
+	}
+	prog, err := bech32.ConvertBits(data[1:], 5, 8, false)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	if len(prog) < 2 || len(prog) > 40 || (data[0] == 0 && len(prog) != 20 && len(prog) != 32) {
+		return "", 0, nil, fmt.Errorf("invalid witness program length %d", len(prog))
+	}
+	return hrp, data[0], prog, nil
+}
+
+// IsStandardPayout reports whether a payout of the given version and program or hash
+// length pays a standard, spendable script: P2WPKH, P2WSH, P2TR, P2PKH or P2SH.
+func IsStandardPayout(ver byte, n int, segwit bool) bool {
+	if !segwit {
+		return n == 20
+	}
+	return (ver == 0 && (n == 20 || n == 32)) || (ver == 1 && n == 32)
+}
+
+// shareHasStandardPayout reports whether a share's payout data is a standard address.
+// Witness versions are 0-16 and Vertcoin's base58 versions are all above that.
+func shareHasStandardPayout(s *Share) bool {
+	v, n := s.ShareInfo.ShareData.PubKeyHashVersion, len(s.ShareInfo.ShareData.PubKeyHash)
+	if v <= 16 {
+		return IsStandardPayout(v, n, true)
+	}
+	return IsStandardPayout(v, n, false) && (v == 0x47 || v == 0x05 || v == 0x6f || v == 0xc4)
 }
 
 // CalculatePPLNSOutputs computes the deterministic coinbase outputs for the current PPLNS sharechain tip.
@@ -88,7 +129,7 @@ func CalculatePPLNSOutputsAtTip(totalReward int64, defaultMinerAddr string, sc *
 				scaledMaxTarget := new(big.Int).Mul(baseDiff1, big.NewInt(1000000))
 
 				for _, s := range shares {
-					if s == nil || len(s.ShareInfo.ShareData.PubKeyHash) == 0 || s.Target == nil || s.Target.Sign() <= 0 {
+					if s == nil || !shareHasStandardPayout(s) || s.Target == nil || s.Target.Sign() <= 0 {
 						continue
 					}
 					addr := DecodeShareAddress(s)
@@ -433,12 +474,8 @@ func SplitCoinbaseForStratumAtTip(tmpl *BlockTemplate, addr string, wc []byte, s
 func DecodeAddressToPKH(addr string) (uint8, []byte) {
 	l := strings.ToLower(addr)
 	if strings.HasPrefix(l, "vtc1") || strings.HasPrefix(l, "tvtc1") {
-		_, d, err := bech32.Decode(l)
-		if err == nil && len(d) > 1 {
-			p, err := bech32.ConvertBits(d[1:], 5, 8, false)
-			if err == nil {
-				return d[0], p
-			}
+		if _, v, p, err := DecodeSegwitAddress(l); err == nil {
+			return v, p
 		}
 	} else if d := base58.Decode(addr); len(d) >= 5 {
 		return d[0], d[1 : len(d)-4]
@@ -457,7 +494,7 @@ func ComputeShareMetadataCommitment(ver uint64, prev *chainhash.Hash, target *bi
 		h.Write(make([]byte, 32))
 	}
 	var tb [32]byte
-	if target != nil && target.Sign() > 0 {
+	if target != nil && target.Sign() > 0 && target.BitLen() <= 256 {
 		target.FillBytes(tb[:])
 	}
 	h.Write(tb[:])
