@@ -114,6 +114,10 @@ func (sc *ShareChain) AddShares(newShares []Share) int {
 		if sh.POWHash == nil {
 			_ = sh.CalculatePOWHash()
 		}
+		if int64(sh.ShareInfo.Timestamp) > time.Now().Unix()+MaxShareTimeFutureSecs {
+			logging.Warnf("ShareChain: Rejected share %s: timestamp %d is too far in the future", h[:12], sh.ShareInfo.Timestamp)
+			continue
+		}
 		if ok, _ := sh.IsValid(); !ok {
 			continue
 		}
@@ -261,11 +265,13 @@ func (sc *ShareChain) GetSharesForSync(maxCount int) []Share {
 }
 
 const (
-	MinPoolShareDiff      = 0.50
-	TargetPoolShareTime   = 15.0
-	TargetLookbehind      = 200
-	DefaultPPLNSWindow    = 8640
-	MaxPPLNSWindowAgeSecs = 36 * 3600
+	MinPoolShareDiff       = 0.50
+	TargetPoolShareTime    = 15.0
+	TargetLookbehind       = 200
+	DefaultPPLNSWindow     = 8640
+	MaxPPLNSWindowAgeSecs  = 36 * 3600
+	MaxShareTimeFutureSecs = 2 * 3600
+	MaxShareTimePastSecs   = 10 * 60
 )
 
 func (s *Share) getTargetDiff() float64 {
@@ -342,7 +348,7 @@ func (sc *ShareChain) getExpectedShareDifficultyLocked(prev *chainhash.Hash) flo
 		}
 		tw += d
 	}
-	dt := float64(w[0].ShareInfo.Timestamp - w[TargetLookbehind-1].ShareInfo.Timestamp)
+	dt := float64(int64(w[0].ShareInfo.Timestamp) - int64(w[TargetLookbehind-1].ShareInfo.Timestamp))
 	if dt <= 1.0 {
 		dt = 1.0
 	}

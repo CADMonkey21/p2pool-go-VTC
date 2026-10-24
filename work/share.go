@@ -213,6 +213,32 @@ func CreateShare(
 	nTimeUint32 := binary.BigEndian.Uint32(nTimeBytes)
 	nonceUint32 := binary.BigEndian.Uint32(nonceBytes)
 
+	nTimeInt64 := int64(nTimeUint32)
+	if job != nil {
+		if job.MinTime > 0 && nTimeInt64 < job.MinTime {
+			return nil, fmt.Errorf("nTime %d is below template mintime %d", nTimeInt64, job.MinTime)
+		}
+		if job.CurTime > 0 && nTimeInt64 < job.CurTime-MaxShareTimePastSecs {
+			return nil, fmt.Errorf("nTime %d is too far behind template curtime %d", nTimeInt64, job.CurTime)
+		}
+	}
+	maxRefTime := time.Now().Unix()
+	if job != nil && job.CurTime > maxRefTime {
+		maxRefTime = job.CurTime
+	}
+	if nTimeInt64 > maxRefTime+MaxShareTimeFutureSecs {
+		return nil, fmt.Errorf("nTime %d is too far in the future (max %d)", nTimeInt64, maxRefTime+MaxShareTimeFutureSecs)
+	}
+	if shareChain != nil {
+		if tipHash := shareChain.GetTipHash(); tipHash != nil {
+			if tipShare := shareChain.GetShare(tipHash.String()); tipShare != nil {
+				if nTimeInt64 < int64(tipShare.ShareInfo.Timestamp)-MaxShareTimePastSecs {
+					return nil, fmt.Errorf("nTime %d is too far behind parent share timestamp %d", nTimeInt64, tipShare.ShareInfo.Timestamp)
+				}
+			}
+		}
+	}
+
 	var pkh []byte
 	var pkhVersion byte
 

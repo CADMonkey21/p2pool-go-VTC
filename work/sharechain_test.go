@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -174,5 +175,37 @@ func TestGetStopHashes(t *testing.T) {
 
 	if got := sc.GetStopHashes(3); len(got) != 3 || got[0] != main[19] || got[1] != main[9] {
 		t.Fatalf("max 3: got %d stops, want the best head and its ancestor first", len(got))
+	}
+}
+
+func TestTimestampValidation(t *testing.T) {
+	sc := NewShareChain(nil)
+	now := time.Now().Unix()
+
+	// Future share (> 2h ahead) should be rejected by AddShares
+	hFuture := testHash('f', 1)
+	shFuture := Share{Hash: hFuture}
+	shFuture.ShareInfo.Timestamp = int32(now + MaxShareTimeFutureSecs + 60)
+	shFuture.MinHeader.Timestamp = uint32(shFuture.ShareInfo.Timestamp)
+	if added := sc.AddShares([]Share{shFuture}); added != 0 {
+		t.Fatalf("expected future share to be rejected, got added=%d", added)
+	}
+	if sc.HasShare(hFuture.String()) {
+		t.Fatalf("expected future share not to be stored in sharechain")
+	}
+
+	// CreateShare should reject nTime below job.MinTime or > 2h in the future
+	job := &BlockTemplate{
+		MinTime: now - 60,
+		CurTime: now,
+		Bits:    "1d00ffff",
+	}
+	pastHex := fmt.Sprintf("%08x", uint32(now-120))
+	if _, err := CreateShare(job, "00000001", "00000002", pastHex, "00000001", "vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l", sc, 1.0, nil, nil, nil, nil, nil); err == nil {
+		t.Fatalf("expected CreateShare to reject nTime below job.MinTime")
+	}
+	futHex := fmt.Sprintf("%08x", uint32(now+MaxShareTimeFutureSecs+120))
+	if _, err := CreateShare(job, "00000001", "00000002", futHex, "00000001", "vtc1qx9wlulctjps59jnlcg04z3jwnkku5tgwkj0j0l", sc, 1.0, nil, nil, nil, nil, nil); err == nil {
+		t.Fatalf("expected CreateShare to reject nTime too far in the future")
 	}
 }
