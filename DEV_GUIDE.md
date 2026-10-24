@@ -50,6 +50,8 @@ Instead of legacy Python P2Pool's custom 2011 TCP wire protocol, `p2pool-go-VTC`
   - `/p2pool/sharereq/1.0.0`: Requests missing parent ancestor shares by hash for topological verification.
   - `/p2pool/template/1.0.0` & `/p2pool/blockrelay/1.0.0`: Pushes/serves `BlockTemplate` JSON to `-light` nodes and relays solved `wire.MsgBlock` hex back to full-node peers.
 - **GossipSub Mesh:** Nodes subscribe to the `vtc-p2pool-shares-v1` topic. When a local miner submits a valid share, `StratumServer` broadcasts the serialized `work.Share` over GossipSub. Incoming peer shares are read from `p2pNode.IncomingShares`, cryptographically re-verified via `CalculateHashes()` and `IsValid()`, and added to `ShareChain`.
+- **Share Admission:** A GossipSub topic validator drops shares that fail checks needing no sharechain state before they are delivered or forwarded: timestamps more than 2 hours ahead of the local clock or older than the 72-hour retention window (ignored, since they depend on our clock), a declared target easier than `MinPoolShareDiff`, or a failed `IsValid()`. `ShareChain.AddShares` applies the same time and target checks to synced shares. Every stream message is decoded through `decodeLimited` with a per-protocol size cap.
+- **Share Timestamps (consensus):** Version and payout rules gate on the later of a share's timestamp and its parent's, so a share cannot skip them by backdating itself. From `ConsensusV3ActivationTime` (parent timestamp), a share's timestamp must not be earlier than the median of its last 11 non-stale ancestors. The PPLNS window is cut by timestamp, so these bounds stop one share from shrinking or capturing it.
 
 ### 2. Daemon RPC & Consensus Verification (`rpc/` & `work/manager.go`)
 

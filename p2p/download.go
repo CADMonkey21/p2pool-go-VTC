@@ -141,7 +141,7 @@ func (n *Node) fetchShares(pid peer.ID, req ShareReq) (int, error) {
 	}
 	_ = s.CloseWrite()
 	var shares []json.RawMessage
-	if err := json.NewDecoder(s).Decode(&shares); err != nil {
+	if err := decodeLimited(s, maxShareReplySize, &shares); err != nil {
 		return 0, err
 	}
 	if len(shares) > 0 {

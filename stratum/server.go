@@ -367,6 +367,14 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		return
 	}
 
+	if t, err := strconv.ParseUint(nTime, 16, 32); err != nil || int64(t) > time.Now().Add(work.MaxShareTimeFuture).Unix() || int64(t) < job.BlockTemplate.MinTime {
+		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{20, "ntime out of range", nil}})
+		c.Mutex.Lock()
+		c.RejectedShares++
+		c.Mutex.Unlock()
+		return
+	}
+
 	if jobDifficulty <= 0 {
 		jobDifficulty = config.Active.Vardiff.MinDiff
 		if jobDifficulty <= 0 {
