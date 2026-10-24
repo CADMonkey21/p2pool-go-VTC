@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/btcsuite/btcd/blockchain"
 	"math"
 	"net/http"
 	"sort"
@@ -17,6 +16,15 @@ import (
 )
 
 const hashrateConstant = 16777216.0 // 2^24 hashes per 1.0 difficulty
+
+// statusNetworkDifficulty returns the Bitcoin-style network difficulty for /api/status,
+// falling back to the share chain's recent bits before the first template has set it.
+func statusNetworkDifficulty(statsDiff float64, recentBits uint32) float64 {
+	if statsDiff > 0 {
+		return statsDiff
+	}
+	return work.BitsToNetworkDiff(recentBits)
+}
 
 type Dashboard struct {
 	workManager *work.WorkManager
@@ -432,23 +440,15 @@ func (d *Dashboard) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"ready":        ready,
-		"state":        state,
-		"version":      config.Version,
-		"has_template": hasTemplate,
-		"synced":       synced,
-		"peers":        peerCount,
-		"shares_total": stats.SharesTotal,
-		"height":       currentHeight,
-		"difficulty": func() float64 {
-			if stats.NetworkDifficulty > 0 {
-				return stats.NetworkDifficulty
-			}
-			if rb := sc.GetRecentNetworkBits(); rb != 0 {
-				return work.TargetToDiff(blockchain.CompactToBig(rb))
-			}
-			return 0
-		}(),
+		"ready":                ready,
+		"state":                state,
+		"version":              config.Version,
+		"has_template":         hasTemplate,
+		"synced":               synced,
+		"peers":                peerCount,
+		"shares_total":         stats.SharesTotal,
+		"height":               currentHeight,
+		"difficulty":           statusNetworkDifficulty(stats.NetworkDifficulty, sc.GetRecentNetworkBits()),
 		"share_difficulty":     sc.GetPoolShareDifficulty(),
 		"block_reward":         blockReward,
 		"expected_payout":      expectedPayoutVTC,

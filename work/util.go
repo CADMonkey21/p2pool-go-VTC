@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"math/big"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
@@ -52,6 +53,15 @@ func TargetToDiff(target *big.Int) float64 {
 	diffFloatBig := new(big.Float).SetPrec(256).Quo(maxTargetFloat, targetFloat)
 	diffFloat, _ := diffFloatBig.Float64()
 	return diffFloat
+}
+
+// BitsToNetworkDiff converts compact block bits into Bitcoin-style network difficulty
+// (Diff 1 = 0x00000000ffff..., as reported by getmininginfo), i.e. TargetToDiff / 256.
+func BitsToNetworkDiff(bits uint32) float64 {
+	if bits == 0 {
+		return 0
+	}
+	return TargetToDiff(blockchain.CompactToBig(bits)) / 256.0
 }
 
 // CalculateMerkleLink computes the merkle branches for a transaction at a given index.
