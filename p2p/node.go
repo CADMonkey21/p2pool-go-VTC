@@ -784,10 +784,14 @@ func (n *Node) RelaySolvedBlockHex(hexStr string) int {
 func (n *Node) peerAddrs() []string {
 	var out []string
 	for _, c := range n.Host.Network().Conns() {
-		// An inbound peer that advertised no listen addresses (e.g. an outbound-only
-		// node bound to loopback) cannot be dialed back, so don't hand it out.
-		if c.Stat().Direction == network.DirInbound && len(n.Host.Peerstore().Addrs(c.RemotePeer())) == 0 {
-			continue
+		// An inbound peer running the DHT in client mode (an outbound-only node
+		// bound to loopback) cannot be dialed back, so don't hand it out. Note that
+		// Peerstore().Addrs() can be empty for normal NATed home nodes because libp2p
+		// filters private RFC1918 listen addresses on public hosts.
+		if c.Stat().Direction == network.DirInbound {
+			if sup, err := n.Host.Peerstore().SupportsProtocols(c.RemotePeer(), dht.ProtocolDHT); err != nil || len(sup) == 0 {
+				continue
+			}
 		}
 		a := c.RemoteMultiaddr().String()
 		if strings.HasPrefix(a, "/ip4/127.") || strings.HasPrefix(a, "/ip4/192.168.") || strings.HasPrefix(a, "/ip4/10.") {
