@@ -24,3 +24,4 @@ sharechain.db
 peer.key
 p2pool.log
 blocks.json
+peers.json

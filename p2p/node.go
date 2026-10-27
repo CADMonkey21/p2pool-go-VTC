@@ -54,6 +54,8 @@ type VersionMsg struct {
 }
 
 const peerKeyFile = "peer.key"
+const peerCacheFile = "peers.json"
+const maxCachedPeers = 64
 
 // Stream message size limits, so a peer cannot make us buffer an unbounded message.
 const (
@@ -85,7 +87,9 @@ type Node struct {
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	IncomingShares       chan IncomingShare
+	bootstrapMu          sync.Mutex
 	bootstrapPeers       []string
+	persistPeers         bool
 	syncMutex            sync.Mutex
 	GetSyncDataFunc      func(withShares bool) ([]byte, []byte)
 	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte)
@@ -242,8 +246,12 @@ func NewNode(listenPort int, bindAddr string, disableUPnP bool) (*Node, error) {
 		IncomingShares:   make(chan IncomingShare, 1000),
 		peerFullMode:     make(map[string]bool),
 		peerVerifiedFull: make(map[string]bool),
+		persistPeers:     !outboundOnly,
 		downloadWake:     make(chan struct{}, 1),
 		scores:           peerScores{m: make(map[peer.ID]*peerScore)},
+	}
+	if !outboundOnly {
+		node.loadPeerCache()
 	}
 	h.Network().Notify(&network.NotifyBundle{DisconnectedF: func(nw network.Network, c network.Conn) {
 		if nw.Connectedness(c.RemotePeer()) != network.Connected {
@@ -430,9 +438,11 @@ func (n *Node) periodicSyncLoop() {
 			return
 		case <-ticker.C:
 			peers := n.Host.Network().Peers()
-			if len(peers) == 0 && len(n.bootstrapPeers) > 0 {
-				go n.Bootstrap(n.bootstrapPeers)
-				continue
+			if len(peers) == 0 {
+				if saved := n.getBootstrapPeers(); len(saved) > 0 {
+					go n.Bootstrap(saved)
+					continue
+				}
 			}
 			for _, pid := range peers {
 				go n.SyncWithPeer(pid)
@@ -442,17 +452,113 @@ func (n *Node) periodicSyncLoop() {
 	}
 }
 
-func (n *Node) Bootstrap(bootstrapPeers []string) error {
-	if len(bootstrapPeers) > 0 && len(n.bootstrapPeers) == 0 {
-		n.bootstrapPeers = bootstrapPeers
+func (n *Node) loadPeerCache() {
+	data, err := os.ReadFile(peerCacheFile)
+	if err != nil {
+		return
 	}
+	var cached []string
+	if err := json.Unmarshal(data, &cached); err != nil {
+		return
+	}
+	n.bootstrapMu.Lock()
+	defer n.bootstrapMu.Unlock()
+	for _, a := range cached {
+		n.addBootstrapPeerLocked(a)
+	}
+	if len(n.bootstrapPeers) > 0 {
+		logging.Infof("P2P: Loaded %d cached peer(s) from %s", len(n.bootstrapPeers), peerCacheFile)
+	}
+}
+
+func (n *Node) addBootstrapPeerLocked(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	ma, err := multiaddr.NewMultiaddr(addr)
+	if err != nil {
+		return false
+	}
+	pi, err := peer.AddrInfoFromP2pAddr(ma)
+	if err != nil || pi == nil || pi.ID == n.Host.ID() {
+		return false
+	}
+	suffix := "/p2p/" + pi.ID.String()
+	for i, existing := range n.bootstrapPeers {
+		if strings.HasSuffix(existing, suffix) {
+			if existing == addr {
+				return false
+			}
+			n.bootstrapPeers[i] = addr
+			return true
+		}
+	}
+	if len(n.bootstrapPeers) >= maxCachedPeers {
+		n.bootstrapPeers = append(n.bootstrapPeers[1:], addr)
+	} else {
+		n.bootstrapPeers = append(n.bootstrapPeers, addr)
+	}
+	return true
+}
+
+func (n *Node) rememberPeer(addr string) {
+	n.bootstrapMu.Lock()
+	changed := n.addBootstrapPeerLocked(addr)
+	if !changed || !n.persistPeers {
+		n.bootstrapMu.Unlock()
+		return
+	}
+	snapshot := make([]string, len(n.bootstrapPeers))
+	copy(snapshot, n.bootstrapPeers)
+	n.bootstrapMu.Unlock()
+
+	if data, err := json.MarshalIndent(snapshot, "", "  "); err == nil {
+		tmp := peerCacheFile + ".tmp"
+		if os.WriteFile(tmp, data, 0600) == nil {
+			_ = os.Rename(tmp, peerCacheFile)
+		}
+	}
+}
+
+func (n *Node) getBootstrapPeers() []string {
+	n.bootstrapMu.Lock()
+	defer n.bootstrapMu.Unlock()
+	out := make([]string, len(n.bootstrapPeers))
+	copy(out, n.bootstrapPeers)
+	return out
+}
+
+func (n *Node) mergeBootstrapPeers(incoming []string) []string {
+	n.bootstrapMu.Lock()
+	defer n.bootstrapMu.Unlock()
+	if len(n.bootstrapPeers) == 0 {
+		for _, a := range incoming {
+			n.addBootstrapPeerLocked(a)
+		}
+	}
+	combined := make([]string, 0, len(incoming)+len(n.bootstrapPeers))
+	seen := make(map[string]bool)
+	for _, list := range [][]string{incoming, n.bootstrapPeers} {
+		for _, a := range list {
+			if a != "" && !seen[a] {
+				seen[a] = true
+				combined = append(combined, a)
+			}
+		}
+	}
+	return combined
+}
+
+func (n *Node) Bootstrap(bootstrapPeers []string) error {
+	dialList := n.mergeBootstrapPeers(bootstrapPeers)
 	if err := n.DHT.Bootstrap(n.ctx); err != nil {
 		return err
 	}
 
 	seenPeers := make(map[peer.ID]bool)
 	var wg sync.WaitGroup
-	for _, peerAddr := range bootstrapPeers {
+	for _, peerAddr := range dialList {
 		if peerAddr == "" {
 			continue
 		}
@@ -466,21 +572,29 @@ func (n *Node) Bootstrap(bootstrapPeers []string) error {
 			logging.Warnf("P2P: Bootstrap address '%s' is missing /p2p/<PeerID>: %v", peerAddr, err)
 			continue
 		}
-		if peerinfo.ID == n.Host.ID() || seenPeers[peerinfo.ID] || n.Host.Network().Connectedness(peerinfo.ID) == network.Connected {
+		if peerinfo.ID == n.Host.ID() {
+			continue
+		}
+		if n.Host.Network().Connectedness(peerinfo.ID) == network.Connected {
+			n.rememberPeer(peerAddr)
+			continue
+		}
+		if seenPeers[peerinfo.ID] {
 			continue
 		}
 		seenPeers[peerinfo.ID] = true
 
 		wg.Add(1)
-		go func(pi peer.AddrInfo) {
+		go func(pi peer.AddrInfo, rawAddr string) {
 			defer wg.Done()
 			if err := n.Host.Connect(n.ctx, pi); err != nil {
 				logging.Warnf("P2P: Failed to connect to bootstrap peer %s: %v", pi.ID, err)
 			} else {
 				logging.Successf("P2P: Connected to bootstrap node: %s", pi.ID)
+				n.rememberPeer(rawAddr)
 				n.SyncWithPeer(pi.ID)
 			}
-		}(*peerinfo)
+		}(*peerinfo, peerAddr)
 	}
 	wg.Wait()
 	return nil
