@@ -137,6 +137,17 @@ func (wm *WorkManager) LoadBlocks() {
 		if sh == nil {
 			sh = &chainhash.Hash{}
 		}
+		dup := false
+		for _, existing := range loaded {
+			if (existing.BlockHeight > 0 && existing.BlockHeight == db.BlockHeight) ||
+				(bh != nil && !bh.IsEqual(&chainhash.Hash{}) && existing.BlockHash != nil && existing.BlockHash.IsEqual(bh)) {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
 		loaded = append(loaded, &PayoutBlock{
 			BlockHash:          bh,
 			BlockFindShareHash: sh,
@@ -147,6 +158,9 @@ func (wm *WorkManager) LoadBlocks() {
 		})
 	}
 	wm.PendingBlocks = loaded
+	if len(loaded) < len(diskBlocks) {
+		wm.saveBlocksLocked()
+	}
 	logging.Infof("Loaded %d found block(s) from %s", len(wm.PendingBlocks), blocksFile)
 }
 
@@ -218,6 +232,16 @@ func (wm *WorkManager) WatchFoundBlocks() {
 				continue
 			}
 			blockHash := header.BlockHash()
+			for _, pb := range wm.PendingBlocks {
+				if pb.BlockHash != nil && pb.BlockHash.IsEqual(&blockHash) {
+					isKnown = true
+					break
+				}
+			}
+			if isKnown {
+				wm.PendingMutex.Unlock()
+				continue
+			}
 
 			logging.Infof("Adding block found by peer to pending list. Share: %s, Block: %s", share.Hash, blockHash)
 			wm.PendingBlocks = append(wm.PendingBlocks, &PayoutBlock{
@@ -523,14 +547,25 @@ func (wm *WorkManager) SubmitBlock(share *Share, template *BlockTemplate) error 
 	}
 
 	wm.PendingMutex.Lock()
-	wm.PendingBlocks = append(wm.PendingBlocks, &PayoutBlock{
-		BlockHash:          &blockHash,
-		BlockFindShareHash: share.Hash,
-		BlockHeight:        int32(template.Height),
-		FoundTime:          time.Now(),
-		State:              StatePending,
-	})
-	wm.saveBlocksLocked()
+	alreadyRecorded := false
+	for _, pb := range wm.PendingBlocks {
+		if (pb.BlockHash != nil && pb.BlockHash.IsEqual(&blockHash)) ||
+			(pb.BlockFindShareHash != nil && share.Hash != nil && pb.BlockFindShareHash.IsEqual(share.Hash)) ||
+			pb.BlockHeight == int32(template.Height) {
+			alreadyRecorded = true
+			break
+		}
+	}
+	if !alreadyRecorded {
+		wm.PendingBlocks = append(wm.PendingBlocks, &PayoutBlock{
+			BlockHash:          &blockHash,
+			BlockFindShareHash: share.Hash,
+			BlockHeight:        int32(template.Height),
+			FoundTime:          time.Now(),
+			State:              StatePending,
+		})
+		wm.saveBlocksLocked()
+	}
 	wm.PendingMutex.Unlock()
 
 	wm.TemplateMutex.Lock()
